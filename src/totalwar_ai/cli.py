@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -304,9 +305,49 @@ def _cmd_probe(args: argparse.Namespace) -> int:
             print("Aucun accuse recu dans le delai imparti.", file=sys.stderr)
             return 1
         print(f"Accuse : {ack.status.value}" + (f" ({ack.error})" if ack.error else ""))
-        return 0 if ack.accepted else 1
+        if not ack.accepted:
+            return 1
+        return _confirm_movement(bridge, state.unit_id, state.position)
 
     return 0
+
+
+def _confirm_movement(
+    bridge: FileBridge,
+    unit_id: str,
+    origin: Vector3,
+    *,
+    timeout: float = 12.0,
+    threshold: float = 2.0,
+) -> int:
+    """Verifie que l'unite a **reellement** bouge, et de combien.
+
+    Un accuse dit que l'ordre a ete lance, pas qu'il a produit un deplacement.
+    Vingt metres sur une carte de bataille passent inapercus a l'oeil nu : sans
+    cette mesure, il faut croire la camera plutot que le jeu.
+    """
+    print("Verification du deplacement...")
+    deadline = time.monotonic() + timeout
+    dernier = origin
+    while time.monotonic() < deadline:
+        for state in bridge.read_states():
+            if state.unit_id != unit_id:
+                continue
+            dernier = state.position
+            parcouru = origin.distance_2d(dernier)
+            if parcouru >= threshold:
+                print(f"Deplacement constate : {parcouru:.1f} m.")
+                return 0
+        time.sleep(0.5)
+
+    parcouru = origin.distance_2d(dernier)
+    print(
+        f"Aucun deplacement constate ({parcouru:.1f} m en {timeout:.0f} s). "
+        "L'ordre a ete accepte mais n'a rien produit : unite dans un groupe "
+        "verrouille, ordre annule par le joueur, ou controle rendu trop tot.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def _print_game_log(bridge: FileBridge, limit: int) -> int:

@@ -73,12 +73,22 @@ class FileBridge:
     _state_offset: int = 0
     _ack_offset: int = 0
     _next_sequence: int = 1
+    #: Taille du fichier d'accuses au moment de la derniere commande publiee.
+    _ack_watermark: int = 0
 
     @classmethod
     def open(cls, directory: str | Path | None = None, *, create: bool = True) -> FileBridge:
-        """Ouvre le pont sur un repertoire d'echange."""
+        """Ouvre le pont sur un repertoire d'echange.
+
+        Le compteur de sequence **reprend** ou la session precedente s'est
+        arretee. Sans cela, chaque processus repartirait de 1 et le Lua, qui
+        refuse a juste titre une sequence deja traitee, rejetterait toutes les
+        commandes suivant la premiere — defaut constate en bataille reelle.
+        """
         paths = BridgePaths.resolve(directory, create=create)
-        return cls(paths=paths)
+        bridge = cls(paths=paths)
+        bridge._next_sequence = _highest_sequence_on_disk(paths) + 1
+        return bridge
 
     # --- Python -> Lua -------------------------------------------------------
 
@@ -90,6 +100,12 @@ class FileBridge:
         """
         self.paths.ensure()
         payload = json.dumps(command.to_dict(), ensure_ascii=False, indent=2) + "\n"
+
+        # Un accuse ecrit *avant* la commande ne peut pas etre le sien. On note
+        # la taille du flux pour que `wait_for_ack` ne prenne pas un vieil
+        # accuse pour une reponse — c'est ainsi que le CLI a annonce `accepted`
+        # pour une commande que le Lua avait refusee.
+        self._ack_watermark = self.paths.ack.stat().st_size if self.paths.ack.exists() else 0
 
         descriptor, raw_path = tempfile.mkstemp(
             dir=self.paths.directory, prefix=".totalwar_ai_command-", suffix=".tmp"
@@ -174,9 +190,16 @@ class FileBridge:
     ) -> ProbeAck | None:
         """Attend l'accuse d'une sequence donnee.
 
+        Seuls les accuses ecrits **apres** la derniere commande publiee sont
+        pris en compte : un accuse anterieur repond forcement a autre chose,
+        meme s'il porte le meme numero. Les accuses en attente qui precedent la
+        commande sont donc sautes — les lire etait au demandeur.
+
         `sleep` et `monotonic` sont injectables pour que les tests n'aient pas a
         attendre reellement.
         """
+        if self._ack_offset < self._ack_watermark:
+            self._ack_offset = self._ack_watermark
         deadline = monotonic() + timeout
         seen: list[ProbeAck] = []
         while True:
@@ -217,6 +240,7 @@ class FileBridge:
         self._state_offset = 0
         self._ack_offset = 0
         self._next_sequence = 1
+        self._ack_watermark = 0
         self.malformed.clear()
 
     @property
@@ -267,6 +291,57 @@ class FileBridge:
         self.malformed.append(
             MalformedLine(path=path, line_number=number, content=line, error=error)
         )
+
+
+def _sequence_in(path: Path) -> int:
+    """Plus grand numero de sequence lisible dans un fichier du protocole.
+
+    Tolerant par construction : ce fichier a pu etre tronque, ou etre en cours
+    d'ecriture par le Lua. Une ligne illisible ne doit pas empecher de repartir
+    au bon numero — au pire on repart un peu trop haut, ce qui est sans danger.
+    """
+    if not path.exists():
+        return 0
+    highest = 0
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            value = payload.get("sequence")
+            if isinstance(value, int):
+                highest = max(highest, value)
+    return highest
+
+
+def _highest_sequence_on_disk(paths: BridgePaths) -> int:
+    """Derniere sequence connue, cote commande comme cote accuse.
+
+    Le fichier de commande ne contient qu'un objet — la derniere commande —
+    mais il n'est pas de la meme forme que les flux append-only : on le lit
+    donc entier, ce que `_sequence_in` fait sans distinction.
+    """
+    highest = max(_sequence_in(paths.command), _sequence_in(paths.ack))
+    if highest:
+        return highest
+    # Le fichier de commande est indente sur plusieurs lignes : si l'analyse
+    # ligne a ligne n'a rien donne, tenter l'objet entier.
+    if paths.command.exists():
+        try:
+            payload = json.loads(paths.command.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            return 0
+        if isinstance(payload, dict) and isinstance(payload.get("sequence"), int):
+            return int(payload["sequence"])
+    return 0
 
 
 def read_states_from(path: str | Path) -> list[ProbeUnitState]:
