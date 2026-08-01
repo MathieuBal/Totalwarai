@@ -95,15 +95,21 @@ Le cœur Python est implémenté et testable sans lancer *WARHAMMER III* :
 - journal d’événements, rapport post-bataille, mémoire SQLite persistante ;
 - adaptation bornée de la doctrine d’après l’historique, avec checkpoints ;
 - banc des dix scénarios de référence et détection automatique de régressions ;
-- interface en ligne de commande (`totalwar-ai`).
+- interface en ligne de commande (`totalwar-ai`) ;
+- prototype d’intégration au jeu — **écrit, pas encore essayé en bataille**.
 
 Voir [Démarrage rapide](#démarrage-rapide) pour l’essayer, et
 [`docs/architecture.md`](docs/architecture.md) pour ce que le dépôt contient
 réellement, par opposition à la cible décrite ici.
 
-**Ce qui n’existe pas encore : tout ce qui touche au jeu lui-même.** Aucun mod
-Lua, aucun pont réel, aucun contrôle d’une bataille de *WARHAMMER III*, aucun
-modèle appris.
+**Ce qui touche au jeu lui-même reste à vérifier.** Un prototype d’intégration
+existe désormais — une sonde Lua (`lua_mod/`) et un pont par fichiers
+(`src/totalwar_ai/bridge/file_bridge.py`) — mais **il n’a jamais été exécuté dans
+*WARHAMMER III***. Les deux moitiés sont testées l’une contre l’autre, ce qui ne
+prouve rien sur le jeu. L’état exact des vérifications, ligne par ligne, se tient
+dans [`docs/feasibility.md`](docs/feasibility.md).
+
+Aucun modèle appris non plus : l’adaptation reste à base de règles bornées.
 
 La priorité suivante n’est pas l’apprentissage automatique. C’est de vérifier ce que *WARHAMMER III* permet réellement d’observer et de commander depuis :
 
@@ -131,6 +137,7 @@ totalwar-ai history                                  # consulter les batailles p
 totalwar-ai doctrine                                 # voir ce que l'agent a appris
 totalwar-ai report <identifiant>                     # relire un rapport
 totalwar-ai bench                                    # rejouer le banc de scénarios
+totalwar-ai probe --status                           # état du pont vers le jeu
 ```
 
 Le banc rejoue les dix situations de référence à graines fixes et sans mémoire,

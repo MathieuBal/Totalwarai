@@ -18,7 +18,10 @@ from pathlib import Path
 
 from totalwar_ai import __version__
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
+from totalwar_ai.bridge.file_bridge import FileBridge, summarise
+from totalwar_ai.bridge.paths import BridgeDirectoryNotFoundError
 from totalwar_ai.config import AppConfig, ConfigError, load_config
+from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.learning.checkpoints import CheckpointStore
 from totalwar_ai.learning.evaluation import (
     DEFAULT_SEEDS,
@@ -86,6 +89,20 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument(
         "--no-compare", action="store_true", help="ne pas comparer a la reference enregistree"
     )
+
+    probe = subparsers.add_parser("probe", help="piloter la sonde d'integration au jeu (prototype)")
+    probe.add_argument(
+        "--bridge-dir",
+        help="dossier d'installation du jeu, ou dossier d'echange "
+        "(defaut : $TOTALWAR_AI_BRIDGE_DIR)",
+    )
+    probe.add_argument("--status", action="store_true", help="afficher l'etat du pont")
+    probe.add_argument("--watch", type=float, metavar="SECONDES", help="attendre un etat du jeu")
+    probe.add_argument(
+        "--move", type=float, metavar="METRES", help="deplacer l'unite observee de N metres"
+    )
+    probe.add_argument("--abort", action="store_true", help="arret d'urgence : tout liberer")
+    probe.add_argument("--reset", action="store_true", help="vider les flux avant de commencer")
     return parser
 
 
@@ -112,6 +129,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_doctrine(config)
     if args.command == "bench":
         return _cmd_bench(args, config)
+    if args.command == "probe":
+        return _cmd_probe(args)
     # `required=True` sur les sous-commandes garantit qu'on ne passe jamais ici.
     return _cmd_report(args, config)
 
@@ -217,6 +236,88 @@ def _cmd_history(args: argparse.Namespace, config: AppConfig) -> int:
 
 
 BASELINE_FILENAME = "benchmark-baseline.json"
+
+
+def _cmd_probe(args: argparse.Namespace) -> int:
+    """Pilote la sonde d'integration au jeu.
+
+    Cette commande ne simule rien : elle parle au script Lua a travers le
+    repertoire d'echange. Sans jeu lance, elle constate simplement qu'il ne se
+    passe rien — ce qui est deja une information.
+    """
+    try:
+        bridge = FileBridge.open(args.bridge_dir)
+    except BridgeDirectoryNotFoundError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
+    print(f"Repertoire d'echange : {bridge.paths.directory}")
+    if args.reset:
+        bridge.reset()
+        print("Flux vides.")
+
+    if args.abort:
+        bridge.abort("arret demande depuis le CLI")
+        print("Arret d'urgence publie : le script Lua doit tout liberer.")
+        return 0
+
+    if args.status or not (args.watch or args.move):
+        _print_probe_status(bridge)
+        return 0
+
+    state = None
+    if args.watch or args.move:
+        delai = args.watch or 30.0
+        print(f"Attente d'un etat du jeu ({delai:.0f} s)...")
+        state = bridge.wait_for_state(timeout=delai)
+        if state is None:
+            print(
+                "Aucun etat recu. Verifier que la bataille est lancee, que le mod est actif, "
+                "et que le dossier d'echange est bien celui du jeu.",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"Unite {state.unit_id} ({state.unit_type or 'type inconnu'}) "
+            f"en ({state.position.x:.1f}, {state.position.z:.1f}), "
+            f"controlable={state.controllable}"
+        )
+
+    if args.move and state is not None:
+        destination = Vector3(state.position.x + args.move, state.position.y, state.position.z)
+        commande = bridge.move_unit(state.unit_id, destination)
+        print(f"Ordre {commande.sequence} publie : deplacement de {args.move:.0f} m.")
+        ack = bridge.wait_for_ack(commande.sequence, timeout=30.0)
+        if ack is None:
+            print("Aucun accuse recu dans le delai imparti.", file=sys.stderr)
+            return 1
+        print(f"Accuse : {ack.status.value}" + (f" ({ack.error})" if ack.error else ""))
+        return 0 if ack.accepted else 1
+
+    return 0
+
+
+def _print_probe_status(bridge: FileBridge) -> None:
+    """Etat des quatre fichiers du pont, sans rien interpreter."""
+    for label, path in (
+        ("etats", bridge.paths.state),
+        ("commande", bridge.paths.command),
+        ("accuses", bridge.paths.ack),
+        ("arret", bridge.paths.stop),
+    ):
+        if path.exists():
+            taille = path.stat().st_size
+            print(f"  {label:9} present   ({taille} octets)  {path.name}")
+        else:
+            print(f"  {label:9} absent               {path.name}")
+
+    etats = bridge.read_states()
+    if etats:
+        print(f"\n{summarise(etats)}")
+    acks = bridge.read_acks()
+    if acks:
+        dernier = acks[-1]
+        print(f"Dernier accuse : sequence {dernier.sequence}, statut {dernier.status.value}")
 
 
 def _cmd_bench(args: argparse.Namespace, config: AppConfig) -> int:
