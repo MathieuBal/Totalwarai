@@ -51,8 +51,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "memory": {
         "database_path": "data/totalwar_ai.sqlite3",
+        "models_dir": "data/models",
         "replay_capacity": 250000,
         "keep_raw_battles": True,
+        "apply_learned_doctrine": True,
+        "min_battles_for_adaptation": 2,
+        "history_depth": 10,
     },
     "telemetry": {
         "level": "INFO",
@@ -219,7 +223,10 @@ def _relocate_data_dir(values: dict[str, Any], data_dir: Path) -> dict[str, Any]
     return deep_merge(
         values,
         {
-            "memory": {"database_path": str(data_dir / "totalwar_ai.sqlite3")},
+            "memory": {
+                "database_path": str(data_dir / "totalwar_ai.sqlite3"),
+                "models_dir": str(data_dir / "models"),
+            },
             "telemetry": {
                 "battles_dir": str(data_dir / "battles"),
                 "reports_dir": str(data_dir / "reports"),

@@ -19,6 +19,9 @@ flowchart LR
     REWARD --> MEMORY[(SQLite)]
     MEMORY --> REPLAY[Replay buffer]
     MEMORY --> REPORT
+    MEMORY --> ADAPT[Adaptation de doctrine]
+    ADAPT --> CKPT[(Checkpoints JSON)]
+    ADAPT --> AGENT
 ```
 
 La partie gauche du schéma du `README.md` — jeu, mod Lua, pont réel — n'est pas
@@ -36,11 +39,22 @@ branchement au jeu ne doit rien changer aux couches de droite.
 | `simulation` | Simulateur abstrait, scénarios, boucle de bataille. | tout le reste |
 | `telemetry` | Événements structurés, journal JSONL, rapport Markdown. | `domain`, `agent` |
 | `memory` | Persistance SQLite, transitions, tampon de rejeu. | `domain`, `telemetry` |
-| `learning` | Barème de récompense. L'entraînement viendra en Phase 6. | `domain`, `telemetry` |
+| `learning` | Barème de récompense, adaptation de la doctrine et checkpoints. L'entraînement de modèles viendra en Phase 6. | `domain`, `telemetry`, `memory` |
 
 Règle de dépendance : `domain` ne dépend de rien, et rien dans `domain`,
 `bridge` ou `agent` ne connaît le simulateur. Un adaptateur vers le jeu réel
 s'insère donc sans toucher à l'agent.
+
+Deux points de vigilance, appris en ajoutant l'adaptation :
+
+- **`agent` connaît `learning`, jamais l'inverse.** `learning/adaptation.py`
+  produit des chiffres et des raisons sans rien savoir de la façon dont l'agent
+  est construit ; c'est `agent/doctrine.py` qui les traduit en `PlannerSettings`
+  et `SafetySettings`.
+- **Les `__init__.py` ne ré-exportent pas au travers des couches.**
+  `telemetry/__init__.py` ne ré-exporte volontairement pas `report`, qui dépend
+  de `learning`, lequel dépend de `telemetry.events` : l'import du paquet
+  bouclerait.
 
 ## Décisions structurantes
 
@@ -84,6 +98,18 @@ l'arrière, ce qui replie encore les tireurs : l'armée recule indéfiniment san
 jamais combattre. Ce défaut a été observé puis corrigé pendant le développement
 du simulateur.
 
+### L'adaptation est bornée et explicable
+
+L'agent ajuste cinq réglages d'après son historique, chacun dans des bornes
+fixes et accompagné d'une raison en clair reprise dans le rapport. Aucun
+garde-fou de sécurité n'est ajustable, et le seul réglage de sécurité touché
+— le rayon de menace des tireurs — ne peut bouger qu'à la hausse. Voir
+[`decisions/0003-adaptation-bornee-de-la-doctrine.md`](decisions/0003-adaptation-bornee-de-la-doctrine.md).
+
+Conséquence à connaître : une bataille jouée **avec** mémoire n'est plus
+reproductible à partir de la seule graine. Le rapport enregistre le profil
+appliqué, et `--no-adapt` restaure le comportement de référence.
+
 ### L'arrêt d'urgence survit à tout
 
 `SafetyEngine.reset()` remet à zéro le compteur d'ordres mais **ne lève pas**
@@ -93,7 +119,8 @@ pas disparaître parce qu'une nouvelle bataille commence.
 ## Ce qui n'existe pas encore
 
 - mod Lua et pont réel (Phase 0 — voir `docs/feasibility.md`) ;
-- entraîneur hors ligne et évaluateur de modèles (Phases 5 et 6) ;
+- apprentissage par imitation, entraîneur hors ligne et évaluateur de modèles
+  (Phases 5 et 6) ;
 - sièges, embuscades, sorts, doctrines par faction (Phase 7).
 
 Les modules correspondants ne sont volontairement pas créés vides : un fichier

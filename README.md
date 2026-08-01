@@ -93,6 +93,7 @@ Le cœur Python est implémenté et testable sans lancer *WARHAMMER III* :
 - règles de sécurité et arrêt d’urgence ;
 - simulateur tactique déterministe et cinq scénarios reproductibles ;
 - journal d’événements, rapport post-bataille, mémoire SQLite persistante ;
+- adaptation bornée de la doctrine d’après l’historique, avec checkpoints ;
 - interface en ligne de commande (`totalwar-ai`).
 
 Voir [Démarrage rapide](#démarrage-rapide) pour l’essayer, et
@@ -126,7 +127,17 @@ totalwar-ai scenarios                                # lister les situations
 totalwar-ai simulate --scenario ranged_defense       # jouer une bataille
 totalwar-ai simulate --scenario ranged_defense       # relancer : la mémoire est rechargée
 totalwar-ai history                                  # consulter les batailles passées
+totalwar-ai doctrine                                 # voir ce que l'agent a appris
 totalwar-ai report <identifiant>                     # relire un rapport
+```
+
+À partir de la troisième bataille d’une même composition, l’agent ajuste sa
+doctrine d’après ses résultats passés et l’explique :
+
+```text
+  doctrine ajustee par l'historique :
+    - taux de victoire faible (0% sur 2 batailles) : laisser l'ennemi venir plus pres avant d'engager
+    - deroutes repetees (2.0 par bataille) : resserrer la ligne pour que les unites se soutiennent
 ```
 
 Sans installation, les deux scripts équivalents fonctionnent depuis le dépôt :
@@ -146,8 +157,12 @@ Ces répertoires ne sont pas versionnés.
 
 Options utiles : `--seed` pour rejouer exactement une bataille, `--all` pour
 enchaîner tous les scénarios, `--no-memory` pour ne rien enregistrer,
-`--explain` pour afficher les décisions commentées, `--data-dir` pour écrire
-ailleurs que dans `data/`.
+`--no-adapt` pour ignorer la doctrine apprise, `--explain` pour afficher les
+décisions commentées, `--data-dir` pour écrire ailleurs que dans `data/`.
+
+À noter : une bataille jouée **avec** mémoire dépend de l’historique autant que
+de la graine. Pour une reproduction exacte, utiliser `--no-memory` ou
+`--no-adapt`.
 
 ---
 
@@ -173,6 +188,12 @@ La suite de tests se lit en trois niveaux :
 | `tests/unit/` | géométrie, sérialisation, protocole, classification, ciblage, règles de sécurité, récompenses, mémoire |
 | `tests/integration/` | boucle état → décision → résultat via le pont, chaîne bataille → journal → rapport → mémoire → rechargement |
 | `tests/scenarios/` | les garde-fous du comportement : archers protégés, artillerie qui ne charge pas, poursuite refusée, tir concentré, réserve conservée, déterminisme |
+
+L’adaptation a ses propres garde-fous : `tests/unit/test_adaptation.py` vérifie
+que dix cycles d’ajustement successifs restent dans les bornes et qu’aucune
+règle de sécurité n’est assouplie ; `tests/integration/test_adaptation_pipeline.py`
+vérifie que l’historique change réellement les ordres, et que `--no-adapt`
+restaure le comportement de référence.
 
 Les réglages de doctrine, le barème de récompense, la classification des unités
 et les paramètres du simulateur sont dans `config/` : les ajuster ne demande pas
@@ -674,20 +695,20 @@ Un modèle candidat devient le modèle stable uniquement s’il :
 - [x] Enregistrement des transitions.
 - [x] Résumé post-bataille.
 - [x] Explication des décisions.
-- [ ] Visualisation simple de la chronologie.
+- [x] Visualisation simple de la chronologie.
 - [x] Détection des données incomplètes.
 
-**Livrable :** dataset exploitable et diagnostic lisible. — *atteint, hors visualisation de chronologie*
+**Livrable :** dataset exploitable et diagnostic lisible. — *atteint*
 
 ### Phase 4 — Mémoire et adaptation
 
 - [x] Base SQLite.
 - [x] Replay buffer.
 - [x] Recherche de situations similaires.
-- [ ] Ajustement de coefficients par résultats historiques.
-- [ ] Sauvegarde et chargement de checkpoints.
+- [x] Ajustement de coefficients par résultats historiques.
+- [x] Sauvegarde et chargement de checkpoints.
 
-**Livrable :** comportement influencé par les batailles précédentes. — *partiel : la mémoire est persistée et consultée, l'ajustement automatique des coefficients reste à faire*
+**Livrable :** comportement influencé par les batailles précédentes. — *atteint : voir [`docs/decisions/0003-adaptation-bornee-de-la-doctrine.md`](docs/decisions/0003-adaptation-bornee-de-la-doctrine.md)*
 
 ### Phase 5 — Apprentissage supervisé ou par imitation
 
@@ -834,7 +855,7 @@ Les données de bataille et les modèles lourds ne doivent pas être versionnés
 
 > **État réel du dépôt.** Cette arborescence est la cible. Aujourd'hui, `lua_mod/`
 > n'existe pas (Phase 0 non commencée), `bridge/file_bridge.py` et le paquet
-> `learning/` au complet sont volontairement différés — voir
+> `learning/{trainer,evaluator}.py` sont volontairement différés — voir
 > [`docs/decisions/0002-pont-reel-differe.md`](docs/decisions/0002-pont-reel-differe.md).
 > Le reste est en place, plus `config/simulation.yaml`,
 > `agent/grouping.py`, `simulation/runner.py` et `learning/rewards.py`.

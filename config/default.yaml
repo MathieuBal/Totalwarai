@@ -36,8 +36,13 @@ safety:
 
 memory:
   database_path: data/totalwar_ai.sqlite3
+  models_dir: data/models
   replay_capacity: 250000
   keep_raw_battles: true
+  # Adaptation (Phase 4) : ajuster la doctrine d'apres les batailles passees.
+  apply_learned_doctrine: true
+  min_battles_for_adaptation: 2
+  history_depth: 10
 
 telemetry:
   level: INFO

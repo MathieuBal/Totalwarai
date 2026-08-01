@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from totalwar_ai.agent.doctrine import apply_to_planner, apply_to_safety
 from totalwar_ai.agent.explainability import Decision
 from totalwar_ai.agent.grouping import GroupKind
 from totalwar_ai.agent.planner import BattlePlan, Planner, PlannerSettings
@@ -24,6 +25,7 @@ from totalwar_ai.config import AppConfig, load_config
 from totalwar_ai.domain.actions import AgentAction
 from totalwar_ai.domain.battle_state import BattlePhase, BattleState
 from totalwar_ai.domain.unit_state import PRECIOUS_ROLES, RANGED_ROLES
+from totalwar_ai.learning.adaptation import DoctrineProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +81,7 @@ class DeterministicTacticalAgent:
 
     battle_id: str | None = None
     plan: BattlePlan | None = None
+    doctrine: DoctrineProfile = field(default_factory=DoctrineProfile)
     _last_decision_time: float | None = None
     _active_signatures: dict[str, tuple[Any, ...]] = field(default_factory=dict, repr=False)
     _blocked_signatures: set[tuple[Any, ...]] = field(default_factory=set, repr=False)
@@ -112,6 +115,19 @@ class DeterministicTacticalAgent:
         self._active_signatures.clear()
         self._blocked_signatures.clear()
         self.safety.reset()
+
+    def apply_doctrine(self, profile: DoctrineProfile) -> None:
+        """Applique une doctrine apprise de l'historique.
+
+        Le profil ne touche qu'a des reglages bornes (voir
+        :mod:`totalwar_ai.learning.adaptation`) : les interdits de securite ne
+        sont jamais assouplis par ce chemin.
+        """
+        if profile.is_empty:
+            return
+        self.planner = Planner(settings=apply_to_planner(self.planner.settings, profile))
+        self.safety = SafetyEngine.from_settings(apply_to_safety(self.safety.settings, profile))
+        self.doctrine = profile
 
     def trigger_emergency_stop(self) -> None:
         """Arret d'urgence : le joueur reprend la main immediatement."""

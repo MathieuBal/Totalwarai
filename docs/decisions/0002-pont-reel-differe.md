@@ -30,7 +30,9 @@ abstraite `Bridge` et `MockBridge`.
   explicitement plutôt que de le laisser croire.
 - `scripts/run_agent.py` montre la boucle exacte qu'un adaptateur réel devra
   alimenter, ce qui limite le travail de conception au moment venu.
-- Les modules `learning/trainer.py`, `learning/evaluator.py` et
-  `learning/checkpoints.py` du `README.md` sont différés pour la même raison :
-  ils ne peuvent être conçus sérieusement qu'avec un volume réel de batailles
-  enregistrées.
+- Les modules `learning/trainer.py` et `learning/evaluator.py` du `README.md`
+  sont différés pour la même raison : ils ne peuvent être conçus sérieusement
+  qu'avec un volume réel de batailles enregistrées.
+  `learning/checkpoints.py`, initialement différé lui aussi, a été écrit depuis
+  pour la Phase 4 : il enregistre les doctrines apprises, qui n'ont pas besoin
+  d'attendre l'entraînement de modèles.

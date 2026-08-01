@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from totalwar_ai.agent.explainability import Decision, describe_action
 from totalwar_ai.domain.battle_state import BattleOutcomeKind
+from totalwar_ai.learning.adaptation import DoctrineProfile
 from totalwar_ai.learning.rewards import RewardBreakdown
 from totalwar_ai.telemetry.events import Event, EventType
 
@@ -50,6 +51,9 @@ class ReportContext:
     blocked: Sequence[Decision] = ()
     reward: RewardBreakdown = field(default_factory=RewardBreakdown)
     history: Sequence[BattleSummary] = ()
+    profile: DoctrineProfile = field(default_factory=DoctrineProfile)
+    #: Suite (temps, part alliee restante, part ennemie restante).
+    strength_series: Sequence[tuple[float, float, float]] = ()
 
 
 def render_report(context: ReportContext) -> str:
@@ -74,8 +78,12 @@ def render_report(context: ReportContext) -> str:
     lines.extend(_blocked_summary(context.blocked))
     lines.extend(["", "## Decisions marquantes", ""])
     lines.extend(_highlight_decisions(context.decisions))
+    lines.extend(["", "## Deroulement", ""])
+    lines.extend(_strength_chart(context.strength_series))
     lines.extend(["", "## Chronologie", ""])
     lines.extend(_timeline(context.events))
+    lines.extend(["", "## Ce que la memoire a change", ""])
+    lines.extend(_doctrine_section(context.profile))
     lines.extend(["", "## Detail de la recompense", ""])
     lines.extend(_reward_table(context.reward))
     lines.extend(["", "## Ce qui est conserve en memoire", ""])
@@ -159,6 +167,67 @@ def _highlight_decisions(decisions: Sequence[Decision], limit: int = 5) -> list[
         lines.append("```")
         lines.append("")
     return lines[:-1] if lines else lines
+
+
+def _strength_chart(
+    series: Sequence[tuple[float, float, float]], bands: int = 12, width: int = 20
+) -> list[str]:
+    """Courbe d'usure des deux armees, en barres de texte.
+
+    Volontairement en texte : le rapport doit rester lisible dans un terminal,
+    dans un diff Git et dans un ticket, sans dependance graphique.
+    """
+    if not series:
+        return ["_Aucune mesure d'effectifs._"]
+    samples = _sample(series, bands)
+    lines = ["```text", f"{'temps':>8}  {'allies':<{width}}  {'ennemis':<{width}}"]
+    for game_time, ally, enemy in samples:
+        lines.append(
+            f"{game_time:7.0f}s  {_bar(ally, width)} {ally:4.0%}  {_bar(enemy, width)} {enemy:4.0%}"
+        )
+    lines.append("```")
+    return lines
+
+
+def _sample(
+    series: Sequence[tuple[float, float, float]], bands: int
+) -> list[tuple[float, float, float]]:
+    """Reduit la serie a `bands` points repartis regulierement, fin incluse."""
+    if len(series) <= bands:
+        return list(series)
+    step = (len(series) - 1) / (bands - 1)
+    indices = sorted({round(index * step) for index in range(bands)} | {len(series) - 1})
+    return [series[index] for index in indices]
+
+
+def _bar(ratio: float, width: int) -> str:
+    filled = max(0, min(width, round(ratio * width)))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _doctrine_section(profile: DoctrineProfile) -> list[str]:
+    """Ce que l'historique a change dans la doctrine de cette bataille."""
+    stats = profile.stats
+    if profile.is_empty:
+        if stats.sample_size == 0:
+            return ["_Aucune bataille comparable en memoire : doctrine par defaut._"]
+        return [
+            f"_{stats.sample_size} bataille(s) comparable(s) en memoire, "
+            "mais aucun ajustement declenche : doctrine par defaut._"
+        ]
+    lines = [
+        f"Doctrine ajustee d'apres {stats.sample_size} bataille(s) comparable(s) "
+        f"(taux de victoire {stats.win_rate:.0%}, "
+        f"forces restantes {stats.average_ally_remaining:.0%} en moyenne) :",
+        "",
+    ]
+    lines.extend(f"- {reason}" for reason in profile.rationale)
+    lines.append("")
+    lines.append("| Reglage | Valeur retenue |")
+    lines.append("| --- | ---: |")
+    for name, value in sorted(profile.adjustments.items()):
+        lines.append(f"| `{name}` | {value:g} |")
+    return lines
 
 
 def _timeline(events: Sequence[Event]) -> list[str]:

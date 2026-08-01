@@ -8,16 +8,20 @@ CLI et par les tests de scenario.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from totalwar_ai.agent.doctrine import baseline_values
 from totalwar_ai.agent.explainability import Decision
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
 from totalwar_ai.bridge.protocol import PROTOCOL_VERSION
 from totalwar_ai.config import AppConfig, load_config
 from totalwar_ai.domain.battle_state import BattleOutcomeKind, BattleState
-from totalwar_ai.domain.unit_state import Side
+from totalwar_ai.domain.unit_state import RANGED_ROLES, Side
+from totalwar_ai.learning.adaptation import DEFAULT_MIN_SAMPLES, DoctrineProfile, derive_profile
+from totalwar_ai.learning.checkpoints import CheckpointStore
 from totalwar_ai.learning.rewards import RewardBreakdown, RewardCalculator
 from totalwar_ai.memory.models import BattleSummary, Episode, Transition
 from totalwar_ai.memory.repository import MemoryRepository
@@ -41,6 +45,8 @@ class BattleResult:
     report_path: Path | None = None
     log_path: Path | None = None
     states: tuple[BattleState, ...] = field(default=(), repr=False)
+    profile: DoctrineProfile = field(default_factory=DoctrineProfile)
+    strength_series: tuple[tuple[float, float, float], ...] = field(default=(), repr=False)
 
     @property
     def summary(self) -> BattleSummary:
@@ -61,11 +67,16 @@ def run_battle(
     repository: MemoryRepository | None = None,
     generate_report: bool | None = None,
     keep_states: bool = False,
+    adapt: bool | None = None,
 ) -> BattleResult:
     """Joue un scenario de bout en bout.
 
     `repository` est optionnel : sans lui, la bataille se deroule normalement
-    mais rien n'est memorise (mode `--no-memory` du CLI).
+    mais rien n'est memorise (mode `--no-memory` du CLI), et aucune doctrine
+    apprise n'est appliquee — l'agent reste alors strictement deterministe.
+
+    `adapt` force ou interdit l'application de la doctrine apprise ; par defaut
+    elle suit `memory.apply_learned_doctrine`.
     """
     resolved_config = config or load_config()
     telemetry = resolved_config.telemetry
@@ -77,6 +88,20 @@ def run_battle(
     tactical_agent = agent or DeterministicTacticalAgent.from_config(resolved_config)
     tactical_agent.reset(resolved_id)
     rewards = RewardCalculator()
+
+    fingerprint = scenario.fingerprint()
+    history: list[BattleSummary] = []
+    if repository is not None:
+        history = repository.find_similar(
+            fingerprint, limit=int(memory_cfg.get("history_depth", 10))
+        )
+    profile = _prepare_doctrine(
+        tactical_agent,
+        fingerprint,
+        history,
+        config=resolved_config,
+        adapt=adapt,
+    )
 
     environment = SimulationEnvironment(
         battle_id=resolved_id,
@@ -101,6 +126,7 @@ def run_battle(
     all_blocked: list[Decision] = []
     transitions: list[Transition] = []
     states: list[BattleState] = []
+    strength_series: list[tuple[float, float, float]] = []
     total_reward = RewardBreakdown()
     actions_rejected = 0
 
@@ -154,6 +180,13 @@ def run_battle(
             )
             all_decisions.extend(turn.decisions)
             all_blocked.extend(turn.blocked)
+            strength_series.append(
+                (
+                    step.state.game_time,
+                    environment.remaining_share(Side.ALLY),
+                    environment.remaining_share(Side.ENEMY),
+                )
+            )
             state = step.state
             if keep_states:
                 states.append(state)
@@ -187,13 +220,7 @@ def run_battle(
         )
         episode = Episode(summary=summary, transitions=transitions, events=list(logger.events))
 
-        history: list[BattleSummary] = []
         if repository is not None:
-            history = [
-                previous
-                for previous in repository.find_similar(summary.army_fingerprint, limit=3)
-                if previous.battle_id != resolved_id
-            ]
             repository.save_episode(
                 episode, keep_raw=bool(memory_cfg.get("keep_raw_battles", True))
             )
@@ -217,7 +244,9 @@ def run_battle(
                     decisions=all_decisions,
                     blocked=all_blocked,
                     reward=total_reward,
-                    history=history,
+                    history=history[:3],
+                    profile=profile,
+                    strength_series=tuple(strength_series),
                 ),
                 resolved_config.path("telemetry", "reports_dir"),
             )
@@ -231,9 +260,48 @@ def run_battle(
             report_path=report_path,
             log_path=logger.path,
             states=tuple(states),
+            profile=profile,
+            strength_series=tuple(strength_series),
         )
     finally:
         logger.close()
+
+
+def _prepare_doctrine(
+    tactical_agent: DeterministicTacticalAgent,
+    fingerprint: str,
+    history: Sequence[BattleSummary],
+    *,
+    config: AppConfig,
+    adapt: bool | None,
+) -> DoctrineProfile:
+    """Deduit, enregistre et applique la doctrine tiree de l'historique.
+
+    Sans historique, le profil est vide et l'agent garde ses reglages par defaut :
+    c'est le comportement de reference, et celui de tous les tests deterministes.
+    """
+    memory_cfg = config.memory
+    agent_cfg = config.agent
+    profile = DoctrineProfile(fingerprint=fingerprint)
+    if not history or not bool(agent_cfg.get("allow_learning", True)):
+        return profile
+
+    profile = derive_profile(
+        fingerprint,
+        history,
+        baseline=baseline_values(tactical_agent.planner.settings),
+        min_samples=int(memory_cfg.get("min_battles_for_adaptation", DEFAULT_MIN_SAMPLES)),
+    )
+
+    store = CheckpointStore(config.path("memory", "models_dir"))
+    store.save(profile)
+
+    should_apply = (
+        adapt if adapt is not None else bool(memory_cfg.get("apply_learned_doctrine", True))
+    )
+    if should_apply and not profile.is_empty:
+        tactical_agent.apply_doctrine(profile)
+    return profile
 
 
 def _safety_events(battle_id: str, game_time: float, blocked: tuple[Decision, ...]) -> list[Event]:
@@ -281,5 +349,14 @@ def _metrics(
             1
             for event in events
             if event.type is EventType.UNIT_ROUTED and event.payload.get("side") == Side.ALLY.value
+        ),
+        # Combien de fois nos tireurs ont ete pris au corps a corps : c'est le
+        # signal qui pousse l'adaptation a les replier plus tot.
+        "allied_ranged_engaged": sum(
+            1
+            for event in events
+            if event.type is EventType.UNIT_ENGAGED
+            and event.payload.get("side") == Side.ALLY.value
+            and event.role in RANGED_ROLES
         ),
     }

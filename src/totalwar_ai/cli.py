@@ -18,6 +18,7 @@ from pathlib import Path
 from totalwar_ai import __version__
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
 from totalwar_ai.config import AppConfig, ConfigError, load_config
+from totalwar_ai.learning.checkpoints import CheckpointStore
 from totalwar_ai.memory.replay_buffer import ReplayBuffer
 from totalwar_ai.memory.repository import MemoryRepository
 from totalwar_ai.simulation.runner import run_battle
@@ -46,6 +47,11 @@ def build_parser() -> argparse.ArgumentParser:
     simulate.add_argument("--episodes", type=int, default=1, help="nombre de batailles a jouer")
     simulate.add_argument("--all", action="store_true", help="jouer tous les scenarios")
     simulate.add_argument("--no-memory", action="store_true", help="ne rien enregistrer en memoire")
+    simulate.add_argument(
+        "--no-adapt",
+        action="store_true",
+        help="ignorer la doctrine apprise et jouer avec les reglages par defaut",
+    )
     simulate.add_argument("--no-report", action="store_true", help="ne pas ecrire de rapport")
     simulate.add_argument(
         "--explain", action="store_true", help="afficher les decisions marquantes"
@@ -57,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     report = subparsers.add_parser("report", help="afficher le rapport d'une bataille")
     report.add_argument("battle_id", help="identifiant complet ou prefixe")
+
+    subparsers.add_parser("doctrine", help="afficher les doctrines apprises")
     return parser
 
 
@@ -79,6 +87,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_simulate(args, config)
     if args.command == "history":
         return _cmd_history(args, config)
+    if args.command == "doctrine":
+        return _cmd_doctrine(config)
     # `required=True` sur les sous-commandes garantit qu'on ne passe jamais ici.
     return _cmd_report(args, config)
 
@@ -127,6 +137,7 @@ def _cmd_simulate(args: argparse.Namespace, config: AppConfig) -> int:
                     seed=seed,
                     repository=repository,
                     generate_report=not args.no_report,
+                    adapt=False if args.no_adapt else None,
                 )
                 summary = result.summary
                 print(
@@ -145,6 +156,10 @@ def _cmd_simulate(args: argparse.Namespace, config: AppConfig) -> int:
                     print(f"  rapport : {result.report_path}")
                 if result.log_path:
                     print(f"  journal : {result.log_path}")
+                if not result.profile.is_empty:
+                    print("  doctrine ajustee par l'historique :")
+                    for reason in result.profile.rationale:
+                        print(f"    - {reason}")
                 if args.explain:
                     _print_explanations(result)
                 print()
@@ -175,6 +190,31 @@ def _cmd_history(args: argparse.Namespace, config: AppConfig) -> int:
                 f"graine {battle.seed:<5} {battle.duration:6.1f}s  "
                 f"allies {battle.ally_remaining:5.0%}  recompense {battle.total_reward:+9.1f}"
             )
+    return 0
+
+
+def _cmd_doctrine(config: AppConfig) -> int:
+    """Affiche les doctrines apprises, composition par composition."""
+    store = CheckpointStore(config.path("memory", "models_dir"))
+    profiles = list(store.all_profiles())
+    if not profiles:
+        print("Aucune doctrine apprise pour l'instant.")
+        return 0
+    for profile in profiles:
+        stats = profile.stats
+        print(f"Composition : {profile.fingerprint}")
+        print(
+            f"  {stats.sample_size} bataille(s), taux de victoire {stats.win_rate:.0%}, "
+            f"forces restantes {stats.average_ally_remaining:.0%} en moyenne"
+        )
+        if profile.is_empty:
+            print("  aucun ajustement retenu")
+        else:
+            for name, value in sorted(profile.adjustments.items()):
+                print(f"  {name} = {value:g}")
+            for reason in profile.rationale:
+                print(f"    - {reason}")
+        print()
     return 0
 
 
