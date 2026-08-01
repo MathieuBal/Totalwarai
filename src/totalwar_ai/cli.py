@@ -103,6 +103,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     probe.add_argument("--abort", action="store_true", help="arret d'urgence : tout liberer")
     probe.add_argument("--reset", action="store_true", help="vider les flux avant de commencer")
+    probe.add_argument(
+        "--log",
+        nargs="?",
+        type=int,
+        const=40,
+        metavar="N",
+        help="afficher les N dernieres lignes [totalwar_ai] du journal du jeu",
+    )
     return parser
 
 
@@ -252,6 +260,10 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         return 2
 
     print(f"Repertoire d'echange : {bridge.paths.directory}")
+
+    if args.log:
+        return _print_game_log(bridge, args.log)
+
     if args.reset:
         bridge.reset()
         print("Flux vides.")
@@ -294,6 +306,49 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         print(f"Accuse : {ack.status.value}" + (f" ({ack.error})" if ack.error else ""))
         return 0 if ack.accepted else 1
 
+    return 0
+
+
+def _print_game_log(bridge: FileBridge, limit: int) -> int:
+    """Affiche ce que la sonde Lua a dit dans le journal du jeu.
+
+    Tant que l'echange par fichiers n'est pas etabli, c'est la seule fenetre sur
+    ce qui se passe cote jeu — et le canal de repli s'il ne l'est jamais.
+    """
+    journal = bridge.paths.latest_script_log()
+    if journal is None:
+        print(
+            f"Aucun journal `script_log_*.txt` dans {bridge.paths.game_directory}.\n"
+            "Verifier que le chemin designe bien le dossier d'installation du jeu, "
+            "et que le journal de script est active.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Journal : {journal.name} ({journal.stat().st_size} octets)\n")
+    lignes = [
+        ligne.rstrip()
+        for ligne in journal.read_text(encoding="utf-8", errors="replace").splitlines()
+        if "totalwar_ai" in ligne
+    ]
+    if not lignes:
+        print(
+            "Aucune ligne [totalwar_ai] : le script n'a pas ete charge.\n"
+            "Verifier l'arborescence du pack (script/_lib/mod/totalwar_ai_probe.lua), "
+            "l'activation du mod, et que le pack a bien ete reconstruit apres la "
+            "derniere modification du script."
+        )
+        return 1
+
+    for ligne in lignes[-limit:]:
+        print(f"  {ligne.strip()}")
+
+    # Un diagnostic manquant est en soi une information.
+    if not any("diagnostic des entrees-sorties" in ligne for ligne in lignes):
+        print(
+            "\nCe journal ne contient pas le diagnostic des entrees-sorties : "
+            "le pack embarque une version anterieure du script. Le reconstruire."
+        )
     return 0
 
 

@@ -138,3 +138,22 @@ class BridgePaths:
     def ensure(self) -> BridgePaths:
         self.directory.mkdir(parents=True, exist_ok=True)
         return self
+
+    @property
+    def game_directory(self) -> Path:
+        """Repertoire de travail du jeu, ou le Lua ecrit ses journaux."""
+        return self.directory.parent
+
+    def latest_script_log(self) -> Path | None:
+        """Journal de script le plus recent produit par le jeu.
+
+        Le jeu ecrit `script_log_<date>.txt` dans son repertoire de travail.
+        C'est la seule fenetre sur ce que fait le Lua tant que l'echange par
+        fichiers n'est pas etabli — et le canal de repli s'il ne l'est jamais.
+        """
+        logs = sorted(
+            self.game_directory.glob("script_log_*.txt"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        return logs[0] if logs else None
