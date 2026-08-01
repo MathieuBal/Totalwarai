@@ -317,30 +317,43 @@ def _confirm_movement(
     unit_id: str,
     origin: Vector3,
     *,
-    timeout: float = 12.0,
+    timeout: float = 25.0,
     threshold: float = 2.0,
+    still_for: int = 3,
 ) -> int:
-    """Verifie que l'unite a **reellement** bouge, et de combien.
+    """Mesure le deplacement **total** de l'unite apres un ordre.
 
     Un accuse dit que l'ordre a ete lance, pas qu'il a produit un deplacement.
     Vingt metres sur une carte de bataille passent inapercus a l'oeil nu : sans
     cette mesure, il faut croire la camera plutot que le jeu.
+
+    On attend que l'unite se soit **arretee** — `still_for` etats consecutifs
+    sans bouger — avant de conclure. Rendre le premier mouvement detecte
+    annoncerait « 2,7 m » pour un trajet de 150 m, ce qui est pire que se taire.
     """
     print("Verification du deplacement...")
     deadline = time.monotonic() + timeout
     dernier = origin
+    immobile = 0
     while time.monotonic() < deadline:
         for state in bridge.read_states():
             if state.unit_id != unit_id:
                 continue
+            pas = dernier.distance_2d(state.position)
             dernier = state.position
-            parcouru = origin.distance_2d(dernier)
-            if parcouru >= threshold:
-                print(f"Deplacement constate : {parcouru:.1f} m.")
-                return 0
+            immobile = immobile + 1 if pas < 0.5 else 0
+        parcouru = origin.distance_2d(dernier)
+        if parcouru >= threshold and immobile >= still_for:
+            print(f"Deplacement constate : {parcouru:.1f} m.")
+            return 0
         time.sleep(0.5)
 
     parcouru = origin.distance_2d(dernier)
+    if parcouru >= threshold:
+        # L'unite bougeait encore quand le delai a expire : c'est un succes,
+        # simplement pas encore termine.
+        print(f"Deplacement constate : {parcouru:.1f} m (unite encore en mouvement).")
+        return 0
     print(
         f"Aucun deplacement constate ({parcouru:.1f} m en {timeout:.0f} s). "
         "L'ordre a ete accepte mais n'a rien produit : unite dans un groupe "

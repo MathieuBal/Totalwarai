@@ -542,3 +542,28 @@ def test_le_cli_signale_une_unite_qui_n_a_pas_bouge(probe: Probe, workdir: Path)
     # Aucun ordre envoye : l'unite reste ou elle est.
     probe.advance(2000)
     assert _confirm_movement(bridge, etat.unit_id, etat.position, timeout=1.0) == 1
+
+
+def test_le_cli_mesure_le_deplacement_total_pas_le_premier_pas(
+    probe: Probe, workdir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Rendre le premier mouvement detecte annoncerait 2,7 m pour 150 m parcourus.
+
+    Defaut constate en bataille : l'unite avait bien fait ses 150 metres, mais
+    le CLI s'arretait au premier etat depassant le seuil.
+    """
+    from totalwar_ai.cli import _confirm_movement
+
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+    etat = bridge.wait_for_state(timeout=0, sleep=lambda _: None)
+    assert etat is not None
+
+    bridge.move_unit(etat.unit_id, Vector3(etat.position.x + 150.0, 0.0, etat.position.z))
+    probe.advance(1000)  # execution de l'ordre
+    for _ in range(5):  # plusieurs etats a la position d'arrivee
+        probe.advance(1000)
+
+    assert _confirm_movement(bridge, etat.unit_id, etat.position, timeout=4.0) == 0
+    sortie = capsys.readouterr().out
+    assert "150.0 m" in sortie, sortie

@@ -252,6 +252,13 @@ class FileBridge:
     def _read_new_lines(self, path: Path, stream: str) -> Iterator[dict[str, Any]]:
         """Lit les lignes ajoutees depuis la derniere lecture de ce flux.
 
+        **Lecture binaire, deliberement.** Le Lua du jeu ouvre ses fichiers en
+        mode texte : sous Windows, il ecrit donc `\\r\\n`. En mode texte Python
+        traduit cette paire en un seul `\\n`, et compter les octets de la chaine
+        obtenue en sous-estime un par ligne. L'offset derivait ainsi d'un octet
+        par etat publie, jusqu'a relire des fragments de lignes — constate en
+        bataille apres 157 etats. En binaire, les offsets sont ceux du fichier.
+
         Une ligne incomplete — le Lua ecrivait encore — n'est pas consommee :
         l'offset ne progresse que sur les lignes terminees par un saut de ligne,
         de sorte que la prochaine lecture la reprendra entiere.
@@ -259,16 +266,16 @@ class FileBridge:
         if not path.exists():
             return
         offset = self._state_offset if stream == "state" else self._ack_offset
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
+        with path.open("rb") as handle:
             handle.seek(offset)
             consumed = offset
             number = 0
             for raw_line in handle:
                 number += 1
-                if not raw_line.endswith("\n"):
+                if not raw_line.endswith(b"\n"):
                     break  # ligne encore en cours d'ecriture cote Lua
-                consumed += len(raw_line.encode("utf-8"))
-                line = raw_line.strip()
+                consumed += len(raw_line)
+                line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
                 try:
