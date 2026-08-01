@@ -91,7 +91,7 @@ Le cœur Python est implémenté et testable sans lancer *WARHAMMER III* :
 - protocole de pont versionné et `MockBridge` ;
 - agent tactique déterministe : classification, groupes, plan, ciblage ;
 - règles de sécurité et arrêt d’urgence ;
-- simulateur tactique déterministe et cinq scénarios reproductibles ;
+- simulateur tactique déterministe et dix scénarios reproductibles ;
 - journal d’événements, rapport post-bataille, mémoire SQLite persistante ;
 - adaptation bornée de la doctrine d’après l’historique, avec checkpoints ;
 - banc des dix scénarios de référence et détection automatique de régressions ;
