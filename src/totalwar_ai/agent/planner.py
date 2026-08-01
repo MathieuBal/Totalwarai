@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from totalwar_ai.agent.explainability import Decision, decide
@@ -55,7 +55,7 @@ TARGET_PRIORITY: dict[UnitRole, float] = {
 DEFAULT_MISSILE_RANGE = 120.0
 
 
-class Posture(str, Enum):
+class Posture(StrEnum):
     """Intention generale de la bataille."""
 
     DEFEND = "defend"
@@ -611,9 +611,7 @@ class Planner:
                 if enemy.role in RANGED_ROLES and not enemy.is_routing and not enemy.is_engaged
             ]
             if juicy and plan.posture is not Posture.DELAY:
-                target = self.select_target(
-                    rider, state, assignments=assignments, candidates=juicy
-                )
+                target = self.select_target(rider, state, assignments=assignments, candidates=juicy)
                 if target is not None:
                     assignments[target.id] = assignments.get(target.id, 0) + 1
                     decisions.append(
@@ -633,9 +631,7 @@ class Planner:
 
             routing = [enemy for enemy in enemies if enemy.is_routing]
             if routing and plan.power_ratio >= self.settings.pursuit_power_ratio:
-                target = min(
-                    routing, key=lambda enemy: rider.position.distance_2d(enemy.position)
-                )
+                target = min(routing, key=lambda enemy: rider.position.distance_2d(enemy.position))
                 decisions.append(
                     decide(
                         AgentAction(
@@ -806,12 +802,8 @@ def _line_anchor(state: BattleState, allies: Sequence[UnitState]) -> Vector3:
 
 def _missile_edge(state: BattleState) -> float:
     """Rapport de puissance de tir allie / ennemi (10.0 si l'ennemi n'en a pas)."""
-    ours = sum(
-        unit.effective_strength for unit in state.allies() if unit.role in RANGED_ROLES
-    )
-    theirs = sum(
-        unit.effective_strength for unit in state.enemies() if unit.role in RANGED_ROLES
-    )
+    ours = sum(unit.effective_strength for unit in state.allies() if unit.role in RANGED_ROLES)
+    theirs = sum(unit.effective_strength for unit in state.enemies() if unit.role in RANGED_ROLES)
     if theirs <= 1e-6:
         return 10.0 if ours > 0 else 1.0
     return ours / theirs

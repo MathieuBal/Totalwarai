@@ -28,18 +28,22 @@ class ClassificationRule:
     key_contains: tuple[str, ...] = ()
 
     def matches(self, tags: frozenset[str], key: str) -> bool:
-        """Tous les matcheurs renseignes doivent etre satisfaits."""
-        if not (self.tags_all or self.tags_any or self.tags_none or self.key_contains):
+        """Tous les matcheurs renseignes doivent etre satisfaits.
+
+        Une regle sans aucun matcheur ne correspond jamais : elle attraperait
+        toutes les unites et masquerait les regles suivantes.
+        """
+        declared = bool(self.tags_all or self.tags_any or self.tags_none or self.key_contains)
+        if not declared:
             return False
-        if self.tags_all and not self.tags_all.issubset(tags):
-            return False
-        if self.tags_any and tags.isdisjoint(self.tags_any):
-            return False
-        if self.tags_none and not tags.isdisjoint(self.tags_none):
-            return False
-        if self.key_contains and not any(fragment in key for fragment in self.key_contains):
-            return False
-        return True
+        return all(
+            (
+                not self.tags_all or self.tags_all.issubset(tags),
+                not self.tags_any or not tags.isdisjoint(self.tags_any),
+                not self.tags_none or tags.isdisjoint(self.tags_none),
+                not self.key_contains or any(fragment in key for fragment in self.key_contains),
+            )
+        )
 
     @classmethod
     def from_dict(cls, raw: Any) -> ClassificationRule:

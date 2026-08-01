@@ -90,9 +90,7 @@ class SafetyRule(ABC):
     name: str = "regle"
 
     @abstractmethod
-    def check(
-        self, action: AgentAction, state: BattleState, rear: Vector3
-    ) -> SafetyVerdict | None:
+    def check(self, action: AgentAction, state: BattleState, rear: Vector3) -> SafetyVerdict | None:
         """Renvoie un verdict si l'action doit etre refusee, sinon `None`."""
 
     # Aides communes aux regles concretes.
@@ -337,8 +335,13 @@ class SafetyEngine:
         self.emergency_stop = False
 
     def reset(self) -> None:
+        """Reinitialise le compteur d'ordres entre deux batailles.
+
+        L'arret d'urgence n'est deliberement PAS leve ici : c'est une decision
+        du joueur, elle ne doit pas disparaitre parce qu'une nouvelle bataille
+        commence. Seul :meth:`release_emergency_stop` la lève.
+        """
         self._order_times.clear()
-        self.emergency_stop = False
 
     # --- filtrage ------------------------------------------------------------
 
@@ -357,11 +360,13 @@ class SafetyEngine:
         l'agent a ecarte les ordres redondants.
         """
         if self.emergency_stop:
-            blocked = tuple(
-                _blocked(decision, "arret_d_urgence", "arret d'urgence actif")
-                for decision in decisions
+            return SafetyOutcome(
+                allowed=(),
+                blocked=tuple(
+                    _blocked(decision, "arret_d_urgence", "arret d'urgence actif")
+                    for decision in decisions
+                ),
             )
-            return SafetyOutcome(allowed=(), blocked=blocked)
 
         fallback_rear = rear if rear is not None else _default_rear(state)
         allowed: list[Decision] = []

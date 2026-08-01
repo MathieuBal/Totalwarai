@@ -130,7 +130,7 @@ def as_enum(
     except ValueError:
         if default is not None:
             return default
-        allowed = ", ".join(sorted(member.value for member in enum_type))  # type: ignore[misc]
+        allowed = ", ".join(sorted(str(member.value) for member in enum_type))
         raise SchemaError(f"Valeur '{raw}' invalide pour '{key}' (attendu : {allowed})") from None
 
 

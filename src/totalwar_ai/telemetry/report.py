@@ -10,12 +10,17 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from totalwar_ai.agent.explainability import Decision, describe_action
 from totalwar_ai.domain.battle_state import BattleOutcomeKind
 from totalwar_ai.learning.rewards import RewardBreakdown
-from totalwar_ai.memory.models import BattleSummary
 from totalwar_ai.telemetry.events import Event, EventType
+
+if TYPE_CHECKING:
+    # `memory` importe `telemetry.events` : garder cet import au niveau des
+    # annotations evite un cycle a l'import du paquet.
+    from totalwar_ai.memory.models import BattleSummary
 
 #: Evenements repris dans la chronologie du rapport.
 TIMELINE_EVENTS: tuple[EventType, ...] = (
@@ -109,8 +114,7 @@ def _action_summary(decisions: Sequence[Decision]) -> list[str]:
         counts[key] = counts.get(key, 0) + 1
     lines = [f"{len(decisions)} ordres emis :", ""]
     lines.extend(
-        f"- `{name}` : {count}"
-        for name, count in sorted(counts.items(), key=lambda item: -item[1])
+        f"- `{name}` : {count}" for name, count in sorted(counts.items(), key=lambda item: -item[1])
     )
     return lines
 

@@ -101,7 +101,11 @@ class DeterministicTacticalAgent:
     # --- cycle de vie --------------------------------------------------------
 
     def reset(self, battle_id: str | None = None) -> None:
-        """Prepare l'agent pour une nouvelle bataille."""
+        """Prepare l'agent pour une nouvelle bataille.
+
+        Un arret d'urgence en cours survit a cette reinitialisation : reprendre
+        la main est une decision du joueur, pas un effet de bord du cycle de vie.
+        """
         self.battle_id = battle_id
         self.plan = None
         self._last_decision_time = None

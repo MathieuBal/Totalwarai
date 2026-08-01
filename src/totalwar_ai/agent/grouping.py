@@ -8,14 +8,14 @@ recalcules a chaque plan, car les pertes changent la composition.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from totalwar_ai.domain.battle_state import BattleState
 from totalwar_ai.domain.geometry import Vector3, centroid
 from totalwar_ai.domain.unit_state import Side, UnitRole, UnitState
 
 
-class GroupKind(str, Enum):
+class GroupKind(StrEnum):
     """Fonction tactique d'un groupe."""
 
     FRONT_LINE = "front_line"

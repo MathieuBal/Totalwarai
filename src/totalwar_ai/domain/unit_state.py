@@ -7,10 +7,10 @@ jeu : le mod Lua (ou le simulateur) produit ce format stable, et lui seul.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
-from totalwar_ai.domain.geometry import Vector3
+from totalwar_ai.domain.geometry import ORIGIN, Vector3
 from totalwar_ai.domain.serialization import (
     SchemaError,
     as_bool,
@@ -24,7 +24,7 @@ from totalwar_ai.domain.serialization import (
 )
 
 
-class Side(str, Enum):
+class Side(StrEnum):
     """Camp d'une unite du point de vue de l'agent."""
 
     ALLY = "ally"
@@ -35,7 +35,7 @@ class Side(str, Enum):
         return Side.ENEMY if self is Side.ALLY else Side.ALLY
 
 
-class UnitRole(str, Enum):
+class UnitRole(StrEnum):
     """Taxonomie interne des roles (voir README).
 
     Volontairement generique : aucune unite precise du jeu n'y figure. La
@@ -91,7 +91,7 @@ class UnitState:
     id: str
     side: Side
     role: UnitRole = UnitRole.UNKNOWN
-    position: Vector3 = Vector3()
+    position: Vector3 = ORIGIN
     heading: float = 0.0
     health_ratio: float = 1.0
     entity_ratio: float = 1.0
@@ -138,7 +138,9 @@ class UnitState:
 
     @property
     def can_shoot(self) -> bool:
-        return self.is_ranged and self.ammo_ratio > 0.0 and not self.is_engaged and self.is_available
+        return (
+            self.is_ranged and self.ammo_ratio > 0.0 and not self.is_engaged and self.is_available
+        )
 
     @property
     def effective_strength(self) -> float:

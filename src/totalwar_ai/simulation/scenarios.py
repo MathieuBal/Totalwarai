@@ -91,7 +91,9 @@ def balanced_clash() -> Scenario:
         *_line(Side.ALLY, UnitRole.MELEE_INFANTRY, 3, -60.0, prefix="a_inf", tags=("melee",)),
         _unit("a_spear1", Side.ALLY, UnitRole.SPEAR_INFANTRY, 70.0, -60.0, tags=("spear",)),
         *_line(Side.ALLY, UnitRole.RANGED_INFANTRY, 2, -95.0, prefix="a_arc", tags=("missile",)),
-        _unit("a_cav1", Side.ALLY, UnitRole.SHOCK_CAVALRY, -110.0, -80.0, tags=("cavalry", "shock")),
+        _unit(
+            "a_cav1", Side.ALLY, UnitRole.SHOCK_CAVALRY, -110.0, -80.0, tags=("cavalry", "shock")
+        ),
         _unit("a_lord1", Side.ALLY, UnitRole.LORD, 0.0, -110.0, tags=("lord",)),
         *_line(Side.ENEMY, UnitRole.MELEE_INFANTRY, 3, 60.0, prefix="e_inf", tags=("melee",)),
         _unit("e_spear1", Side.ENEMY, UnitRole.SPEAR_INFANTRY, -70.0, 60.0, tags=("spear",)),
@@ -132,7 +134,9 @@ def cavalry_flank_threat() -> Scenario:
         *_line(Side.ALLY, UnitRole.RANGED_INFANTRY, 2, -100.0, prefix="a_arc", tags=("missile",)),
         _unit("a_cav1", Side.ALLY, UnitRole.LIGHT_CAVALRY, 90.0, -90.0, tags=("cavalry",)),
         *_line(Side.ENEMY, UnitRole.MELEE_INFANTRY, 2, 70.0, prefix="e_inf", tags=("melee",)),
-        _unit("e_cav1", Side.ENEMY, UnitRole.SHOCK_CAVALRY, -120.0, -20.0, tags=("cavalry", "shock")),
+        _unit(
+            "e_cav1", Side.ENEMY, UnitRole.SHOCK_CAVALRY, -120.0, -20.0, tags=("cavalry", "shock")
+        ),
         _unit("e_cav2", Side.ENEMY, UnitRole.LIGHT_CAVALRY, -140.0, 10.0, tags=("cavalry",)),
     ]
     return Scenario(
@@ -170,7 +174,9 @@ def outnumbered() -> Scenario:
         _unit("a_arc1", Side.ALLY, UnitRole.RANGED_INFANTRY, 0.0, -100.0, tags=("missile",)),
         _unit("a_lord1", Side.ALLY, UnitRole.LORD, 0.0, -120.0, tags=("lord",)),
         *_line(Side.ENEMY, UnitRole.MELEE_INFANTRY, 5, 80.0, prefix="e_inf", tags=("melee",)),
-        _unit("e_cav1", Side.ENEMY, UnitRole.SHOCK_CAVALRY, -130.0, 60.0, tags=("cavalry", "shock")),
+        _unit(
+            "e_cav1", Side.ENEMY, UnitRole.SHOCK_CAVALRY, -130.0, 60.0, tags=("cavalry", "shock")
+        ),
     ]
     return Scenario(
         name="outnumbered",

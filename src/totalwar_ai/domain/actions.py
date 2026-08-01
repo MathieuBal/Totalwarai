@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Any
 
 from totalwar_ai.domain.geometry import Vector3
@@ -25,7 +25,7 @@ from totalwar_ai.domain.serialization import (
 )
 
 
-class ActionType(str, Enum):
+class ActionType(StrEnum):
     """Actions haut niveau reconnues par le protocole (voir README)."""
 
     HOLD_POSITION = "HOLD_POSITION"
@@ -41,7 +41,7 @@ class ActionType(str, Enum):
     REORIENT_FRONT = "REORIENT_FRONT"
 
 
-class Formation(str, Enum):
+class Formation(StrEnum):
     """Formations demandables lors d'un deplacement de groupe."""
 
     LINE = "line"
@@ -50,7 +50,7 @@ class Formation(str, Enum):
     WEDGE = "wedge"
 
 
-class ActionStatus(str, Enum):
+class ActionStatus(StrEnum):
     """Sort d'une action une fois soumise."""
 
     ACCEPTED = "accepted"

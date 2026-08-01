@@ -14,7 +14,7 @@ import math
 import random
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from totalwar_ai.domain.actions import ActionResult, ActionStatus, ActionType, AgentAction
@@ -33,7 +33,7 @@ from totalwar_ai.telemetry.events import Event, EventType, unit_event
 AMMO_DURATION = 45.0
 
 
-class OrderKind(str, Enum):
+class OrderKind(StrEnum):
     """Ordre effectivement porte par une unite du simulateur."""
 
     HOLD = "hold"
@@ -271,7 +271,9 @@ class SimulationEnvironment:
                 return "destination manquante"
             heading = _float(parameters.get("heading"))
             spacing = _float(parameters.get("spacing")) or 0.0
-            for unit, slot in zip(actors, _slots(actors, destination, heading, spacing), strict=True):
+            for unit, slot in zip(
+                actors, _slots(actors, destination, heading, spacing), strict=True
+            ):
                 unit.order = Order(
                     kind=OrderKind.MOVE,
                     destination=slot,
@@ -340,7 +342,11 @@ class SimulationEnvironment:
         if action.type is ActionType.PROTECT:
             protected_ids = parameters.get("protected_ids") or []
             protege = next(
-                (self.units[uid] for uid in protected_ids if uid in self.units and not self.units[uid].dead),
+                (
+                    self.units[uid]
+                    for uid in protected_ids
+                    if uid in self.units and not self.units[uid].dead
+                ),
                 None,
             )
             if protege is None:
@@ -375,7 +381,9 @@ class SimulationEnvironment:
                 )
             return None
 
-        return f"action non supportee par le simulateur : {action.type.value}"
+        # Toutes les valeurs d'ActionType sont traitees ci-dessus ; ce retour ne
+        # sert que si une action est ajoutee au protocole sans etre implementee ici.
+        return f"action non supportee par le simulateur : {action.type.value}"  # type: ignore[unreachable]
 
     # --- pas de simulation ---------------------------------------------------
 
@@ -423,7 +431,11 @@ class SimulationEnvironment:
                     preferred = exposed
             target = min(preferred, key=lambda ally: unit.position.distance_2d(ally.position))
             distance = unit.position.distance_2d(target.position)
-            if unit.template.is_ranged and unit.ammo > 0 and distance <= unit.template.missile_range:
+            if (
+                unit.template.is_ranged
+                and unit.ammo > 0
+                and distance <= unit.template.missile_range
+            ):
                 unit.order = Order(kind=OrderKind.FIRE, target_id=target.id)
             else:
                 unit.order = Order(kind=OrderKind.ATTACK, target_id=target.id)
@@ -609,7 +621,9 @@ class SimulationEnvironment:
             if unit.dead:
                 continue
             if not unit.is_engaged and unit.order.kind in (OrderKind.HOLD, OrderKind.FIRE):
-                unit.fatigue = max(0.0, unit.fatigue - self.rules.fatigue_recovery_per_second * delta)
+                unit.fatigue = max(
+                    0.0, unit.fatigue - self.rules.fatigue_recovery_per_second * delta
+                )
                 unit.morale = min(
                     unit.max_morale, unit.morale + self.rules.morale_recovery_per_second * delta
                 )

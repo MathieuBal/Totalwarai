@@ -164,7 +164,8 @@ class MemoryRepository:
             connection.executemany(
                 """
                 INSERT INTO transitions (
-                    battle_id, sequence, game_time, state, action, reward, next_state, done, metadata
+                    battle_id, sequence, game_time, state, action,
+                    reward, next_state, done, metadata
                 ) VALUES (?,?,?,?,?,?,?,?,?)
                 """,
                 [
@@ -334,7 +335,7 @@ def _transition_from_row(row: sqlite3.Row) -> Transition:
 
 def save_events(repository: MemoryRepository, battle_id: str, events: Iterable[Event]) -> None:
     """Ajoute des evenements a une bataille deja enregistree."""
-    with repository._transaction() as connection:  # noqa: SLF001 - API interne assumee
+    with repository._transaction() as connection:
         connection.executemany(
             "INSERT INTO events (battle_id, game_time, type, payload) VALUES (?,?,?,?)",
             [

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from functools import cached_property
 from typing import Any
 
@@ -26,7 +26,7 @@ from totalwar_ai.domain.serialization import (
 from totalwar_ai.domain.unit_state import Side, UnitRole, UnitState
 
 
-class BattlePhase(str, Enum):
+class BattlePhase(StrEnum):
     """Phase tactique courante, telle qu'observee ou deduite."""
 
     DEPLOYMENT = "deployment"
@@ -36,7 +36,7 @@ class BattlePhase(str, Enum):
     FINISHED = "finished"
 
 
-class BattleOutcomeKind(str, Enum):
+class BattleOutcomeKind(StrEnum):
     """Issue d'une bataille."""
 
     VICTORY = "victory"
@@ -171,7 +171,9 @@ class BattleState:
             return False
         return bool(self.threats_to(unit, radius * 1.5))
 
-    def is_flanked_by(self, unit: UnitState, attacker: UnitState, arc_degrees: float = 100.0) -> bool:
+    def is_flanked_by(
+        self, unit: UnitState, attacker: UnitState, arc_degrees: float = 100.0
+    ) -> bool:
         """Vrai si `attacker` frappe `unit` par le flanc ou le dos."""
         return is_in_rear_arc(unit.position, unit.heading, attacker.position, arc_degrees)
 

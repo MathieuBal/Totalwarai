@@ -59,7 +59,9 @@ class UnitTemplate:
 
 def _as_dict(template: UnitTemplate) -> dict[str, Any]:
     return {
-        field.name: getattr(template, field.name) for field in fields(template) if field.name != "role"
+        field.name: getattr(template, field.name)
+        for field in fields(template)
+        if field.name != "role"
     }
 
 

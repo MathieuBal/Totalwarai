@@ -118,7 +118,9 @@ class BattleLogger:
     def plan_selected(self, game_time: float, plan: dict[str, Any]) -> None:
         self.log(EventType.PLAN_SELECTED, game_time, **plan)
 
-    def decisions(self, game_time: float, allowed: Sequence[Decision], blocked: Sequence[Decision]) -> None:
+    def decisions(
+        self, game_time: float, allowed: Sequence[Decision], blocked: Sequence[Decision]
+    ) -> None:
         """Journalise les ordres proposes, envoyes et refuses."""
         for decision in allowed:
             payload = {

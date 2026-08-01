@@ -131,7 +131,9 @@ def is_in_rear_arc(position: Vector3, heading: float, other: Vector3, arc_degree
     return angle_between(rear, to_other) <= math.radians(arc_degrees) / 2.0
 
 
-def spread_positions(center: Vector3, direction: Vector3, count: int, spacing: float) -> list[Vector3]:
+def spread_positions(
+    center: Vector3, direction: Vector3, count: int, spacing: float
+) -> list[Vector3]:
     """Repartit `count` positions le long d'une ligne centree sur `center`.
 
     `direction` donne l'axe de la ligne (typiquement perpendiculaire au front).

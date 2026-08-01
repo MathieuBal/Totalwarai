@@ -8,7 +8,7 @@ et mineur sont identiques. Un correctif (patch) ne doit jamais casser le format.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from totalwar_ai.domain.actions import ActionResult, AgentAction
@@ -23,7 +23,7 @@ from totalwar_ai.domain.serialization import (
 PROTOCOL_VERSION = "0.1.0"
 
 
-class MessageType(str, Enum):
+class MessageType(StrEnum):
     """Types de messages transportes par le pont."""
 
     BATTLE_STATE = "battle_state"
@@ -31,7 +31,7 @@ class MessageType(str, Enum):
     ACTION_RESULT = "action_result"
 
 
-class IncompatibleProtocolVersion(SchemaError):
+class IncompatibleProtocolVersionError(SchemaError):
     """Le message provient d'une version de protocole non supportee."""
 
 
@@ -53,9 +53,9 @@ def is_compatible(version: str, reference: str = PROTOCOL_VERSION) -> bool:
 
 
 def check_version(version: str, reference: str = PROTOCOL_VERSION) -> None:
-    """Leve :class:`IncompatibleProtocolVersion` si les versions divergent."""
+    """Leve :class:`IncompatibleProtocolVersionError` si les versions divergent."""
     if not is_compatible(version, reference):
-        raise IncompatibleProtocolVersion(
+        raise IncompatibleProtocolVersionError(
             f"Version de protocole {version} incompatible avec {reference}"
         )
 

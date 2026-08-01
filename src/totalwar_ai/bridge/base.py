@@ -36,7 +36,12 @@ class Bridge(ABC):
         """Recupere les accuses d'execution disponibles."""
 
     def close(self) -> None:
-        """Libere les ressources. Sans effet par defaut."""
+        """Libere les ressources.
+
+        Volontairement non abstraite : un pont sans ressource a liberer n'a rien
+        a implementer.
+        """
+        return None
 
     def __enter__(self) -> Bridge:
         return self

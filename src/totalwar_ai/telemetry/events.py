@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Any
 
 from totalwar_ai.domain.unit_state import Side, UnitRole
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """Types d'evenements journalisables.
 
     Les quinze premiers sont ceux listes dans le README ; les suivants decrivent
