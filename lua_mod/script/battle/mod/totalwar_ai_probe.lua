@@ -27,6 +27,19 @@
         - une commande deja traitee n'est jamais rejouee.
 ------------------------------------------------------------------------------]]
 
+-- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
+-- le fichier est charge, quel que soit le contexte (frontend, campagne,
+-- bataille) et quoi qu'il advienne ensuite. Son absence signifie que le jeu
+-- n'a pas trouve le fichier — pas que la sonde a echoue.
+out("[totalwar_ai] === fichier charge (sonde v0.1.0) ===")
+
+-- Le meme fichier peut etre place a deux emplacements dans le pack, par
+-- prudence. Sans cette garde, il tournerait en double.
+if totalwar_ai_probe_loaded then
+    out("[totalwar_ai] deja charge : second exemplaire ignore")
+    return totalwar_ai_probe_loaded
+end
+
 local PROBE = {
     protocol_version = "0.1.0",
     mod_key = "totalwar_ai_probe",
@@ -489,11 +502,16 @@ function PROBE:start()
     end)
 end
 
--- `bm` est le battle_manager cree par le jeu ; sans lui, rien a faire ici.
+totalwar_ai_probe_loaded = PROBE
+
+-- `bm` est le battle_manager, cree par le jeu en contexte de bataille
+-- uniquement. Ce fichier peut aussi etre charge depuis le menu principal ou la
+-- carte de campagne : il n'y a alors rien a faire, et c'est normal.
 if bm then
+    out("[totalwar_ai] contexte de bataille detecte : demarrage dans 1 seconde")
     bm:callback(function() PROBE:start() end, 1000, "totalwar_ai_start")
 else
-    out("[totalwar_ai] battle_manager absent : sonde non demarree")
+    out("[totalwar_ai] pas de battle_manager : hors bataille, sonde en veille")
 end
 
 return PROBE

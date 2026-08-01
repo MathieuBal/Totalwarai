@@ -1,17 +1,15 @@
 # Faisabilité de l'intégration au jeu (Phase 0)
 
-> **Statut : prototype écrit, non essayé en bataille.**
+> **Statut : premier essai en bataille effectué le 01/08/2026. Le script n'a
+> pas été chargé par le jeu.**
 >
-> La sonde `lua_mod/script/battle/mod/totalwar_ai_probe.lua` et le pont Python
-> `src/totalwar_ai/bridge/file_bridge.py` sont terminés et testés **entre eux**.
-> Rien n'a été exécuté dans *Total War: WARHAMMER III* : l'environnement de
-> développement de ce dépôt est un conteneur Linux sans le jeu.
+> L'essai n'a donc validé aucune API de contrôle, mais il a produit des
+> informations réelles sur l'environnement de bataille, consignées ci-dessous.
+> Il a aussi révélé un défaut de la sonde elle-même — elle n'émettait aucune
+> preuve de chargement — désormais corrigé.
 >
-> En conséquence, **tout ce tableau est en « non testée »** pour la colonne
-> « en bataille ». Un comportement validé côté Python n'est pas un comportement
-> validé : la section [Protocole d'essai](#protocole-dessai) indique quoi faire
-> pour remplir ces cases, et [Résultats](#résultats-de-lessai-en-bataille) où
-> les consigner.
+> Tant que la section [Résultats](#résultats-de-lessai-en-bataille) reste
+> incomplète, aucun comportement en jeu ne doit être présenté comme fonctionnel.
 
 ## Légende
 
@@ -24,15 +22,16 @@
 
 ## Environnement testé
 
-À renseigner lors de l'essai :
+Relevé lors de l'essai du 01/08/2026 (`script_log_010826_2114.txt`) :
 
 | Élément | Valeur observée |
 | --- | --- |
-| Version du jeu | |
-| Système d'exploitation | |
-| Autres mods actifs | |
-| Type de bataille (campagne, escarmouche) | |
-| Date de l'essai | |
+| Version de Lua | **5.1** (confirmé : `Lua version is Lua 5.1`) |
+| Système d'exploitation | Windows (chemins `D:\SteamLibrary\…`) |
+| Script de bataille | aucun défini, script par défaut chargé (`script\battle\default_battle\battle_start.lua`) |
+| Type de bataille | bataille sans script dédié, avec « Battle Fundamentals scripted tour » actif |
+| Mods chargés | `script\_lib\mod\qa_console.lua`, `script\_lib\mod\test_script_here.lua` — **aucun mod utilisateur** |
+| Unités présentes | 22 `script_unit` : alliance 1 armée 1 = 11 unités (joueur), alliance 2 armée 1 = 11 unités |
 
 ## Observation — ce que le Lua expose
 
@@ -40,15 +39,25 @@ Colonne « attendu » : ce que la lecture d'un mod tiers laisse espérer
 (voir [`research/ai-general-3-findings.md`](research/ai-general-3-findings.md)).
 Colonne « en bataille » : ce que nous avons constaté nous-mêmes.
 
+Le journal de l'essai contient les traces du système de visite guidée de
+Creative Assembly, qui affiche identifiant, type et position de chaque unité.
+Ce n'est pas notre code qui les a produites, mais cela **confirme que ces
+données existent et sont lisibles par un script de bataille** :
+
+```text
+1: 1006 of type wh3_main_nur_inf_plaguebearers_1 at position [25.6, 21.0, -303.4]
+```
+
 | Donnée | API pressentie | Attendu | En bataille |
 | --- | --- | --- | --- |
-| liste des unités alliées | `alliance:armies():item():units()` | accessible | **non testée** |
-| identifiant stable | `unit:unique_ui_id()` | accessible | **non testée** |
-| clé d'unité | `unit:type()` | accessible | **non testée** |
-| position (x, y, z) | `unit:position():get_x()` … | accessible | **non testée** |
+| liste des unités alliées | `alliance:armies():item():units()` | accessible | **partiellement accessible** — le jeu recense bien 11 unités alliées, non vérifié par notre code |
+| identifiant stable | `unit:unique_ui_id()` | accessible | **partiellement accessible** — identifiants numériques visibles (1003, 1005, 1006…) |
+| clé d'unité | `unit:type()` | accessible | **partiellement accessible** — `wh3_main_nur_inf_plaguebearers_1` visible dans le journal |
+| position (x, y, z) | `unit:position():get_x()` … | accessible | **partiellement accessible** — triplets `[x, y, z]` visibles, y = altitude non nulle (21 à 33) |
 | unité contrôlable | `unit:is_controllable()` | accessible | **non testée** |
 | unité vivante | `unit:is_valid_target()` | accessible | **non testée** |
 | temps de jeu | `bm:time_elapsed_ms()` | accessible | **non testée** |
+| phases de bataille | `bm:register_phase_change_callback` | accessible | **accessible** — `Startup`, `PrebattleWeather`, `PrebattleCinematic`, `Deployment`, `Deployed` observées dans le journal |
 | cap / orientation | `unit:bearing()` | probable | **non testée** |
 | munitions | `unit:ammo_left()` | probable | **non testée** |
 | portée de tir | `unit:missile_range()` | probable | **non testée** |
@@ -98,9 +107,23 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
 ### Préparation
 
 1. Empaqueter `lua_mod/script/battle/mod/totalwar_ai_probe.lua` dans un `.pack`
-   de type *mod* (RPFM), en conservant le chemin interne
-   `script/battle/mod/totalwar_ai_probe.lua`.
-2. Le déposer dans `<installation>/data/` et l'activer.
+   de type *mod* (RPFM). **Placer le fichier aux deux emplacements suivants**,
+   pour lever l'ambiguïté constatée au premier essai :
+
+   ```text
+   script/_lib/mod/totalwar_ai_probe.lua      <- emplacement prouvé chargé
+   script/battle/mod/totalwar_ai_probe.lua    <- emplacement à confirmer
+   ```
+
+   Le script se protège contre le double chargement : le second exemplaire
+   rencontré s'annonce puis s'arrête. Aucun risque à mettre les deux.
+
+   Aucun dossier ne doit précéder `script` dans l'arborescence du pack. Le
+   fichier doit garder l'extension `.lua`, pas `.lua.txt`.
+
+2. Le déposer dans `<installation>/data/` et l'activer dans le gestionnaire de
+   mods. Fermer complètement le jeu et son launcher avant toute modification du
+   `.pack`.
 3. Créer le dossier `<installation>/totalwar_ai/`.
 4. Côté Python :
 
@@ -145,7 +168,9 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
 
 | Symptôme | Piste |
 | --- | --- |
-| aucune ligne `[totalwar_ai]` dans le journal | le `.pack` n'est pas chargé, ou le chemin interne est faux |
+| aucune ligne `=== fichier charge ===` dans le journal | le jeu ne trouve pas le fichier. Vérifier : pack activé, aucun dossier avant `script` dans l'arborescence, extension `.lua` et non `.lua.txt`, pack modifié jeu fermé |
+| `fichier charge` présent, mais `pas de battle_manager` | le fichier est bien chargé mais hors bataille (menu, campagne). Normal : relancer une bataille |
+| `fichier charge` présent, puis plus rien | la sonde est chargée mais `start()` échoue. Chercher une erreur de script juste après |
 | `ECRITURE INDISPONIBLE` | c'est le résultat attendu du risque principal : consigner le message d'erreur exact, et basculer sur le repli par journal |
 | `multijoueur ou type de partie inconnu` | garde-fou volontaire ; vérifier qu'il s'agit bien d'une bataille solo |
 | aucun état reçu côté Python | comparer le dossier affiché par `probe --status` et celui où le jeu écrit réellement |
@@ -153,25 +178,63 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
 
 ## Résultats de l'essai en bataille
 
-*Section à remplir après le premier essai réel. Tant qu'elle est vide, aucun
-comportement en jeu ne doit être présenté comme fonctionnel, où que ce soit dans
-ce dépôt.*
+### Essai n° 1 — 01/08/2026
 
 | Critère du ticket | Résultat | Notes |
 | --- | --- | --- |
-| le script Lua est chargé par le jeu | **non testé** | |
-| une unité réelle est détectée | **non testé** | |
-| sa position est transmise à Python | **non testé** | |
-| une commande Python est lue par Lua | **non testé** | |
-| l'unité se déplace réellement | **non testé** | |
-| un accusé est reçu par Python | **non testé** | |
-| la commande ne peut pas être exécutée deux fois | **non testé** | |
-| le joueur récupère le contrôle | **non testé** | |
+| le script Lua est chargé par le jeu | **échec** | aucune ligne `[totalwar_ai]` dans le journal |
+| une unité réelle est détectée | **non testé** | bloqué par le point précédent |
+| sa position est transmise à Python | **non testé** | idem |
+| une commande Python est lue par Lua | **non testé** | idem |
+| l'unité se déplace réellement | **non testé** | idem |
+| un accusé est reçu par Python | **non testé** | idem |
+| la commande ne peut pas être exécutée deux fois | **non testé** | idem |
+| le joueur récupère le contrôle | **non testé** | idem |
+
+**Ce que le journal montre.** Le bloc de chargement des mods ne contient que
+deux fichiers, tous deux fournis par le jeu :
+
+```text
+****************************
+Loading Mods
+	Loading mod file [script\_lib\mod\qa_console.lua]
+	Loading mod file [script\_lib\mod\test_script_here.lua]
+****************************
+```
+
+Deux lectures étaient possibles, et **le journal ne permettait pas de trancher** :
+
+1. le `.pack` n'était pas chargé du tout (arborescence interne incorrecte,
+   extension `.lua.txt`, mod non activé, ou pack modifié jeu ouvert) ;
+2. le répertoire `script/battle/mod/` n'est pas balayé par ce chargeur — seul
+   `script/_lib/mod/` apparaît dans ce bloc.
+
+L'hypothèse 2 est affaiblie par le fait qu'un mod tiers largement utilisé place
+son script de bataille dans `script/battle/mod/` et fonctionne. Il se peut que ce
+répertoire soit chargé par un autre mécanisme, sans trace dans ce bloc de journal.
+
+**Défaut de la sonde révélé par cet essai.** Elle n'émettait aucune preuve de vie
+au chargement : impossible de distinguer les deux hypothèses. Corrigé — la
+première ligne exécutée du fichier écrit désormais :
+
+```text
+[totalwar_ai] === fichier charge (sonde v0.1.0) ===
+```
+
+Cette ligne apparaît quel que soit le contexte et quoi qu'il advienne ensuite.
+Au prochain essai, sa présence ou son absence tranchera :
+
+- **absente** → le jeu ne trouve pas le fichier : problème d'empaquetage ;
+- **présente** → le fichier est chargé, le problème est ailleurs, et le message
+  suivant (`contexte de bataille detecte` ou `pas de battle_manager`) dira où.
+
+En attendant, le protocole d'essai demande de placer le fichier **aux deux
+emplacements**, avec une garde contre le double chargement.
 
 ### Journal brut
 
-*Coller ici les lignes `[totalwar_ai]` du journal du jeu, et le contenu des trois
-fichiers d'échange après l'essai.*
+*Coller ici les lignes `[totalwar_ai]` du prochain essai, et le contenu des trois
+fichiers d'échange.*
 
 ## Ce qui est vérifié à ce stade
 

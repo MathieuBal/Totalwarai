@@ -26,10 +26,32 @@ n'en est reprise. Ce dépôt ne redistribue pas de code tiers.
 
 ## Installation pour un essai
 
-1. Empaqueter `script/battle/mod/totalwar_ai_probe.lua` dans un `.pack` de type
-   *mod*, en conservant le chemin interne `script/battle/mod/`, avec RPFM ou
-   l'assembly kit. Tout script placé dans `script/battle/mod/` est chargé
-   automatiquement au début de chaque bataille.
+> **Retour du premier essai (01/08/2026) : le script n'a pas été chargé.** Le
+> journal du jeu ne listait que les mods de `script/_lib/mod/`. Voir
+> [`../docs/feasibility.md`](../docs/feasibility.md) pour l'analyse complète.
+> D'où la consigne des deux emplacements ci-dessous.
+
+1. Empaqueter le script dans un `.pack` de type *mod* (RPFM), **aux deux
+   emplacements suivants** :
+
+   ```text
+   totalwar_ai_probe.pack
+   └── script
+       ├── _lib
+       │   └── mod
+       │       └── totalwar_ai_probe.lua     <- emplacement prouvé chargé
+       └── battle
+           └── mod
+               └── totalwar_ai_probe.lua     <- emplacement à confirmer
+   ```
+
+   Le script refuse de s'exécuter deux fois : le second exemplaire chargé
+   s'annonce puis s'arrête. Aucun risque à mettre les deux.
+
+   Pièges constatés : aucun dossier ne doit précéder `script` (ni `lua_mod`, ni
+   `Totalwarai-main`) ; l'extension doit être `.lua` et non `.lua.txt` ; le jeu
+   et son launcher doivent être fermés pendant la modification du pack.
+
 2. Déposer le `.pack` dans le dossier `data/` de l'installation du jeu et
    l'activer dans le gestionnaire de mods.
 3. Créer le dossier d'échange **à la racine du dossier d'installation du jeu** :
@@ -55,6 +77,16 @@ n'en est reprise. Ce dépôt ne redistribue pas de code tiers.
 | 1 s | publie l'état de la première unité alliée contrôlable dans `totalwar_ai_state.jsonl` |
 | 0,5 s | lit `totalwar_ai_command.json`, exécute une commande jamais vue, écrit un accusé dans `totalwar_ai_ack.jsonl` |
 | à la demande | libère l'unité et rend la main au joueur |
+
+La toute première ligne exécutée du fichier écrit dans le journal du jeu :
+
+```text
+[totalwar_ai] === fichier charge (sonde v0.1.0) ===
+```
+
+C'est la preuve de chargement. Son absence signifie que le jeu n'a pas trouvé le
+fichier — pas que la sonde a échoué. Le message suivant indique le contexte
+(bataille, ou menu/campagne où il n'y a rien à faire).
 
 Chaque message est **aussi** écrit dans le journal du jeu via `out()`, préfixé
 par `[totalwar_ai]`. C'est le canal de repli si l'écriture de fichier s'avère
