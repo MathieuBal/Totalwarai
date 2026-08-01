@@ -2,7 +2,7 @@
 
 > Agent tactique expérimental, persistant et progressivement apprenant pour les batailles solo de **Total War: WARHAMMER III**.
 
-[![Statut](https://img.shields.io/badge/statut-conception-orange)](#état-du-projet)
+[![Statut](https://img.shields.io/badge/statut-MVP%20hors%20jeu-yellowgreen)](#état-du-projet)
 [![Jeu](https://img.shields.io/badge/jeu-Total%20War%3A%20WARHAMMER%20III-red)](#périmètre)
 [![Mode](https://img.shields.io/badge/mode-solo%20uniquement-blue)](#principes-et-limites)
 [![Langage cible](https://img.shields.io/badge/agent-Python-yellow)](#architecture-cible)
@@ -15,6 +15,8 @@
 - [Vision](#vision)
 - [Objectif concret](#objectif-concret)
 - [État du projet](#état-du-projet)
+- [Démarrage rapide](#démarrage-rapide)
+- [Développement](#développement)
 - [Périmètre](#périmètre)
 - [Principes et limites](#principes-et-limites)
 - [Pourquoi une approche hybride](#pourquoi-une-approche-hybride)
@@ -81,11 +83,27 @@ La première ambition jouable est la suivante :
 
 ## État du projet
 
-**Statut actuel : conception et étude de faisabilité.**
+**Statut actuel : MVP fonctionnel hors du jeu.**
 
-Le dépôt vient d’être initialisé. Aucun contrôle du jeu, aucun modèle d’apprentissage et aucun protocole de communication ne sont encore implémentés.
+Le cœur Python est implémenté et testable sans lancer *WARHAMMER III* :
 
-La priorité absolue n’est pas l’apprentissage automatique. La priorité est de vérifier ce que *WARHAMMER III* permet réellement d’observer et de commander depuis :
+- modèles typés du domaine, sérialisation JSON et validation stricte ;
+- protocole de pont versionné et `MockBridge` ;
+- agent tactique déterministe : classification, groupes, plan, ciblage ;
+- règles de sécurité et arrêt d’urgence ;
+- simulateur tactique déterministe et cinq scénarios reproductibles ;
+- journal d’événements, rapport post-bataille, mémoire SQLite persistante ;
+- interface en ligne de commande (`totalwar-ai`).
+
+Voir [Démarrage rapide](#démarrage-rapide) pour l’essayer, et
+[`docs/architecture.md`](docs/architecture.md) pour ce que le dépôt contient
+réellement, par opposition à la cible décrite ici.
+
+**Ce qui n’existe pas encore : tout ce qui touche au jeu lui-même.** Aucun mod
+Lua, aucun pont réel, aucun contrôle d’une bataille de *WARHAMMER III*, aucun
+modèle appris.
+
+La priorité suivante n’est pas l’apprentissage automatique. C’est de vérifier ce que *WARHAMMER III* permet réellement d’observer et de commander depuis :
 
 - les scripts Lua de bataille ;
 - les bibliothèques de modding disponibles ;
@@ -93,6 +111,77 @@ La priorité absolue n’est pas l’apprentissage automatique. La priorité est
 - à défaut, une couche d’automatisation externe limitée.
 
 Aucune promesse de compatibilité ne doit être faite avant la fin du **spike de faisabilité** décrit dans la feuille de route.
+
+---
+
+## Démarrage rapide
+
+Python 3.11 ou plus récent. Aucune dépendance au jeu, aucun service distant.
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows : .venv\Scripts\activate
+pip install -e ".[dev]"
+
+totalwar-ai scenarios                                # lister les situations
+totalwar-ai simulate --scenario ranged_defense       # jouer une bataille
+totalwar-ai simulate --scenario ranged_defense       # relancer : la mémoire est rechargée
+totalwar-ai history                                  # consulter les batailles passées
+totalwar-ai report <identifiant>                     # relire un rapport
+```
+
+Sans installation, les deux scripts équivalents fonctionnent depuis le dépôt :
+
+```bash
+python scripts/run_simulation.py --scenario balanced_clash --explain
+python scripts/run_agent.py                          # boucle agent ↔ pont factice
+```
+
+Chaque bataille produit :
+
+- `data/battles/<id>.jsonl` — journal d’événements structuré ;
+- `data/reports/<id>.md` — rapport post-bataille lisible ;
+- une entrée dans `data/totalwar_ai.sqlite3` — mémoire persistante.
+
+Ces répertoires ne sont pas versionnés.
+
+Options utiles : `--seed` pour rejouer exactement une bataille, `--all` pour
+enchaîner tous les scénarios, `--no-memory` pour ne rien enregistrer,
+`--explain` pour afficher les décisions commentées, `--data-dir` pour écrire
+ailleurs que dans `data/`.
+
+---
+
+## Développement
+
+```bash
+pip install -e ".[dev]"
+
+ruff check .            # style et erreurs courantes
+ruff format .           # formatage
+mypy src                # typage strict
+pytest                  # suite complète
+pytest tests/scenarios  # uniquement les garde-fous de comportement
+```
+
+Ces quatre commandes doivent passer avant tout commit. La configuration vit
+entièrement dans `pyproject.toml`.
+
+La suite de tests se lit en trois niveaux :
+
+| Répertoire | Ce qui y est vérifié |
+| --- | --- |
+| `tests/unit/` | géométrie, sérialisation, protocole, classification, ciblage, règles de sécurité, récompenses, mémoire |
+| `tests/integration/` | boucle état → décision → résultat via le pont, chaîne bataille → journal → rapport → mémoire → rechargement |
+| `tests/scenarios/` | les garde-fous du comportement : archers protégés, artillerie qui ne charge pas, poursuite refusée, tir concentré, réserve conservée, déterminisme |
+
+Les réglages de doctrine, le barème de récompense, la classification des unités
+et les paramètres du simulateur sont dans `config/` : les ajuster ne demande pas
+de toucher au code.
+
+Documentation technique : [`docs/architecture.md`](docs/architecture.md),
+[`docs/protocol.md`](docs/protocol.md),
+[`docs/feasibility.md`](docs/feasibility.md) et les décisions dans
+[`docs/decisions/`](docs/decisions/).
 
 ---
 
@@ -557,48 +646,48 @@ Un modèle candidat devient le modèle stable uniquement s’il :
 
 ### Phase 1 — Simulateur et contrats
 
-- [ ] Définir les schémas `BattleState`, `UnitState` et `AgentAction`.
-- [ ] Créer un simulateur Python minimal indépendant du jeu.
-- [ ] Créer un faux adaptateur Lua pour les tests.
-- [ ] Implémenter le protocole versionné.
-- [ ] Ajouter validation stricte et gestion des erreurs.
+- [x] Définir les schémas `BattleState`, `UnitState` et `AgentAction`.
+- [x] Créer un simulateur Python minimal indépendant du jeu.
+- [x] Créer un faux adaptateur Lua pour les tests.
+- [x] Implémenter le protocole versionné.
+- [x] Ajouter validation stricte et gestion des erreurs.
 
-**Livrable :** agent testable sans lancer *WARHAMMER III*.
+**Livrable :** agent testable sans lancer *WARHAMMER III*. — *atteint*
 
 ### Phase 2 — Agent déterministe
 
-- [ ] Classification des unités par rôle.
-- [ ] Création de groupes tactiques.
-- [ ] Placement de base.
-- [ ] Ligne d’infanterie.
-- [ ] Protection des tireurs.
-- [ ] Réserve.
-- [ ] Sélection de cible simple.
-- [ ] Règles anti-suicide.
-- [ ] Arrêt d’urgence.
+- [x] Classification des unités par rôle.
+- [x] Création de groupes tactiques.
+- [x] Placement de base.
+- [x] Ligne d’infanterie.
+- [x] Protection des tireurs.
+- [x] Réserve.
+- [x] Sélection de cible simple.
+- [x] Règles anti-suicide.
+- [x] Arrêt d’urgence.
 
-**Livrable :** première bataille commandée par des règles explicites.
+**Livrable :** première bataille commandée par des règles explicites. — *atteint dans le simulateur ; reste à faire dans le jeu*
 
 ### Phase 3 — Télémétrie et rapports
 
-- [ ] Journal d’événements.
-- [ ] Enregistrement des transitions.
-- [ ] Résumé post-bataille.
-- [ ] Explication des décisions.
+- [x] Journal d’événements.
+- [x] Enregistrement des transitions.
+- [x] Résumé post-bataille.
+- [x] Explication des décisions.
 - [ ] Visualisation simple de la chronologie.
-- [ ] Détection des données incomplètes.
+- [x] Détection des données incomplètes.
 
-**Livrable :** dataset exploitable et diagnostic lisible.
+**Livrable :** dataset exploitable et diagnostic lisible. — *atteint, hors visualisation de chronologie*
 
 ### Phase 4 — Mémoire et adaptation
 
-- [ ] Base SQLite.
-- [ ] Replay buffer.
-- [ ] Recherche de situations similaires.
+- [x] Base SQLite.
+- [x] Replay buffer.
+- [x] Recherche de situations similaires.
 - [ ] Ajustement de coefficients par résultats historiques.
 - [ ] Sauvegarde et chargement de checkpoints.
 
-**Livrable :** comportement influencé par les batailles précédentes.
+**Livrable :** comportement influencé par les batailles précédentes. — *partiel : la mémoire est persistée et consultée, l'ajustement automatique des coefficients reste à faire*
 
 ### Phase 5 — Apprentissage supervisé ou par imitation
 
@@ -742,6 +831,13 @@ Totalwarai/
 ```
 
 Les données de bataille et les modèles lourds ne doivent pas être versionnés directement dans Git.
+
+> **État réel du dépôt.** Cette arborescence est la cible. Aujourd'hui, `lua_mod/`
+> n'existe pas (Phase 0 non commencée), `bridge/file_bridge.py` et le paquet
+> `learning/` au complet sont volontairement différés — voir
+> [`docs/decisions/0002-pont-reel-differe.md`](docs/decisions/0002-pont-reel-differe.md).
+> Le reste est en place, plus `config/simulation.yaml`,
+> `agent/grouping.py`, `simulation/runner.py` et `learning/rewards.py`.
 
 ---
 
