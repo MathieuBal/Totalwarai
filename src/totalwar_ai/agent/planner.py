@@ -79,7 +79,6 @@ class PlannerSettings:
     pursuit_power_ratio: float = 1.5
     reserve_units: int = 1
     min_line_for_reserve: int = 4
-    reorient_angle_degrees: float = 60.0
 
     @classmethod
     def from_config(cls, agent: Mapping[str, Any], safety: Mapping[str, Any]) -> PlannerSettings:
@@ -552,12 +551,16 @@ class Planner:
                     )
                 )
             else:
+                # On tient la position, mais face a la masse ennemie et non a
+                # l'axe general du plan : l'ennemi ne vient pas toujours de face.
                 decisions.append(
                     decide(
                         AgentAction(
                             type=ActionType.HOLD_POSITION,
                             actor_ids=(unit.id,),
-                            parameters={"heading": heading},
+                            parameters={
+                                "heading": self._threat_heading(unit, state, enemies) or heading
+                            },
                             confidence=0.7,
                         ),
                         f"posture {plan.posture.value} : laisser l'ennemi venir",
@@ -660,6 +663,29 @@ class Planner:
                     confidence=0.6,
                 )
             )
+
+    def _threat_heading(
+        self, unit: UnitState, state: BattleState, candidates: Sequence[UnitState]
+    ) -> float | None:
+        """Cap a prendre pour faire face aux menaces proches.
+
+        On vise le barycentre des ennemis proches, pondere par leur puissance,
+        et non le plus proche d'entre eux : se tourner vers une cavalerie isolee
+        revient sinon a offrir le flanc a la masse qui charge de face.
+        """
+        radius = self.settings.engagement_distance * 3.0
+        nearby = state.units_within(unit.position, radius, candidates)
+        if not nearby:
+            return None
+        total = sum(enemy.effective_strength for enemy in nearby)
+        if total <= 1e-6:
+            return None
+        weighted = Vector3(
+            sum(enemy.position.x * enemy.effective_strength for enemy in nearby) / total,
+            0.0,
+            sum(enemy.position.z * enemy.effective_strength for enemy in nearby) / total,
+        )
+        return unit.position.heading_to(weighted)
 
     def _command_leaders(
         self, state: BattleState, plan: BattlePlan, decisions: list[Decision]

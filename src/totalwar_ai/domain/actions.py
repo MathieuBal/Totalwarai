@@ -116,7 +116,23 @@ class AgentAction:
         rounded = (
             (round(destination.x, 0), round(destination.z, 0)) if destination is not None else None
         )
-        return (self.type.value, tuple(sorted(self.actor_ids)), self.target_id, rounded)
+        # Le cap ne compte que pour une reorientation, dont il est tout l'objet :
+        # sans lui, deux pivots opposes auraient la meme empreinte et le second
+        # serait avale comme un doublon. Pour les autres ordres, c'est du bruit —
+        # l'inclure ferait re-emettre l'ordre au moindre frémissement de la cible.
+        heading = self.parameters.get("heading")
+        heading_bucket = (
+            round(float(heading) / 0.25)
+            if self.type is ActionType.REORIENT_FRONT and isinstance(heading, int | float)
+            else None
+        )
+        return (
+            self.type.value,
+            tuple(sorted(self.actor_ids)),
+            self.target_id,
+            rounded,
+            heading_bucket,
+        )
 
     def with_reason(self, reason: str) -> AgentAction:
         return AgentAction(

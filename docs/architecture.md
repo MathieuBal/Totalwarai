@@ -98,6 +98,16 @@ l'arrière, ce qui replie encore les tireurs : l'armée recule indéfiniment san
 jamais combattre. Ce défaut a été observé puis corrigé pendant le développement
 du simulateur.
 
+### Une doctrine ajoutée doit être mesurée avant d'être gardée
+
+`REORIENT_FRONT` a été implémenté puis retiré : la mesure sur le banc de
+scénarios montrait une dégradation reproductible (`outnumbered` passait du match
+nul à la défaite) pour un gain nul ailleurs. Le détail chiffré est dans
+[`decisions/0004-reorientation-du-front-mesuree-puis-ecartee.md`](decisions/0004-reorientation-du-front-mesuree-puis-ecartee.md).
+
+L'action reste dans le protocole et exécutable par l'adaptateur ; c'est la
+doctrine actuelle qui ne l'emploie pas.
+
 ### L'adaptation est bornée et explicable
 
 L'agent ajuste cinq réglages d'après son historique, chacun dans des bornes

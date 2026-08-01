@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from totalwar_ai.agent.grouping import GroupKind, build_groups
@@ -220,3 +222,53 @@ def test_aucune_cible_sans_ennemi(planner: Planner, make_unit, make_battle) -> N
     attacker = state.unit("a1")
     assert attacker is not None
     assert planner.select_target(attacker, state) is None
+
+
+def test_defense_fait_face_a_la_masse_ennemie(planner: Planner, make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Se tourner vers l'ennemi le plus proche offrirait le flanc au gros des forces."""
+    state = make_battle(
+        [
+            make_unit("a_inf", Side.ALLY, UnitRole.SPEAR_INFANTRY, 0.0, 0.0),
+            # Une cavalerie isolee tout pres, a l'ouest.
+            make_unit("e_cav", Side.ENEMY, UnitRole.SHOCK_CAVALRY, -60.0, 0.0),
+            # Le gros de l'infanterie droit devant, un peu plus loin.
+            make_unit("e_inf1", Side.ENEMY, UnitRole.MELEE_INFANTRY, -20.0, 90.0),
+            make_unit("e_inf2", Side.ENEMY, UnitRole.MELEE_INFANTRY, 20.0, 90.0),
+            make_unit("e_inf3", Side.ENEMY, UnitRole.MELEE_INFANTRY, 0.0, 100.0),
+        ]
+    )
+    unit = state.unit("a_inf")
+    assert unit is not None
+    heading = planner._threat_heading(unit, state, state.enemies())
+    assert heading is not None
+    # Le cap doit pointer vers +z (la masse), pas vers -x (la cavalerie isolee).
+    assert math.cos(heading) > 0.5
+
+
+def test_sans_ennemi_proche_aucun_cap_de_menace(planner: Planner, make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    state = make_battle(
+        [
+            make_unit("a_inf", Side.ALLY, UnitRole.SPEAR_INFANTRY, 0.0, 0.0),
+            make_unit("e_inf", Side.ENEMY, UnitRole.MELEE_INFANTRY, 0.0, 900.0),
+        ]
+    )
+    unit = state.unit("a_inf")
+    assert unit is not None
+    assert planner._threat_heading(unit, state, state.enemies()) is None
+
+
+def test_la_doctrine_n_emet_pas_de_reorientation(planner: Planner, make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Choix mesure, documente dans decisions/0004 : le pivot explicite degradait l'agent."""
+    state = make_battle(
+        [
+            make_unit("a_inf1", Side.ALLY, UnitRole.SPEAR_INFANTRY, -40.0, 0.0),
+            make_unit("a_inf2", Side.ALLY, UnitRole.SPEAR_INFANTRY, 40.0, 0.0),
+            make_unit("a_arc1", Side.ALLY, UnitRole.RANGED_INFANTRY, 0.0, -40.0),
+            make_unit("a_arc2", Side.ALLY, UnitRole.RANGED_INFANTRY, 40.0, -40.0),
+            make_unit("e_cav", Side.ENEMY, UnitRole.SHOCK_CAVALRY, -140.0, 5.0),
+            make_unit("e_inf", Side.ENEMY, UnitRole.MELEE_INFANTRY, 0.0, 250.0),
+        ]
+    )
+    plan = planner.build_plan(state)
+    types = {decision.action.type for decision in planner.tactical_decisions(state, plan)}
+    assert ActionType.REORIENT_FRONT not in types

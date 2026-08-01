@@ -34,7 +34,6 @@ def apply_to_planner(settings: PlannerSettings, profile: DoctrineProfile) -> Pla
         pursuit_power_ratio=_value(profile, "pursuit_power_ratio", settings.pursuit_power_ratio),
         reserve_units=int(_value(profile, "reserve_units", float(settings.reserve_units))),
         min_line_for_reserve=settings.min_line_for_reserve,
-        reorient_angle_degrees=settings.reorient_angle_degrees,
     )
 
 

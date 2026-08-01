@@ -189,6 +189,11 @@ La suite de tests se lit en trois niveaux :
 | `tests/integration/` | boucle état → décision → résultat via le pont, chaîne bataille → journal → rapport → mémoire → rechargement |
 | `tests/scenarios/` | les garde-fous du comportement : archers protégés, artillerie qui ne charge pas, poursuite refusée, tir concentré, réserve conservée, déterminisme |
 
+Toute doctrine ajoutée devrait être comparée à son absence sur le banc de
+scénarios avant d’être conservée : une intuition tactique plausible peut
+dégrader l’agent (exemple mesuré dans
+[`docs/decisions/0004-reorientation-du-front-mesuree-puis-ecartee.md`](docs/decisions/0004-reorientation-du-front-mesuree-puis-ecartee.md)).
+
 L’adaptation a ses propres garde-fous : `tests/unit/test_adaptation.py` vérifie
 que dix cycles d’ajustement successifs restent dans les bornes et qu’aucune
 règle de sécurité n’est assouplie ; `tests/integration/test_adaptation_pipeline.py`

@@ -118,6 +118,19 @@ def heading_vector(heading: float) -> Vector3:
     return Vector3(math.sin(heading), 0.0, math.cos(heading))
 
 
+def normalize_heading(heading: float) -> float:
+    """Ramene un cap dans l'intervalle ]-pi, pi]."""
+    return math.atan2(math.sin(heading), math.cos(heading))
+
+
+def heading_difference(first: float, second: float) -> float:
+    """Ecart absolu entre deux caps, dans [0, pi].
+
+    Sert a decider si une unite regarde ailleurs que la menace qui l'approche.
+    """
+    return abs(normalize_heading(first - second))
+
+
 def is_in_rear_arc(position: Vector3, heading: float, other: Vector3, arc_degrees: float) -> bool:
     """Indique si `other` se trouve dans l'arc arriere de l'unite regardee.
 
