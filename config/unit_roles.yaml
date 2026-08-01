@@ -91,3 +91,49 @@ rules:
   - role: melee_infantry
     when:
       key_contains: [swordsman, warrior, greatsword, axeman]
+
+  # --- Gabarit des identifiants de WARHAMMER III ----------------------------
+  #
+  # Les cles du jeu suivent la forme `<jeu>_<pack>_<race>_<categorie>_<nom>`,
+  # ou la categorie tient en trois lettres. Releve en bataille reelle :
+  #
+  #   wh3_main_nur_inf_plaguebearers_1      -> inf
+  #   wh3_dlc20_chs_cha_daemon_prince_mnur  -> cha
+  #
+  # Ces regles viennent en **dernier recours** : le segment donne la famille,
+  # jamais le detail. Un `_inf_` peut combattre au corps a corps comme au tir,
+  # d'ou les regles par nom qui precedent. Quand la sonde saura lire les
+  # etiquettes du jeu, ces regles deviendront un filet, pas la source.
+  #
+  # Deux approximations assumees, choisies pour que l'erreur aille du bon cote :
+  #
+  # * `_cav_` -> cavalerie de choc : la cavalerie de tir est deja attrapee plus
+  #   haut par son nom ; a defaut, la traiter en choc lui interdit les
+  #   poursuites lointaines, ce qui est le refus prudent ;
+  # * `_cha_` -> seigneur : heros et seigneurs partagent ce segment. Prendre un
+  #   heros pour un seigneur lui applique `ProtectLord`, donc plus de
+  #   protection que necessaire — jamais moins.
+
+  - role: artillery
+    when:
+      key_contains: ["_art_"]
+
+  - role: monster
+    when:
+      key_contains: ["_mon_"]
+
+  - role: chariot
+    when:
+      key_contains: ["_veh_"]
+
+  - role: shock_cavalry
+    when:
+      key_contains: ["_cav_"]
+
+  - role: lord
+    when:
+      key_contains: ["_cha_"]
+
+  - role: melee_infantry
+    when:
+      key_contains: ["_inf_"]

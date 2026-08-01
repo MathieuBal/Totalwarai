@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 
 from totalwar_ai.agent.unit_classifier import ClassificationRule, UnitClassifier
+from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.domain.serialization import SchemaError
-from totalwar_ai.domain.unit_state import Side, UnitRole
+from totalwar_ai.domain.unit_state import Side, UnitRole, UnitState
 
 CONFIG = {
     "default_role": "unknown",
@@ -103,3 +104,48 @@ def test_regle_invalide_rejetee() -> None:
 def test_regle_sans_matcheur_ne_correspond_jamais() -> None:
     rule = ClassificationRule(role=UnitRole.LORD)
     assert not rule.matches(frozenset({"lord"}), "lord")
+
+
+# --- cles reelles de WARHAMMER III -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("unit_key", "attendu"),
+    [
+        # Relevees en bataille reelle.
+        ("wh3_dlc20_chs_cha_daemon_prince_mnur", UnitRole.LORD),
+        ("wh3_main_nur_inf_plaguebearers_1", UnitRole.MELEE_INFANTRY),
+        # Gabarit du jeu, familles principales.
+        ("wh_main_emp_art_great_cannon", UnitRole.ARTILLERY),
+        ("wh_main_emp_cav_reiksguard", UnitRole.SHOCK_CAVALRY),
+        ("wh_main_brt_mon_hippogryph", UnitRole.MONSTER),
+        ("wh_main_emp_veh_steam_tank", UnitRole.CHARIOT),
+        # Le nom l'emporte sur le segment : ces deux-la sont des `_inf_`.
+        ("wh_main_emp_inf_handgunners", UnitRole.RANGED_INFANTRY),
+        ("wh_main_emp_inf_spearmen", UnitRole.SPEAR_INFANTRY),
+        # Le nom l'emporte aussi sur `_cav_`.
+        ("wh_main_emp_cav_outriders", UnitRole.LIGHT_CAVALRY),
+    ],
+)
+def test_les_cles_du_jeu_sont_classees(unit_key: str, attendu: UnitRole) -> None:
+    """Aucune unite du jeu n'est codee en dur : tout passe par les regles YAML."""
+    classifier = UnitClassifier.from_config()
+    unite = UnitState(
+        id="1001",
+        side=Side.ALLY,
+        unit_key=unit_key,
+        position=Vector3(0.0, 0.0, 0.0),
+    )
+    assert classifier.classify(unite) is attendu
+
+
+def test_une_cle_inconnue_reste_inconnue() -> None:
+    """Mieux vaut `unknown` qu'une classification inventee."""
+    classifier = UnitClassifier.from_config()
+    unite = UnitState(
+        id="1",
+        side=Side.ALLY,
+        unit_key="quelque_chose_de_totalement_autre",
+        position=Vector3(0.0, 0.0, 0.0),
+    )
+    assert classifier.classify(unite) is UnitRole.UNKNOWN

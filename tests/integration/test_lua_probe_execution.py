@@ -411,7 +411,9 @@ def test_aller_retour_complet_sans_math_huge(workdir: Path) -> None:
     acks = bridge.read_acks()
     assert acks and acks[0].sequence == commande.sequence
     assert acks[0].accepted
-    assert not probe.grep("ERREUR")
+    # `ERREUR dans` prefixe les echecs de rappel ; le recensement, lui, journalise
+    # volontairement `ERREUR` pour un accesseur qui leve.
+    assert not probe.grep("ERREUR dans")
 
 
 # --- perte du droit d'ecriture en cours de bataille --------------------------
@@ -440,7 +442,7 @@ def test_la_perte_du_droit_d_ecriture_ne_tue_pas_la_sonde(probe: Probe) -> None:
     probe.advance(3000)
 
     assert len(probe.grep("STATE ")) > avant
-    assert not probe.grep("ERREUR")
+    assert not probe.grep("ERREUR dans")
 
 
 # --- plusieurs invocations successives du CLI --------------------------------
@@ -542,3 +544,75 @@ def test_le_cli_signale_une_unite_qui_n_a_pas_bouge(probe: Probe, workdir: Path)
     # Aucun ordre envoye : l'unite reste ou elle est.
     probe.advance(2000)
     assert _confirm_movement(bridge, etat.unit_id, etat.position, timeout=1.0) == 1
+
+
+def test_le_cli_mesure_le_deplacement_total_pas_le_premier_pas(
+    probe: Probe, workdir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Rendre le premier mouvement detecte annoncerait 2,7 m pour 150 m parcourus.
+
+    Defaut constate en bataille : l'unite avait bien fait ses 150 metres, mais
+    le CLI s'arretait au premier etat depassant le seuil.
+    """
+    from totalwar_ai.cli import _confirm_movement
+
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+    etat = bridge.wait_for_state(timeout=0, sleep=lambda _: None)
+    assert etat is not None
+
+    bridge.move_unit(etat.unit_id, Vector3(etat.position.x + 150.0, 0.0, etat.position.z))
+    probe.advance(1000)  # execution de l'ordre
+    for _ in range(5):  # plusieurs etats a la position d'arrivee
+        probe.advance(1000)
+
+    assert _confirm_movement(bridge, etat.unit_id, etat.position, timeout=4.0) == 0
+    sortie = capsys.readouterr().out
+    assert "150.0 m" in sortie, sortie
+
+
+# --- recensement des capacites -----------------------------------------------
+
+
+def test_le_recensement_distingue_present_absent_et_en_erreur(probe: Probe) -> None:
+    """Trois issues, trois messages : c'est tout l'interet du recensement.
+
+    Le mod tiers etudie ne lit ni le moral ni la fatigue. Plutot que de
+    supposer, la sonde demande au jeu et journalise ce qu'elle obtient.
+    """
+    probe.advance(1500)
+
+    assert probe.grep("recensement des accesseurs d'unite")
+    # Present et fonctionnel.
+    assert probe.grep("number_of_men_alive : number 64")
+    assert probe.grep("unary_hitpoints : number 0.800")
+    assert probe.grep("is_routing : boolean false")
+    # Present mais qui leve : distinct d'un accesseur absent.
+    assert probe.grep("unary_morale : ERREUR")
+    # Absent du faux jeu.
+    assert probe.grep("ammo_left : ABSENT")
+    assert probe.grep("fatigue : ABSENT")
+
+
+def test_le_recensement_resume_les_accesseurs_utilisables(probe: Probe) -> None:
+    probe.advance(1500)
+    resume = probe.grep("accesseurs utilisables :")
+    assert resume
+    assert "number_of_men_alive" in resume[0]
+    assert "unary_morale" not in resume[0]  # il a leve : inutilisable
+    assert "ammo_left" not in resume[0]  # absent
+
+
+def test_le_recensement_decrit_les_alliances(probe: Probe) -> None:
+    probe.advance(1500)
+    assert probe.grep("recensement des alliances")
+    lignes = probe.grep("alliance 1 :")
+    assert lignes
+    assert "2 unite(s)" in lignes[0]
+
+
+def test_le_recensement_ne_tue_pas_la_sonde(probe: Probe, workdir: Path) -> None:
+    """Un accesseur qui leve ne doit pas empecher la publication d'etats."""
+    probe.advance(3000)
+    assert not probe.grep("ERREUR dans publish_state")
+    assert FileBridge.open(workdir).read_states()

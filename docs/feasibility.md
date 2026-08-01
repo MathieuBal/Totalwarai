@@ -199,6 +199,40 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
 
 ## Résultats de l'essai en bataille
 
+### Essai n° 5 — 02/08/2026, 01 h 34
+
+Deux ordres de 150 m, exécutés : `26.9 → 176.9`, puis `176.9 → 326.9`. Les
+séquences montent (`Ordre 2`, `Ordre 3`) : la reprise de numérotation tient en
+jeu. Deux défauts nouveaux, tous deux côté Python.
+
+**Le flux d'états se corrompait sous Windows.** Message relevé :
+
+```text
+ligne illisible dans totalwar_ai_state.jsonl (Expecting value: line 1 column 1)
+  : game_time_ms":158100,"unit":{"id":"1001",...
+```
+
+Le fragment commence au milieu d'une ligne. Le Lua ouvre ses fichiers en mode
+texte : sous Windows il écrit donc `\r\n`. Python lisait en mode texte, où la
+paire devient un seul `\n`, et comptait les octets de la chaîne obtenue —
+**un de moins que le fichier, par ligne**. L'offset dérivait d'un octet par
+état publié ; après 157 états, la lecture reprenait 157 octets trop tôt, au
+milieu d'une ligne. La lecture se fait désormais en binaire, avec de vrais
+offsets d'octets. Un test rejoue 200 états en `\r\n` ; il échoue avec l'ancien
+code en produisant le message exact ci-dessus.
+
+**La mesure du déplacement annonçait `2.7 m` pour 150 m parcourus.** Elle
+s'arrêtait au premier état dépassant le seuil. Elle attend maintenant que
+l'unité soit immobile sur trois états consécutifs avant de conclure, et
+distingue « arrivée » de « encore en mouvement ».
+
+**Une observation à confirmer.** `release_after_ms` vaut 5 s, or l'unité a
+parcouru ses 150 m — 30 m/s serait invraisemblable. L'ordre semble donc
+**survivre à `release_control()`** : rendre la main au joueur ne l'annule pas.
+Si cela se confirme, c'est important pour la sûreté — reprendre le contrôle ne
+suffit pas à arrêter une unité, il faut lui donner un ordre contraire. À
+mesurer explicitement avant de piloter une armée entière.
+
 ### Essai n° 4 — 01/08/2026, 22 h 42
 
 **L'aller-retour complet est bouclé.**

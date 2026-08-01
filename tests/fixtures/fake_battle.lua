@@ -63,11 +63,27 @@ local function make_unit(id, unit_type, x, z, controllable)
         unit_type = unit_type,
         pos = make_vector(x, 12.5, z),
         controllable = controllable,
+        men = 80,
+        men_alive = 64,
         unique_ui_id = function(self) return self.id end,
         type = function(self) return self.unit_type end,
         position = function(self) return self.pos end,
         is_controllable = function(self) return self.controllable end,
         is_valid_target = function(self) return true end,
+
+        -- Accesseurs supplementaires, volontairement partiels : le vrai jeu
+        -- n'expose pas tout, et le recensement doit savoir le dire. Les noms
+        -- absents ici (moral, fatigue, munitions...) jouent le role de ceux
+        -- que le bac a sable pourrait ne pas fournir.
+        number_of_men = function(self) return self.men end,
+        number_of_men_alive = function(self) return self.men_alive end,
+        unary_hitpoints = function(self) return self.men_alive / self.men end,
+        is_routing = function(self) return false end,
+        can_fly = function(self) return false end,
+
+        -- Un accesseur present mais qui echoue : le recensement doit le
+        -- distinguer d'un accesseur absent.
+        unary_morale = function(self) error("non disponible dans ce contexte") end,
     }
 end
 

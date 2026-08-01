@@ -411,3 +411,72 @@ def test_resume_sans_etat() -> None:
 
 def test_relecture_d_un_fichier_absent(tmp_path: Path) -> None:
     assert read_states_from(tmp_path / "absent.jsonl") == []
+
+
+def test_les_fins_de_ligne_windows_ne_decalent_pas_l_offset(tmp_path: Path) -> None:
+    """Le Lua ecrit en mode texte : sous Windows, cela donne des `\\r\\n`.
+
+    Lire ce fichier en mode texte Python traduit la paire en un seul `\\n`, et
+    compter les octets de la chaine obtenue en sous-estime un par ligne.
+    L'offset derivait ainsi d'un octet par etat, jusqu'a relire des fragments de
+    lignes — constate en bataille apres 157 etats publies.
+    """
+    bridge = FileBridge.open(tmp_path)
+    lignes = [
+        json.dumps(
+            {
+                "protocol_version": "0.1.0",
+                "type": "unit_state",
+                "sequence": index,
+                "game_time_ms": index * 1000,
+                "unit": {
+                    "id": "1001",
+                    "type": "wh3_dlc20_chs_cha_daemon_prince_mnur",
+                    "position": {"x": float(index), "y": 34.3, "z": -330.9},
+                    "controllable": True,
+                },
+            }
+        )
+        for index in range(1, 201)
+    ]
+    # Ecriture en binaire avec des fins de ligne Windows, comme le jeu.
+    bridge.paths.state.write_bytes(("\r\n".join(lignes) + "\r\n").encode("utf-8"))
+
+    # Lecture en plusieurs fois : c'est la que l'offset derive.
+    recus: list[ProbeUnitState] = []
+    for _ in range(200):
+        recus.extend(bridge.read_states())
+
+    assert len(recus) == 200, f"{len(recus)} etats lus sur 200"
+    assert not bridge.malformed, [item.content[:60] for item in bridge.malformed]
+    assert [state.sequence for state in recus] == list(range(1, 201))
+    assert recus[-1].position.x == pytest.approx(200.0)
+
+
+def test_une_ligne_windows_incomplete_n_est_pas_consommee(tmp_path: Path) -> None:
+    """Une ligne encore en cours d'ecriture doit etre reprise entiere ensuite."""
+    bridge = FileBridge.open(tmp_path)
+    complete = json.dumps(
+        {
+            "protocol_version": "0.1.0",
+            "type": "unit_state",
+            "sequence": 1,
+            "game_time_ms": 1000,
+            "unit": {
+                "id": "1001",
+                "type": "unite",
+                "position": {"x": 1.0, "y": 0.0, "z": 0.0},
+                "controllable": True,
+            },
+        }
+    )
+    suivante = complete.replace('"sequence": 1', '"sequence": 2')
+
+    bridge.paths.state.write_bytes((complete + "\r\n" + suivante[:40]).encode("utf-8"))
+    assert [state.sequence for state in bridge.read_states()] == [1]
+
+    # Le Lua termine sa ligne.
+    with bridge.paths.state.open("ab") as handle:
+        handle.write((suivante[40:] + "\r\n").encode("utf-8"))
+    assert [state.sequence for state in bridge.read_states()] == [2]
+    assert not bridge.malformed
