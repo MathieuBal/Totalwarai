@@ -1,0 +1,191 @@
+# Parametres du simulateur tactique abstrait.
+#
+# Ce fichier ne decrit PAS le jeu reel : c'est un modele grossier, volontairement
+# simple et deterministe, destine a entrainer et tester l'agent sans WARHAMMER III.
+
+version: "0.1.0"
+
+rules:
+  engagement_radius: 12.0      # distance (m) a laquelle deux unites entrent en melee
+  charge_duration: 4.0         # duree (s) pendant laquelle le bonus de charge s'applique
+  flank_arc_degrees: 100.0     # demi-arc arriere considere comme un flanc/dos
+  flank_damage_bonus: 0.5      # multiplicateur de degats supplementaire sur un flanc
+  morale_rout_threshold: 0.0   # moral en dessous duquel l'unite deroute
+  morale_loss_per_strength: 90.0
+  morale_loss_flanked: 4.0
+  morale_loss_ally_routed: 6.0
+  morale_loss_lord_dead: 20.0
+  morale_recovery_per_second: 1.2
+  fatigue_move_per_second: 0.010
+  fatigue_melee_per_second: 0.022
+  fatigue_recovery_per_second: 0.008
+  fatigue_damage_penalty: 0.4  # part des degats perdue a fatigue maximale
+  damage_jitter: 0.15          # amplitude du bruit aleatoire sur les degats
+  rout_speed_multiplier: 1.35
+
+# Valeurs appliquees a tout role qui n'est pas explicitement decrit ci-dessous.
+defaults:
+  entities: 100
+  speed: 4.0
+  melee_power: 22.0
+  charge_bonus: 4.0
+  defence: 0.30
+  armour: 0.20
+  missile_range: 0.0
+  missile_power: 0.0
+  accuracy: 0.0
+  ammo: 0
+  morale: 50.0
+  value: 100.0                 # valeur relative de l'unite (rapports, recompenses)
+
+roles:
+  lord:
+    entities: 1
+    speed: 6.0
+    melee_power: 55.0
+    charge_bonus: 12.0
+    defence: 0.55
+    armour: 0.45
+    morale: 90.0
+    value: 400.0
+
+  hero_melee:
+    entities: 1
+    speed: 5.5
+    melee_power: 40.0
+    charge_bonus: 9.0
+    defence: 0.50
+    armour: 0.40
+    morale: 80.0
+    value: 250.0
+
+  hero_caster:
+    entities: 1
+    speed: 5.0
+    melee_power: 16.0
+    defence: 0.30
+    armour: 0.15
+    missile_range: 90.0
+    missile_power: 34.0
+    accuracy: 0.85
+    ammo: 40
+    morale: 70.0
+    value: 300.0
+
+  melee_infantry:
+    entities: 100
+    speed: 4.0
+    melee_power: 26.0
+    charge_bonus: 6.0
+    defence: 0.38
+    armour: 0.30
+    morale: 55.0
+    value: 120.0
+
+  spear_infantry:
+    entities: 100
+    speed: 3.8
+    melee_power: 22.0
+    charge_bonus: 4.0
+    defence: 0.42
+    armour: 0.25
+    morale: 55.0
+    value: 115.0
+
+  ranged_infantry:
+    entities: 80
+    speed: 4.2
+    melee_power: 9.0
+    defence: 0.18
+    armour: 0.10
+    missile_range: 120.0
+    missile_power: 30.0
+    accuracy: 0.75
+    ammo: 30
+    morale: 40.0
+    value: 130.0
+
+  artillery:
+    entities: 24
+    speed: 1.6
+    melee_power: 4.0
+    defence: 0.10
+    armour: 0.05
+    missile_range: 220.0
+    missile_power: 46.0
+    accuracy: 0.55
+    ammo: 20
+    morale: 35.0
+    value: 200.0
+
+  light_cavalry:
+    entities: 60
+    speed: 8.5
+    melee_power: 20.0
+    charge_bonus: 8.0
+    defence: 0.28
+    armour: 0.15
+    missile_range: 70.0
+    missile_power: 16.0
+    accuracy: 0.55
+    ammo: 20
+    morale: 50.0
+    value: 140.0
+
+  shock_cavalry:
+    entities: 60
+    speed: 8.0
+    melee_power: 30.0
+    charge_bonus: 22.0
+    defence: 0.34
+    armour: 0.35
+    morale: 60.0
+    value: 180.0
+
+  chariot:
+    entities: 12
+    speed: 7.0
+    melee_power: 26.0
+    charge_bonus: 18.0
+    defence: 0.30
+    armour: 0.30
+    morale: 55.0
+    value: 150.0
+
+  monster:
+    entities: 4
+    speed: 6.5
+    melee_power: 48.0
+    charge_bonus: 14.0
+    defence: 0.45
+    armour: 0.35
+    morale: 70.0
+    value: 260.0
+
+  flying_unit:
+    entities: 8
+    speed: 11.0
+    melee_power: 28.0
+    charge_bonus: 10.0
+    defence: 0.35
+    armour: 0.20
+    morale: 60.0
+    value: 200.0
+
+  support:
+    entities: 40
+    speed: 4.5
+    melee_power: 10.0
+    defence: 0.20
+    armour: 0.10
+    morale: 45.0
+    value: 110.0
+
+  unknown:
+    entities: 80
+    speed: 4.0
+    melee_power: 20.0
+    defence: 0.30
+    armour: 0.20
+    morale: 50.0
+    value: 100.0
