@@ -1,15 +1,15 @@
 # Faisabilité de l'intégration au jeu (Phase 0)
 
-> **Statut : premier essai en bataille effectué le 01/08/2026. Le script n'a
-> pas été chargé par le jeu.**
+> **Statut : deux essais en bataille. Le script est chargé et actif ; l'échange
+> de fichiers n'est pas encore confirmé.**
 >
-> L'essai n'a donc validé aucune API de contrôle, mais il a produit des
-> informations réelles sur l'environnement de bataille, consignées ci-dessous.
-> Il a aussi révélé un défaut de la sonde elle-même — elle n'émettait aucune
-> preuve de chargement — désormais corrigé.
+> Essai n° 2 (01/08/2026, 21 h 45) : le script est chargé depuis
+> `script/_lib/mod/`, s'exécute, détecte le contexte de bataille et démarre. Ce
+> qui reste ouvert : la publication d'états n'a pas eu lieu, et le troisième
+> essai doit dire pourquoi.
 >
-> Tant que la section [Résultats](#résultats-de-lessai-en-bataille) reste
-> incomplète, aucun comportement en jeu ne doit être présenté comme fonctionnel.
+> Tant que la section [Résultats](#résultats-de-lessai-en-bataille) n'est pas
+> complète, aucun comportement en jeu ne doit être présenté comme fonctionnel.
 
 ## Légende
 
@@ -54,9 +54,12 @@ données existent et sont lisibles par un script de bataille** :
 | identifiant stable | `unit:unique_ui_id()` | accessible | **partiellement accessible** — identifiants numériques visibles (1003, 1005, 1006…) |
 | clé d'unité | `unit:type()` | accessible | **partiellement accessible** — `wh3_main_nur_inf_plaguebearers_1` visible dans le journal |
 | position (x, y, z) | `unit:position():get_x()` … | accessible | **partiellement accessible** — triplets `[x, y, z]` visibles, y = altitude non nulle (21 à 33) |
-| unité contrôlable | `unit:is_controllable()` | accessible | **non testée** |
-| unité vivante | `unit:is_valid_target()` | accessible | **non testée** |
+| unité contrôlable | `unit:is_controllable()` | accessible | **non testée** — appelée sans erreur, résultat inconnu |
+| unité vivante | `unit:is_valid_target()` | accessible | **non testée** — idem |
 | temps de jeu | `bm:time_elapsed_ms()` | accessible | **non testée** |
+| accès au battle_manager | `bm` global | accessible | **accessible** — `contexte de bataille detecte` au chargement |
+| type de partie | `bm:is_multiplayer()` | accessible | **accessible** — appelée sans erreur, a autorisé le démarrage |
+| rappels périodiques | `bm:repeat_callback()` | accessible | **accessible** — acceptée sans erreur au démarrage |
 | phases de bataille | `bm:register_phase_change_callback` | accessible | **accessible** — `Startup`, `PrebattleWeather`, `PrebattleCinematic`, `Deployment`, `Deployed` observées dans le journal |
 | cap / orientation | `unit:bearing()` | probable | **non testée** |
 | munitions | `unit:ammo_left()` | probable | **non testée** |
@@ -178,7 +181,65 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
 
 ## Résultats de l'essai en bataille
 
-### Essai n° 1 — 01/08/2026
+### Essai n° 2 — 01/08/2026, 21 h 45
+
+Le script est placé aux deux emplacements dans le pack. Résultat :
+
+```text
+Loading mod file [script\_lib\mod\totalwar_ai_probe.lua]
+        [totalwar_ai] === fichier charge (sonde v0.1.0) ===
+        [totalwar_ai] contexte de bataille detecte : demarrage dans 1 seconde
+Mod [script\_lib\mod\totalwar_ai_probe.lua] loaded successfully
+Failed to load mod: [script\battle\mod\totalwar_ai_probe.lua]
+...
+[totalwar_ai] sonde active - protocole 0.1.0
+[totalwar_ai] repertoire d'echange attendu : ./totalwar_ai/
+```
+
+| Critère du ticket | Résultat | Notes |
+| --- | --- | --- |
+| le script Lua est chargé par le jeu | **réussi** | depuis `script/_lib/mod/` |
+| une unité réelle est détectée | **échec** | aucun message d'état, cause inconnue |
+| sa position est transmise à Python | **échec** | les trois fichiers restent absents |
+| une commande Python est lue par Lua | **non testé** | bloqué par le point précédent |
+| l'unité se déplace réellement | **non testé** | idem |
+| un accusé est reçu par Python | **non testé** | idem |
+| la commande ne peut pas être exécutée deux fois | **non testé** | idem |
+| le joueur récupère le contrôle | **non testé** | idem |
+
+**Ce qui est acquis.** `PROBE:start()` s'est exécuté : `bm` existe,
+`bm:is_multiplayer()` répond, `bm:repeat_callback()` est acceptée. La sonde est
+donc bel et bien vivante dans une vraie bataille.
+
+**`script/battle/mod/` : `Failed to load mod`.** Le second exemplaire, de même
+nom de fichier, est refusé. Le plus probable est un conflit de nom avec
+l'exemplaire déjà chargé, pas une invalidité de ce répertoire — un mod tiers y
+place son script de bataille et fonctionne. À trancher un jour ; sans importance
+pour l'instant, puisque `script/_lib/mod/` fonctionne.
+
+**Pourquoi aucun état n'a été publié.** Le journal ne le dit pas, et c'est
+précisément le problème : `publish_state` sortait en silence quand aucune unité
+contrôlable n'était trouvée, et un rappel périodique qui lève une erreur meurt
+sans laisser de trace. Trois causes restaient indistinguables : aucune unité
+contrôlable pendant la phase de déploiement, une erreur d'API, ou un droit
+d'écriture refusé.
+
+**Corrections apportées.** La sonde ne se tait plus :
+
+- un **diagnostic des entrées-sorties** est publié au démarrage, avant toute
+  détection d'unité — il dit si `io.open` existe, si l'écriture passe, et
+  distingue « dossier absent » de « droit refusé » ;
+- l'**état de l'armée** est journalisé au démarrage (unités vues, contrôlables) ;
+- `publish_state` **explique** son échec au lieu de sortir en silence, les trois
+  premières fois puis toutes les vingt ;
+- les rappels périodiques sont **protégés par `pcall`** et journalisent l'erreur.
+
+Ces corrections sont désormais vérifiées automatiquement : le script est
+**exécuté** contre un faux jeu dans `tests/integration/test_lua_probe_execution.py`
+(19 tests). Ce harnais a d'ailleurs immédiatement attrapé un appel à une fonction
+inexistante qui aurait fait échouer le troisième essai.
+
+### Essai n° 1 — 01/08/2026, 21 h 14
 
 | Critère du ticket | Résultat | Notes |
 | --- | --- | --- |

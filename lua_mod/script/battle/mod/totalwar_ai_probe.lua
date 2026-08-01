@@ -167,21 +167,60 @@ function PROBE:append_line(path, line)
     return true, nil
 end
 
---- Verifie une fois pour toutes si l'ecriture est possible ici.
---- C'est LA question de faisabilite : AI General 3 demontre la lecture en
---- bataille, mais n'ecrit qu'en frontend.
+--- Le droit d'ecrire, evalue une seule fois. Le detail du diagnostic est
+--- produit par `diagnose_io`, appele au demarrage.
 function PROBE:check_write_access()
     if self.can_write ~= nil then
         return self.can_write
     end
-    local ok, err = self:append_line(self.state_file, "")
+    local ok = self:append_line(self.state_file, "")
     self.can_write = ok and true or false
-    if ok then
-        self:log("ecriture de fichier disponible : " .. self.state_file)
-    else
-        self:log("ECRITURE INDISPONIBLE (" .. tostring(err) .. ") — repli sur le log du jeu")
-    end
     return self.can_write
+end
+
+--- Etablit ce que les entrees-sorties permettent vraiment, et le dit.
+---
+--- Appele au demarrage, avant toute detection d'unite : c'est la question de
+--- faisabilite centrale du prototype (la lecture de fichier en bataille est
+--- attestee par un mod tiers, l'ecriture ne l'est pas), et sa reponse ne doit
+--- dependre de rien d'autre — sinon un echec ailleurs la rendrait muette.
+function PROBE:diagnose_io()
+    self:log("--- diagnostic des entrees-sorties ---")
+
+    if not io or not io.open then
+        self:log("io.open INDISPONIBLE dans ce contexte : aucun echange par fichier possible")
+        self.can_write = false
+        return
+    end
+    self:log("io.open disponible")
+
+    local ok_dir, err_dir = self:append_line(self.state_file, "")
+    if ok_dir then
+        self.can_write = true
+        self:log("ECRITURE OK dans " .. self.state_file)
+        self:log("le repertoire de travail du jeu contient donc bien " .. self.dir)
+    else
+        self.can_write = false
+        self:log("ecriture refusee dans " .. self.state_file .. " (" .. tostring(err_dir) .. ")")
+
+        -- Distinguer « pas de droit d'ecriture » de « dossier absent » : on
+        -- tente la racine du repertoire de travail, qui existe forcement.
+        local ok_root, err_root = self:append_line("./totalwar_ai_probe_io_test.txt", "test")
+        if ok_root then
+            self:log("mais ECRITURE OK a la racine : le dossier " .. self.dir .. " est absent")
+            self:log("=> creer ce dossier dans le repertoire de travail du jeu")
+        else
+            self:log("ecriture refusee a la racine aussi (" .. tostring(err_root) .. ")")
+            self:log("=> ECRITURE IMPOSSIBLE en bataille : repli sur ce journal")
+        end
+    end
+
+    if self:read_file(self.command_file) then
+        self:log("lecture OK : " .. self.command_file .. " existe deja")
+    else
+        self:log("lecture : " .. self.command_file .. " absent (normal avant la 1re commande)")
+    end
+    self:log("--- fin du diagnostic ---")
 end
 
 function PROBE:file_exists(path)
@@ -242,19 +281,27 @@ end
     Unites
 ----------------------------------------------------------------------------]]
 
---- Premiere unite alliee vivante et controlable, ou nil.
+--- Premiere unite alliee vivante et controlable.
+--- Renvoie aussi le nombre d'unites vues et le nombre de controlables, pour que
+--- l'appelant puisse expliquer un echec au lieu de se taire.
 function PROBE:find_controllable_unit()
     local alliance = bm:alliances():item(bm:local_alliance())
     local army = alliance:armies():item(bm:local_army())
     local units = army:units()
+    local seen = units:count()
+    local controllable = 0
+    local first = nil
 
-    for index = 1, units:count() do
+    for index = 1, seen do
         local unit = units:item(index)
-        if unit and unit:is_valid_target() and unit:is_controllable() then
-            return unit, army
+        if unit and unit:is_controllable() then
+            controllable = controllable + 1
+            if not first and unit:is_valid_target() then
+                first = unit
+            end
         end
     end
-    return nil, army
+    return first, army, seen, controllable
 end
 
 function PROBE:unit_position(unit)
@@ -439,19 +486,37 @@ function PROBE:process_command_file()
     end
 end
 
+--- Journalise une explication, mais pas a chaque tick : les premieres fois,
+--- puis de loin en loin. Un journal noye est un journal inutile.
+function PROBE:log_occasionally(counter_name, msg)
+    local count = (self[counter_name] or 0) + 1
+    self[counter_name] = count
+    if count <= 3 or count % 20 == 0 then
+        self:log(msg .. " (occurrence " .. tostring(count) .. ")")
+    end
+end
+
 function PROBE:publish_state()
     if self.aborted then
         return
     end
-    local unit = self:find_controllable_unit()
+
+    local unit, army, seen, controllable = self:find_controllable_unit()
     if not unit then
+        -- Ne jamais echouer en silence : dire ce qu'on a vu.
+        self:log_occasionally(
+            "no_unit_count",
+            "aucune unite controlable : " .. tostring(seen) .. " unites vues, "
+                .. tostring(controllable) .. " controlables"
+        )
         return
     end
+
     self:emit_state(
         self:unit_identifier(unit),
         tostring(unit:type()),
         self:unit_position(unit),
-        unit:is_controllable()
+        true
     )
 end
 
@@ -482,18 +547,42 @@ function PROBE:is_multiplayer_or_unknown()
     return result and true or false
 end
 
+--- Execute une methode en rattrapant toute erreur.
+--- Une erreur dans un callback periodique le tue silencieusement : sans cette
+--- garde, la sonde s'arreterait sans que rien ne l'indique.
+function PROBE:guarded(method_name)
+    local ok, err = pcall(function() self[method_name](self) end)
+    if not ok then
+        self:log_occasionally(
+            "error_" .. method_name,
+            "ERREUR dans " .. method_name .. " : " .. tostring(err)
+        )
+    end
+end
+
 function PROBE:start()
     if self:is_multiplayer_or_unknown() then
         self:log("multijoueur ou type de partie inconnu : la sonde reste desactivee")
         return
     end
 
-    self:log("sonde active — protocole " .. self.protocol_version)
+    self:log("sonde active - protocole " .. self.protocol_version)
     self:log("repertoire d'echange attendu : " .. self.dir)
 
-    bm:repeat_callback(function() self:publish_state() end,
+    -- Le diagnostic des entrees-sorties passe en premier : c'est la question
+    -- de faisabilite centrale, et sa reponse ne doit dependre de rien d'autre.
+    self:diagnose_io()
+
+    local unit, _, seen, controllable = self:find_controllable_unit()
+    self:log(
+        "armee du joueur : " .. tostring(seen) .. " unites, "
+            .. tostring(controllable) .. " controlables, "
+            .. (unit and ("premiere = " .. self:unit_identifier(unit)) or "aucune utilisable")
+    )
+
+    bm:repeat_callback(function() self:guarded("publish_state") end,
         self.state_interval_ms, "totalwar_ai_state")
-    bm:repeat_callback(function() self:process_command_file() end,
+    bm:repeat_callback(function() self:guarded("process_command_file") end,
         self.poll_interval_ms, "totalwar_ai_poll")
 
     -- Filet de securite : quoi qu'il arrive, rien ne reste pris a la fin.
