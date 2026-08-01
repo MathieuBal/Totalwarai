@@ -1,0 +1,93 @@
+# Classification des unites du jeu vers la taxonomie interne de roles.
+#
+# Aucune unite du jeu n'est codee en dur dans le code Python : le classifieur
+# applique les regles ci-dessous dans l'ordre, la premiere qui correspond gagne.
+#
+# Matcheurs disponibles pour `when` (tous ceux presents doivent correspondre) :
+#   tags_all      : toutes ces etiquettes doivent etre presentes
+#   tags_any      : au moins une de ces etiquettes doit etre presente
+#   tags_none     : aucune de ces etiquettes ne doit etre presente
+#   key_contains  : au moins un de ces fragments apparait dans l'identifiant d'unite
+
+version: "0.1.0"
+default_role: unknown
+
+rules:
+  - role: lord
+    when:
+      tags_any: [lord, general, commander]
+
+  - role: hero_caster
+    when:
+      tags_any: [hero, agent]
+      tags_all: [caster]
+
+  - role: hero_melee
+    when:
+      tags_any: [hero, agent]
+
+  - role: artillery
+    when:
+      tags_any: [artillery, siege_engine, cannon]
+
+  - role: flying_unit
+    when:
+      tags_any: [flying]
+
+  - role: monster
+    when:
+      tags_any: [monster, monstrous_infantry, giant]
+
+  - role: chariot
+    when:
+      tags_any: [chariot]
+
+  - role: shock_cavalry
+    when:
+      tags_any: [cavalry]
+      tags_all: [shock]
+
+  - role: light_cavalry
+    when:
+      tags_any: [cavalry, missile_cavalry]
+
+  - role: ranged_infantry
+    when:
+      tags_any: [missile, archer, crossbow, handgunner]
+
+  - role: spear_infantry
+    when:
+      tags_any: [spear, pike, halberd, anti_large]
+
+  - role: support
+    when:
+      tags_any: [support, healer, buffer]
+
+  - role: melee_infantry
+    when:
+      tags_any: [melee, infantry, sword, shield]
+
+  # Repli sur l'identifiant lorsqu'aucune etiquette exploitable n'est fournie.
+  - role: ranged_infantry
+    when:
+      key_contains: [archer, crossbow, handgun, gunner, bow]
+
+  - role: artillery
+    when:
+      key_contains: [cannon, mortar, catapult, ballista, rocket]
+
+  - role: shock_cavalry
+    when:
+      key_contains: [knight, demigryph, lancer]
+
+  - role: light_cavalry
+    when:
+      key_contains: [outrider, pistolier, horseman, scout]
+
+  - role: spear_infantry
+    when:
+      key_contains: [spearman, pikeman, halberdier, spearmen]
+
+  - role: melee_infantry
+    when:
+      key_contains: [swordsman, warrior, greatsword, axeman]

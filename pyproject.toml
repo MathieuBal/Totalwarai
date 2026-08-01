@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "totalwar-ai"
+version = "0.1.0"
+description = "Agent tactique experimental pour les batailles solo de Total War: WARHAMMER III"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "TotalWarAI contributors" }]
+keywords = ["total-war", "tactical-ai", "game-agent", "simulation"]
+dependencies = ["pyyaml>=6.0"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+totalwar-ai = "totalwar_ai.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/totalwar_ai"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+strict = true
+warn_unreachable = true
+disallow_any_explicit = false
+
+[[tool.mypy.overrides]]
+module = "yaml"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error"]

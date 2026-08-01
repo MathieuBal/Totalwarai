@@ -1,0 +1,29 @@
+# Systeme de recompense — valeurs initiales, non equilibrees (voir README).
+# Elles sont versionnees : toute modification doit incrementer `version`,
+# car la version est enregistree avec chaque episode en memoire.
+
+version: "0.1.0"
+
+terminal:
+  victory: 1000.0
+  defeat: -1000.0
+  draw: 0.0
+
+events:
+  enemy_unit_destroyed: 100.0
+  enemy_unit_routed: 30.0
+  allied_unit_destroyed: -120.0
+  allied_unit_routed: -40.0
+  lord_killed: -250.0
+  successful_flank: 25.0
+  ranged_unit_caught_in_melee: -35.0
+  artillery_caught_in_melee: -60.0
+  unnecessary_order_change: -2.0
+  action_blocked_by_safety: -5.0
+
+continuous:
+  # Applique par seconde de jeu ecoulee.
+  isolated_unit_per_second: -0.5
+  # Applique aux variations de ratio d'effectifs entre deux etats.
+  enemy_strength_lost: 60.0
+  allied_strength_lost: -70.0

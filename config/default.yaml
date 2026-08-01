@@ -1,0 +1,58 @@
+# Configuration principale de TotalWarAI.
+# Toute valeur absente ici retombe sur les valeurs par defaut de
+# `totalwar_ai.config.DEFAULT_CONFIG`.
+
+agent:
+  mode: deterministic
+  decision_interval_seconds: 2.0
+  strategic_interval_seconds: 10.0
+  confidence_threshold: 0.55
+  allow_learning: true
+  allow_model_promotion: false
+  # Doctrine : espacement de la ligne, profondeur des echelons, reserve.
+  line_spacing: 45.0
+  missile_offset: 25.0
+  artillery_offset: 55.0
+  command_offset: 35.0
+  reserve_offset: 60.0
+  cavalry_wing_offset: 40.0
+  engagement_distance: 55.0
+  pursuit_power_ratio: 1.5
+  reserve_units: 1
+  min_line_for_reserve: 4
+
+safety:
+  emergency_stop_key: F10
+  max_orders_per_minute: 90
+  protect_lord: true
+  prevent_ranged_melee: true
+  prevent_artillery_charge: true
+  # Distance (metres) en dessous de laquelle un ennemi menace une unite a distance.
+  ranged_threat_radius: 70.0
+  # Rapport de puissance locale minimal exige avant d'accepter une charge.
+  min_local_power_ratio_for_charge: 0.6
+  # Sante en dessous de laquelle le seigneur est retire du combat.
+  lord_retreat_health_ratio: 0.35
+
+memory:
+  database_path: data/totalwar_ai.sqlite3
+  models_dir: data/models
+  replay_capacity: 250000
+  keep_raw_battles: true
+  # Adaptation (Phase 4) : ajuster la doctrine d'apres les batailles passees.
+  apply_learned_doctrine: true
+  min_battles_for_adaptation: 2
+  history_depth: 10
+
+telemetry:
+  level: INFO
+  write_jsonl: true
+  generate_report: true
+  battles_dir: data/battles
+  reports_dir: data/reports
+
+simulation:
+  tick_seconds: 0.5
+  max_battle_seconds: 900.0
+  field_width: 400.0
+  field_depth: 400.0

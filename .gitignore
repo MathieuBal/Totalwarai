@@ -1,0 +1,34 @@
+# Donnees de bataille, modeles et rapports : jamais versionnes (voir README).
+data/**
+!data/.gitkeep
+!data/battles/.gitkeep
+!data/models/.gitkeep
+!data/reports/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Bases locales
+*.sqlite3
+*.sqlite3-journal
+
+# Environnement
+.env
+
+# Editeurs
+.idea/
+.vscode/
+*.swp
+.DS_Store
