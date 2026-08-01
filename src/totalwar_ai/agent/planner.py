@@ -24,7 +24,7 @@ from totalwar_ai.agent.explainability import Decision, decide
 from totalwar_ai.agent.grouping import GroupKind, GroupSet, TacticalGroup, build_groups
 from totalwar_ai.domain.actions import ActionType, AgentAction, Formation
 from totalwar_ai.domain.battle_state import BattlePhase, BattleState
-from totalwar_ai.domain.geometry import Vector3
+from totalwar_ai.domain.geometry import Vector3, centroid
 from totalwar_ai.domain.unit_state import (
     MOBILE_ROLES,
     RANGED_ROLES,
@@ -160,7 +160,7 @@ class Planner:
         """Choisit la posture et recompose les groupes."""
         allies = state.allies()
         enemies = state.enemies()
-        anchor = state.centroid(Side.ALLY)
+        anchor = _line_anchor(state, allies)
         enemy_anchor = state.centroid(Side.ENEMY)
         front = anchor.direction_to(enemy_anchor)
         if front.length_2d() <= 1e-9:
@@ -784,6 +784,24 @@ def _split_wings(group: TacticalGroup) -> tuple[TacticalGroup, TacticalGroup]:
 
 def _wing_side(index: int) -> str:
     return "left" if index % 2 == 0 else "right"
+
+
+def _line_anchor(state: BattleState, allies: Sequence[UnitState]) -> Vector3:
+    """Point de reference du dispositif : le centre de la ligne de front.
+
+    Ancrer le plan sur le centre de gravite de toute l'armee creerait une boucle
+    de retroaction : replier les tireurs deplace le centre vers l'arriere, ce qui
+    replie encore les tireurs, et l'armee recule indefiniment sans combattre.
+    La ligne de front, elle, ne bouge que si on lui ordonne de bouger.
+    """
+    line = [
+        unit.position
+        for unit in allies
+        if unit.role not in RANGED_ROLES and unit.role not in MOBILE_ROLES
+    ]
+    if line:
+        return centroid(line)
+    return centroid(unit.position for unit in allies) if allies else Vector3()
 
 
 def _missile_edge(state: BattleState) -> float:

@@ -81,6 +81,7 @@ class DeterministicTacticalAgent:
     plan: BattlePlan | None = None
     _last_decision_time: float | None = None
     _active_signatures: dict[str, tuple[Any, ...]] = field(default_factory=dict, repr=False)
+    _blocked_signatures: set[tuple[Any, ...]] = field(default_factory=set, repr=False)
 
     @classmethod
     def from_config(cls, config: AppConfig | None = None) -> DeterministicTacticalAgent:
@@ -105,6 +106,7 @@ class DeterministicTacticalAgent:
         self.plan = None
         self._last_decision_time = None
         self._active_signatures.clear()
+        self._blocked_signatures.clear()
         self.safety.reset()
 
     def trigger_emergency_stop(self) -> None:
@@ -154,15 +156,21 @@ class DeterministicTacticalAgent:
         rear = plan.anchor - plan.front_direction.scaled(self.planner.settings.reserve_offset)
         outcome = self.safety.filter(proposals, state, rear=rear)
 
+        # Ordre volontaire : securite -> anti-repetition -> limite de debit.
+        # Le budget d'ordres par minute ne doit jamais etre consomme par des
+        # ordres redondants ou par des actions deja refusees.
         kept, suppressed = self._drop_duplicates(outcome.allowed)
+        throttled = self.safety.throttle(kept, state.game_time)
+        blocked, repeated = self._drop_repeated_blocks(outcome.blocked)
+
         self._last_decision_time = state.game_time
         return AgentTurn(
             sequence=state.sequence,
             game_time=state.game_time,
             plan=plan,
-            decisions=tuple(kept),
-            blocked=outcome.blocked,
-            suppressed=suppressed,
+            decisions=throttled.allowed,
+            blocked=(*blocked, *throttled.blocked),
+            suppressed=suppressed + repeated,
         )
 
     # --- cadence -------------------------------------------------------------
@@ -227,3 +235,20 @@ class DeterministicTacticalAgent:
             self._active_signatures[key] = signature
             kept.append(decision)
         return kept, suppressed
+
+    def _drop_repeated_blocks(self, decisions: Sequence[Decision]) -> tuple[list[Decision], int]:
+        """Ne signale un refus qu'une fois tant que la situation ne change pas.
+
+        Le planificateur reproposera la meme action a chaque cycle ; la journaliser
+        des centaines de fois noierait le rapport sans rien apprendre de plus.
+        """
+        kept: list[Decision] = []
+        repeated = 0
+        for decision in decisions:
+            signature = (decision.blocked_by, decision.action.signature())
+            if signature in self._blocked_signatures:
+                repeated += 1
+                continue
+            self._blocked_signatures.add(signature)
+            kept.append(decision)
+        return kept, repeated

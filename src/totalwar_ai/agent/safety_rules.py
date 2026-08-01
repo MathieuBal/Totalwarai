@@ -183,19 +183,21 @@ class SuicidalChargeRule(SafetyRule):
         target = state.unit(target_id) if target_id else None
         if target is None:
             return None
-        attackers = self.actors(action, state)
+        # Une unite deja au contact ne « charge » pas : rompre serait pire.
+        attackers = [unit for unit in self.actors(action, state) if not unit.is_engaged]
         if not attackers:
             return None
+        # Renforcer une melee ou nos unites tiennent deja n'est pas une charge isolee.
+        if target.is_engaged:
+            return None
 
-        friendly = sum(
-            unit.effective_strength
+        support = {
+            unit.id: unit
             for unit in state.units_within(target.position, self.radius, state.allies())
-        )
-        friendly += sum(
-            unit.effective_strength
-            for unit in attackers
-            if unit.position.distance_2d(target.position) > self.radius
-        )
+        }
+        for unit in attackers:
+            support[unit.id] = unit
+        friendly = sum(unit.effective_strength for unit in support.values())
         hostile = sum(
             unit.effective_strength
             for unit in state.units_within(target.position, self.radius, state.enemies())
@@ -211,8 +213,12 @@ class SuicidalChargeRule(SafetyRule):
                 f"rapport de forces local defavorable autour de {target.id} "
                 f"({ratio:.2f} < {self.min_ratio:.2f})"
             ),
-            replacement=retreat_action(
-                [unit.id for unit in attackers], rear, "eviter un engagement perdu d'avance"
+            # On tient la ligne plutot que de se replier : reculer ouvrirait le front.
+            replacement=AgentAction(
+                type=ActionType.HOLD_POSITION,
+                actor_ids=tuple(unit.id for unit in attackers),
+                reason="attendre un rapport de forces favorable",
+                confidence=0.9,
             ),
         )
 
@@ -343,15 +349,17 @@ class SafetyEngine:
         *,
         rear: Vector3 | None = None,
     ) -> SafetyOutcome:
-        """Filtre les decisions proposees par le planificateur.
+        """Applique les regles de securite aux decisions proposees.
 
-        Une action refusee peut etre remplacee par un ordre correctif ; la
-        substitution est elle-meme soumise a la limite d'ordres, jamais aux
-        regles (elle est par construction defensive).
+        Une action refusee peut etre remplacee par un ordre correctif, qui n'est
+        pas lui-meme re-examine : il est defensif par construction. La limite
+        d'ordres n'intervient pas ici mais dans :meth:`throttle`, apres que
+        l'agent a ecarte les ordres redondants.
         """
         if self.emergency_stop:
             blocked = tuple(
-                _blocked(decision, "arret_d_urgence", "arret d'urgence actif") for decision in decisions
+                _blocked(decision, "arret_d_urgence", "arret d'urgence actif")
+                for decision in decisions
             )
             return SafetyOutcome(allowed=(), blocked=blocked)
 
@@ -362,16 +370,7 @@ class SafetyEngine:
         for decision in decisions:
             verdict = self._first_verdict(decision.action, state, fallback_rear)
             if verdict is None:
-                if self._accept_order(state.game_time):
-                    allowed.append(decision)
-                else:
-                    blocked.append(
-                        _blocked(
-                            decision,
-                            "limite_d_ordres",
-                            f"limite de {self.settings.max_orders_per_minute} ordres par minute",
-                        )
-                    )
+                allowed.append(decision)
                 continue
 
             blocked.append(
@@ -383,7 +382,7 @@ class SafetyEngine:
                     replacement=verdict.replacement,
                 )
             )
-            if verdict.replacement is not None and self._accept_order(state.game_time):
+            if verdict.replacement is not None:
                 allowed.append(
                     Decision(
                         action=verdict.replacement,
@@ -393,6 +392,27 @@ class SafetyEngine:
                 )
 
         return SafetyOutcome(allowed=tuple(allowed), blocked=tuple(blocked))
+
+    def throttle(self, decisions: Sequence[Decision], game_time: float) -> SafetyOutcome:
+        """Applique la limite d'ordres par minute.
+
+        Appelee en dernier, une fois les ordres redondants ecartes : le budget
+        doit financer des ordres reellement nouveaux.
+        """
+        sent: list[Decision] = []
+        held: list[Decision] = []
+        for decision in decisions:
+            if self._accept_order(game_time):
+                sent.append(decision)
+            else:
+                held.append(
+                    _blocked(
+                        decision,
+                        "limite_d_ordres",
+                        f"limite de {self.settings.max_orders_per_minute} ordres par minute",
+                    )
+                )
+        return SafetyOutcome(allowed=tuple(sent), blocked=tuple(held))
 
     def _first_verdict(
         self, action: AgentAction, state: BattleState, rear: Vector3

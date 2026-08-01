@@ -140,10 +140,24 @@ class BattleState:
     ) -> list[UnitState]:
         return [unit for unit in candidates if origin.distance_2d(unit.position) <= radius]
 
-    def threats_to(self, unit: UnitState, radius: float) -> list[UnitState]:
-        """Ennemis capables d'atteindre `unit` au corps a corps a court terme."""
+    def threats_to(
+        self, unit: UnitState, radius: float, *, include_engaged: bool = False
+    ) -> list[UnitState]:
+        """Ennemis capables d'atteindre `unit` au corps a corps a court terme.
+
+        Par defaut, un ennemi deja fixe dans une autre melee n'est pas compte :
+        il ne peut pas fondre sur nos tireurs sans d'abord se degager. Sans ce
+        filtre, l'agent replierait ses tireurs des qu'un combat a lieu a portee.
+        """
         hostiles = self.enemies() if unit.is_ally else self.allies()
-        return self.units_within(unit.position, radius, hostiles)
+        nearby = self.units_within(unit.position, radius, hostiles)
+        if include_engaged:
+            return nearby
+        return [
+            hostile
+            for hostile in nearby
+            if not hostile.is_engaged or hostile.current_target_id == unit.id
+        ]
 
     def is_isolated(self, unit: UnitState, radius: float = 60.0) -> bool:
         """Unite sans allie a portee de soutien, alors que des ennemis rodent."""
