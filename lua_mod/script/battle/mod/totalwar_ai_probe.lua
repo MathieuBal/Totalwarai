@@ -92,11 +92,23 @@ local function json_string(text)
     return '"' .. escape_string(text) .. '"'
 end
 
+--- Formate un nombre pour du JSON, sans jamais toucher a `math`.
+---
+--- L'environnement Lua du jeu est restreint : `math.huge` y vaut nil, ce qui a
+--- fait echouer la sonde au troisieme essai. On evite donc toute la
+--- bibliotheque `math`, y compris `math.floor`, dont la presence n'est pas
+--- davantage garantie.
+---
+--- * NaN se reconnait a ce qu'il est different de lui-meme ;
+--- * l'infini se reconnait a ce que `x * 0` ne vaut pas 0 (un fini, si).
 local function json_number(value)
-    if value ~= value or value == math.huge or value == -math.huge then
+    if type(value) ~= "number" then
+        return "0"
+    end
+    if value ~= value or value * 0 ~= 0 then
         return "0" -- ni NaN ni infini dans un JSON valide
     end
-    if value == math.floor(value) then
+    if value % 1 == 0 then
         return string.format("%d", value)
     end
     return string.format("%.3f", value)
@@ -232,6 +244,22 @@ end
     Messages sortants
 ----------------------------------------------------------------------------]]
 
+--- Ecrit une ligne, et se plaint si l'ecriture echoue.
+---
+--- Le droit d'ecriture a ete constate une seule fois, au demarrage, en phase de
+--- deploiement. Rien ne garantit qu'il subsiste toute la bataille. Un echec
+--- ulterieur doit donc se voir dans le journal plutot que de passer inapercu.
+function PROBE:write_or_complain(path, line, label)
+    local ok, err = self:append_line(path, line)
+    if not ok then
+        self:log_occasionally(
+            "write_failure_" .. label,
+            "ECRITURE REFUSEE dans " .. path .. " : " .. tostring(err)
+        )
+    end
+    return ok
+end
+
 function PROBE:emit_state(unit_id, unit_type, position, controllable)
     self.sequence = self.sequence + 1
     local line = "{"
@@ -253,7 +281,7 @@ function PROBE:emit_state(unit_id, unit_type, position, controllable)
     -- Le log recoit systematiquement le message : c'est le canal de repli.
     self:log("STATE " .. line)
     if self:check_write_access() then
-        self:append_line(self.state_file, line)
+        self:write_or_complain(self.state_file, line, "state")
     end
     return self.sequence
 end
@@ -273,7 +301,7 @@ function PROBE:emit_ack(sequence, status, error_message, detail)
 
     self:log("ACK " .. line)
     if self:check_write_access() then
-        self:append_line(self.ack_file, line)
+        self:write_or_complain(self.ack_file, line, "ack")
     end
 end
 

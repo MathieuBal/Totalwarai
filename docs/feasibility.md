@@ -1,15 +1,19 @@
 # Faisabilité de l'intégration au jeu (Phase 0)
 
-> **Statut : deux essais en bataille. Le script est chargé et actif ; l'échange
-> de fichiers n'est pas encore confirmé.**
+> **Statut : trois essais en bataille. Le risque principal du projet est levé —
+> un script de bataille peut écrire et lire des fichiers. L'aller-retour complet
+> reste à faire.**
 >
-> Essai n° 2 (01/08/2026, 21 h 45) : le script est chargé depuis
-> `script/_lib/mod/`, s'exécute, détecte le contexte de bataille et démarre. Ce
-> qui reste ouvert : la publication d'états n'a pas eu lieu, et le troisième
-> essai doit dire pourquoi.
+> Essai n° 3 (01/08/2026, 22 h 10) : `ECRITURE OK`. Le Lua écrit dans
+> `./totalwar_ai/`, Python y lit, et la sonde recense onze unités alliées réelles
+> toutes contrôlables. La publication d'états échouait ensuite sur une erreur de
+> notre code — `math.huge` n'existe pas dans le bac à sable Lua du jeu — depuis
+> corrigée et couverte par un test de non-régression.
 >
-> Tant que la section [Résultats](#résultats-de-lessai-en-bataille) n'est pas
-> complète, aucun comportement en jeu ne doit être présenté comme fonctionnel.
+> Ce qui reste ouvert : commande lue par le Lua, déplacement réel, accusé,
+> non-répétition, restitution du contrôle. Tant que ces lignes ne sont pas
+> cochées dans la section [Résultats](#résultats-de-lessai-en-bataille), aucun
+> de ces comportements ne doit être présenté comme fonctionnel.
 
 ## Légende
 
@@ -22,7 +26,7 @@
 
 ## Environnement testé
 
-Relevé lors de l'essai du 01/08/2026 (`script_log_010826_2114.txt`) :
+Relevé lors des essais du 01/08/2026 :
 
 | Élément | Valeur observée |
 | --- | --- |
@@ -32,6 +36,15 @@ Relevé lors de l'essai du 01/08/2026 (`script_log_010826_2114.txt`) :
 | Type de bataille | bataille sans script dédié, avec « Battle Fundamentals scripted tour » actif |
 | Mods chargés | `script\_lib\mod\qa_console.lua`, `script\_lib\mod\test_script_here.lua` — **aucun mod utilisateur** |
 | Unités présentes | 22 `script_unit` : alliance 1 armée 1 = 11 unités (joueur), alliance 2 armée 1 = 11 unités |
+| Répertoire de travail | le dossier d'installation : `./totalwar_ai/` créé à la main y est bien trouvé |
+| Bibliothèque `math` | **restreinte** — `math.huge` vaut `nil` (essai n° 3). Ne rien supposer du reste : la sonde n'utilise plus `math` du tout |
+
+**Sur le bac à sable Lua.** Le jeu n'expose pas une bibliothèque standard
+complète. `math.huge` est absent ; `io.open` est présent. Il n'y a pas de liste
+publiée de ce qui subsiste, donc la règle de conduite est de n'employer que ce
+qui a été vu fonctionner, et de faire tourner le script contre un environnement
+volontairement amputé avant chaque essai (voir `restricted_math` dans
+`tests/integration/test_lua_probe_execution.py`).
 
 ## Observation — ce que le Lua expose
 
@@ -50,13 +63,13 @@ données existent et sont lisibles par un script de bataille** :
 
 | Donnée | API pressentie | Attendu | En bataille |
 | --- | --- | --- | --- |
-| liste des unités alliées | `alliance:armies():item():units()` | accessible | **partiellement accessible** — le jeu recense bien 11 unités alliées, non vérifié par notre code |
-| identifiant stable | `unit:unique_ui_id()` | accessible | **partiellement accessible** — identifiants numériques visibles (1003, 1005, 1006…) |
-| clé d'unité | `unit:type()` | accessible | **partiellement accessible** — `wh3_main_nur_inf_plaguebearers_1` visible dans le journal |
-| position (x, y, z) | `unit:position():get_x()` … | accessible | **partiellement accessible** — triplets `[x, y, z]` visibles, y = altitude non nulle (21 à 33) |
-| unité contrôlable | `unit:is_controllable()` | accessible | **non testée** — appelée sans erreur, résultat inconnu |
-| unité vivante | `unit:is_valid_target()` | accessible | **non testée** — idem |
-| temps de jeu | `bm:time_elapsed_ms()` | accessible | **non testée** |
+| liste des unités alliées | `alliance:armies():item():units()` | accessible | **accessible** — notre code recense 11 unités (essai n° 3) |
+| identifiant stable | `unit:unique_ui_id()` | accessible | **accessible** — notre code lit `1001` (essai n° 3) |
+| clé d'unité | `unit:type()` | accessible | **accessible** — appelée sans erreur par notre code (essai n° 3) |
+| position (x, y, z) | `unit:position():get_x()` … | accessible | **accessible** — les trois accesseurs répondent (essai n° 3) ; y = altitude non nulle (21 à 33) |
+| unité contrôlable | `unit:is_controllable()` | accessible | **accessible** — vraie pour 11 unités sur 11 en phase de déploiement |
+| unité vivante | `unit:is_valid_target()` | accessible | **accessible** — vraie pour la première unité retenue |
+| temps de jeu | `bm:time_elapsed_ms()` | accessible | **non testée** — l'appel se situait juste après le point de crash |
 | accès au battle_manager | `bm` global | accessible | **accessible** — `contexte de bataille detecte` au chargement |
 | type de partie | `bm:is_multiplayer()` | accessible | **accessible** — appelée sans erreur, a autorisé le démarrage |
 | rappels périodiques | `bm:repeat_callback()` | accessible | **accessible** — acceptée sans erreur au démarrage |
@@ -93,15 +106,21 @@ C'est le point qui décide de tout le reste.
 
 | Sens | Mécanisme | Attendu | En bataille |
 | --- | --- | --- | --- |
-| Python → Lua (commande) | `io.open(chemin, "r")` | **accessible** : un mod tiers lit sa configuration ainsi depuis un script de bataille | **non testée** |
-| Lua → Python (état, accusé) | `io.open(chemin, "a")` | **incertain** : le mod étudié n'écrit que depuis le frontend, jamais en bataille | **non testée** |
-| Lua → Python (repli) | `out()` vers le journal du jeu | accessible | **non testée** |
+| Python → Lua (commande) | `io.open(chemin, "r")` | **accessible** : un mod tiers lit sa configuration ainsi depuis un script de bataille | **accessible** — la sonde ouvre le fichier de commande en lecture et distingue « absent » de « illisible » (essai n° 3) |
+| Lua → Python (état, accusé) | `io.open(chemin, "a")` | **incertain** : le mod étudié n'écrit que depuis le frontend, jamais en bataille | **accessible** — `ECRITURE OK dans ./totalwar_ai/totalwar_ai_state.jsonl`, et `probe --status` côté Python a vu le fichier apparaître (essai n° 3) |
+| Lua → Python (repli) | `out()` vers le journal du jeu | accessible | **accessible** — c'est ce canal qui a permis de diagnostiquer les trois essais |
 
-**C'est le risque principal du prototype.** Si l'écriture est refusée en
-contexte bataille, l'aller-retour complet par fichiers tombe, et il faudra se
-rabattre sur la lecture du journal du jeu — plus lente, en lecture seule, mais
-suffisante pour observer. La sonde teste explicitement ce droit au premier
-message et écrit `ECRITURE INDISPONIBLE` dans le journal si elle échoue.
+**C'était le risque principal du prototype ; il est levé.** L'écriture depuis un
+script de bataille fonctionne, dans le répertoire de travail du jeu, et Python
+relit ce que le Lua écrit. Le repli par lecture du journal — plus lent et en
+lecture seule — n'a donc pas à être retenu comme mécanisme principal.
+
+Une précision qui compte pour la suite : ce droit d'écriture a été constaté
+pendant la **phase de déploiement**, avant tout engagement. Rien ne dit encore
+qu'il subsiste une fois la bataille commencée. Le droit est testé une seule fois
+au démarrage et mémorisé — mais un refus ultérieur est désormais journalisé
+(`ECRITURE REFUSEE dans …`) au lieu d'être avalé, et le journal du jeu continue
+de recevoir chaque état en repli. Deux tests couvrent ce scénario.
 
 ## Protocole d'essai
 
@@ -174,12 +193,72 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
 | aucune ligne `=== fichier charge ===` dans le journal | le jeu ne trouve pas le fichier. Vérifier : pack activé, aucun dossier avant `script` dans l'arborescence, extension `.lua` et non `.lua.txt`, pack modifié jeu fermé |
 | `fichier charge` présent, mais `pas de battle_manager` | le fichier est bien chargé mais hors bataille (menu, campagne). Normal : relancer une bataille |
 | `fichier charge` présent, puis plus rien | la sonde est chargée mais `start()` échoue. Chercher une erreur de script juste après |
-| `ECRITURE INDISPONIBLE` | c'est le résultat attendu du risque principal : consigner le message d'erreur exact, et basculer sur le repli par journal |
+| `ECRITURE INDISPONIBLE` | le droit d'écriture est refusé ; il a pourtant fonctionné à l'essai n° 3, donc vérifier d'abord que `<installation>/totalwar_ai/` existe |
+| `ECRITURE REFUSEE dans …` | le droit a été perdu **en cours de bataille** alors qu'il était acquis au démarrage. Consigner le message et l'instant : ce serait une découverte, non couverte par les essais |
+| `ERREUR dans publish_state : … (a nil value)` | la sonde emploie une fonction absente du bac à sable Lua du jeu. Relever le nom exact, l'ajouter à l'environnement amputé des tests, corriger |
 | `multijoueur ou type de partie inconnu` | garde-fou volontaire ; vérifier qu'il s'agit bien d'une bataille solo |
 | aucun état reçu côté Python | comparer le dossier affiché par `probe --status` et celui où le jeu écrit réellement |
 | `uc:add_units a echoue` | l'unité est dans un groupe verrouillé ; en essayer une autre |
 
 ## Résultats de l'essai en bataille
+
+### Essai n° 3 — 01/08/2026, 22 h 10
+
+Le diagnostic ajouté après l'essai n° 2 a fait exactement son travail : il a
+répondu à la question de faisabilité, puis désigné le défaut suivant.
+
+```text
+[totalwar_ai] --- diagnostic des entrees-sorties ---
+[totalwar_ai] io.open disponible
+[totalwar_ai] ECRITURE OK dans ./totalwar_ai/totalwar_ai_state.jsonl
+[totalwar_ai] le repertoire de travail du jeu contient donc bien ./totalwar_ai/
+[totalwar_ai] lecture : ./totalwar_ai/totalwar_ai_command.json absent (normal avant la 1re commande)
+[totalwar_ai] --- fin du diagnostic ---
+[totalwar_ai] armee du joueur : 11 unites, 11 controlables, premiere = 1001
+[totalwar_ai] ERREUR dans publish_state : …:96: attempt to perform arithmetic on field 'huge' (a nil value) (occurrence 1)
+```
+
+| Critère du ticket | Résultat | Notes |
+| --- | --- | --- |
+| le script Lua est chargé par le jeu | **réussi** | depuis `script/_lib/mod/` |
+| l'écriture de fichier est possible en bataille | **réussi** | `ECRITURE OK` — c'était le risque principal du projet |
+| la lecture de fichier est possible en bataille | **réussi** | fichier de commande ouvert, absence correctement distinguée d'une erreur |
+| une unité réelle est détectée | **réussi** | 11 unités alliées, 11 contrôlables, première = `1001` |
+| sa position est transmise à Python | **échec** | erreur de sérialisation, corrigée depuis |
+| une commande Python est lue par Lua | **non testé** | bloqué par le point précédent |
+| l'unité se déplace réellement | **non testé** | idem |
+| un accusé est reçu par Python | **non testé** | idem |
+| la commande ne peut pas être exécutée deux fois | **non testé** | idem |
+| le joueur récupère le contrôle | **non testé** | idem |
+
+**Ce que cet essai établit.** Le pont par fichiers est viable. Le Lua écrit dans
+le répertoire de travail du jeu, et `probe --status` côté Python a vu le fichier
+d'état apparaître : les deux moitiés se parlent bien par le même dossier. Sur
+l'API d'observation, tout ce que la sonde appelle avant le point de crash a
+répondu — `alliances`, `armies`, `units`, `count`, `item`, `is_controllable`,
+`is_valid_target`, `unique_ui_id`, `type`, `position:get_x/y/z`. Les arguments
+d'un appel Lua étant évalués avant l'appel, leur succès est acquis. Reste hors
+d'atteinte de cet essai `bm:time_elapsed_ms()`, situé juste après.
+
+**Le défaut.** `json_number` écartait NaN et l'infini en comparant à
+`math.huge`, et arrondissait avec `math.floor`. Le bac à sable Lua du jeu ne
+fournit ni l'un ni l'autre : `-math.huge` est une soustraction sur `nil`, donc
+une erreur, à la toute première sérialisation. Le rappel périodique étant
+protégé par `pcall` depuis l'essai n° 2, la sonde n'est pas morte — elle a
+signalé l'erreur 160 fois d'affilée avec la bonne cadence. Le garde-fou a tenu ;
+c'est le code qu'il protégeait qui était faux.
+
+**La correction.** `json_number` n'emploie plus `math` du tout. NaN se reconnaît
+à `value ~= value`, l'infini à `value * 0 ~= 0` (nul pour tout nombre fini), et
+l'entier à `value % 1 == 0`. Deux tests de non-régression exécutent la sonde
+dans un interpréteur où `math.huge` et `math.floor` ont été effacés ; vérifiés
+défaillants avec l'ancien code, ils reproduisaient le message d'erreur exact
+relevé en jeu.
+
+**Leçon retenue.** Le bac à sable du jeu n'est pas la bibliothèque standard. La
+seule défense fiable est d'exécuter le script contre un environnement amputé
+avant chaque essai, plutôt que de supposer disponible ce qui l'est partout
+ailleurs.
 
 ### Essai n° 2 — 01/08/2026, 21 h 45
 
@@ -236,8 +315,9 @@ d'écriture refusé.
 
 Ces corrections sont désormais vérifiées automatiquement : le script est
 **exécuté** contre un faux jeu dans `tests/integration/test_lua_probe_execution.py`
-(19 tests). Ce harnais a d'ailleurs immédiatement attrapé un appel à une fonction
-inexistante qui aurait fait échouer le troisième essai.
+(23 tests). Ce harnais a d'ailleurs immédiatement attrapé un appel à une fonction
+inexistante qui aurait fait échouer le troisième essai — et il couvre depuis le
+bac à sable amputé découvert lors de ce même essai.
 
 ### Essai n° 1 — 01/08/2026, 21 h 14
 
@@ -299,8 +379,11 @@ fichiers d'échange.*
 
 ## Ce qui est vérifié à ce stade
 
-Pour être juste envers le travail déjà fait, voici ce qui **est** établi — et
-qui ne concerne que la moitié Python :
+**Établi en bataille réelle** (essai n° 3) : l'écriture et la lecture de
+fichiers depuis un script de bataille, la détection des unités alliées, leur
+identifiant, leur type, leur position, et le fait qu'elles soient contrôlables.
+
+**Établi hors du jeu seulement** — vrai du code, muet sur le moteur :
 
 - le pont écrit les commandes atomiquement (`os.replace` dans le répertoire
   cible), sans jamais laisser de fichier temporaire, même en cas d'échec ;
@@ -312,16 +395,24 @@ qui ne concerne que la moitié Python :
   script Lua — y compris indenté, et sans notation scientifique, un défaut
   trouvé et corrigé pendant l'écriture des tests ;
 - les règles de séquence, de refus et d'arrêt d'urgence tiennent, éprouvées
-  contre une reproduction en Python de la logique du script.
+  contre une reproduction en Python de la logique du script ;
+- le script Lua lui-même est **exécuté** contre un faux jeu, y compris dans un
+  environnement où `math` a été amputé comme dans le jeu.
 
-Voir `tests/unit/test_file_bridge.py` et `tests/integration/test_lua_protocol.py`.
-Ces tests ne remplacent pas l'essai en bataille et ne prétendent pas le faire.
+Voir `tests/unit/test_file_bridge.py`, `tests/integration/test_lua_protocol.py`
+et `tests/integration/test_lua_probe_execution.py`. Ces tests ne remplacent pas
+l'essai en bataille et ne prétendent pas le faire : le faux jeu ne dit rien des
+groupes verrouillés, ni de ce que le moteur fait vraiment d'un ordre.
 
 ## Décision
 
-À prendre à l'issue de l'essai :
+**Tranché par l'essai n° 3 :** le mécanisme de communication retenu est
+**l'échange par fichiers**. Le repli par lecture du journal du jeu reste utile
+comme canal de diagnostic — chaque état et chaque accusé y sont écrits en plus
+du fichier — mais n'a pas à devenir le mécanisme principal.
 
-- le mécanisme de communication retenu (fichiers, ou repli par journal) ;
+Restent à trancher, à l'issue de l'aller-retour complet :
+
 - les champs du protocole complet à rendre optionnels ;
 - les actions à retirer du périmètre de la première intégration ;
 - s'il faut faire évoluer `PROTOCOL_VERSION`.

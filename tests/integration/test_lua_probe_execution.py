@@ -38,7 +38,13 @@ FAKE_BATTLE = ROOT / "tests" / "fixtures" / "fake_battle.lua"
 class Probe:
     """Sonde Lua chargee dans un interpreteur, pilotable depuis Python."""
 
-    def __init__(self, workdir: Path, units: list[tuple[str, str, float, float, bool]]) -> None:
+    def __init__(
+        self,
+        workdir: Path,
+        units: list[tuple[str, str, float, float, bool]],
+        *,
+        restricted_math: bool = False,
+    ) -> None:
         from lupa import LuaRuntime
 
         self.workdir = workdir
@@ -58,7 +64,16 @@ class Probe:
             "end\n"
         )
 
+        if restricted_math:
+            # Le sandbox Lua du jeu ne fournit pas tout : `math.huge` y vaut nil,
+            # ce qui a fait echouer la sonde lors du troisieme essai en bataille.
+            # Le faux jeu doit pouvoir reproduire cette restriction.
+            self.runtime.execute("MATH_BACKUP = { huge = math.huge, floor = math.floor }")
+
         self.runtime.execute(FAKE_BATTLE.read_text(encoding="utf-8"))
+
+        if restricted_math:
+            self.runtime.execute("math.huge = nil\nmath.floor = nil\n")
         self.fake = self.lua.FAKE
         lua_units = self.runtime.eval("function(f) return {} end")(self.fake)
         table = self.runtime.eval("{}")
@@ -71,6 +86,23 @@ class Probe:
 
     def advance(self, ms: int) -> None:
         self.fake.advance(self.fake, ms)
+
+    def deny_writes(self) -> None:
+        """Retire le droit d'ecriture apres coup, sans toucher a la lecture.
+
+        Reproduit le cas ou le jeu accorde l'ecriture en phase de deploiement
+        puis la retire une fois la bataille engagee — hypothese non infirmee,
+        puisque le seul essai concluant s'est deroule avant l'engagement.
+        """
+        self.runtime.execute(
+            "local real_open = io.open\n"
+            "io.open = function(path, mode)\n"
+            "  if mode == 'a' or mode == 'w' then\n"
+            "    return nil, 'permission refusee (simulee)'\n"
+            "  end\n"
+            "  return real_open(path, mode)\n"
+            "end\n"
+        )
 
     def log(self) -> list[str]:
         raw = self.fake.log
@@ -334,3 +366,78 @@ def test_le_double_chargement_est_ignore(probe: Probe) -> None:
     """Le fichier peut etre place a deux emplacements dans le pack."""
     probe.runtime.execute(PROBE.read_text(encoding="utf-8"))
     assert probe.grep("second exemplaire ignore")
+
+
+# --- robustesse a l'environnement restreint du jeu ---------------------------
+
+
+def test_la_sonde_fonctionne_sans_math_huge(workdir: Path) -> None:
+    """Regression du troisieme essai en bataille.
+
+    Le jeu restreint la bibliotheque `math` : `math.huge` y vaut nil. La sonde
+    bouclait alors sur `attempt to perform arithmetic on field 'huge'`, une fois
+    par seconde, sans jamais publier le moindre etat.
+    """
+    probe = Probe(
+        workdir,
+        units=[("1001", "wh3_main_nur_inf_plaguebearers_1", 24.5, -303.1, True)],
+        restricted_math=True,
+    )
+    probe.advance(3000)
+
+    assert not probe.grep("ERREUR dans publish_state"), probe.grep("ERREUR")
+
+    bridge = FileBridge.open(workdir)
+    etats = bridge.read_states()
+    assert etats, "aucun etat publie alors que math est restreint"
+    assert etats[0].unit_id == "1001"
+    assert etats[0].position.x == pytest.approx(24.5, abs=0.01)
+
+
+def test_aller_retour_complet_sans_math_huge(workdir: Path) -> None:
+    """L'aller-retour entier doit tenir dans l'environnement restreint du jeu."""
+    probe = Probe(
+        workdir,
+        units=[("1001", "unite", 0.0, 0.0, True)],
+        restricted_math=True,
+    )
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+
+    etat = bridge.read_states()[-1]
+    commande = bridge.move_unit(etat.unit_id, Vector3(etat.position.x + 20.0, 0.0, etat.position.z))
+    probe.advance(1000)
+
+    acks = bridge.read_acks()
+    assert acks and acks[0].sequence == commande.sequence
+    assert acks[0].accepted
+    assert not probe.grep("ERREUR")
+
+
+# --- perte du droit d'ecriture en cours de bataille --------------------------
+
+
+def test_la_perte_du_droit_d_ecriture_est_signalee(probe: Probe) -> None:
+    """Un refus d'ecriture apres le demarrage ne doit pas passer sous silence.
+
+    Le droit d'ecriture n'a ete constate qu'en phase de deploiement. S'il
+    disparaissait ensuite, la sonde cesserait de publier ; sans message, cela
+    ressemblerait a une panne muette — exactement ce que le deuxieme essai en
+    bataille a coute.
+    """
+    probe.advance(2000)
+    probe.deny_writes()
+    probe.advance(3000)
+
+    assert probe.grep("ECRITURE REFUSEE")
+
+
+def test_la_perte_du_droit_d_ecriture_ne_tue_pas_la_sonde(probe: Probe) -> None:
+    """Le journal reste un canal de repli : les etats continuent d'y paraitre."""
+    probe.advance(2000)
+    probe.deny_writes()
+    avant = len(probe.grep("STATE "))
+    probe.advance(3000)
+
+    assert len(probe.grep("STATE ")) > avant
+    assert not probe.grep("ERREUR")

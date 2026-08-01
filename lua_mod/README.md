@@ -107,6 +107,23 @@ trancher.
   est ignorée. Le numéro est consommé *avant* exécution, pour qu'une commande en
   échec ne soit pas retentée en boucle.
 
+## Le bac à sable Lua du jeu
+
+Lua **5.1**, avec une bibliothèque standard **incomplète** : `math.huge` y vaut
+`nil`. C'est ce qui a fait échouer le troisième essai en bataille. Il n'existe
+pas de liste publiée de ce qui subsiste, donc une seule règle de conduite :
+
+> N'employer que ce qui a été vu fonctionner en jeu, et faire tourner le script
+> contre un environnement volontairement amputé avant chaque essai.
+
+`io.open` est disponible, en lecture comme en écriture, depuis un script de
+bataille — vérifié en jeu. La sonde, elle, n'utilise plus `math` du tout.
+
+Le harnais `tests/integration/test_lua_probe_execution.py` **exécute** ce script
+dans un interpréteur Lua, et son option `restricted_math` reproduit la
+restriction constatée. Toute nouvelle dépendance à la bibliothèque standard
+devrait y être ajoutée avant d'être employée ici.
+
 ## Limites connues
 
 - L'analyseur JSON est volontairement partiel : il ne comprend que les messages
