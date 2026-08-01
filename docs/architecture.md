@@ -34,12 +34,12 @@ branchement au jeu ne doit rien changer aux couches de droite.
 | Paquet | Rôle | Dépend de |
 | --- | --- | --- |
 | `domain` | Contrats de données immuables : `Vector3`, `UnitState`, `BattleState`, `AgentAction`, `ActionResult`. Aucune logique de jeu. | — |
-| `bridge` | Protocole versionné et adaptateurs. Aujourd'hui : `MockBridge`. | `domain` |
+| `bridge` | Protocole versionné et adaptateurs : `MockBridge`, plus la sonde d'intégration au jeu (`file_bridge`, `command_models`, `paths`). | `domain` |
 | `agent` | Classification, groupes, planification, sécurité, explicabilité. | `domain`, `config` |
 | `simulation` | Simulateur abstrait, scénarios, boucle de bataille. | tout le reste |
 | `telemetry` | Événements structurés, journal JSONL, rapport Markdown. | `domain`, `agent` |
 | `memory` | Persistance SQLite, transitions, tampon de rejeu. | `domain`, `telemetry` |
-| `learning` | Barème de récompense, adaptation de la doctrine et checkpoints. L'entraînement de modèles viendra en Phase 6. | `domain`, `telemetry`, `memory` |
+| `learning` | Barème de récompense, adaptation de la doctrine, checkpoints et banc d'évaluation. L'entraînement de modèles viendra en Phase 6. | `domain`, `telemetry`, `memory` |
 
 Règle de dépendance : `domain` ne dépend de rien, et rien dans `domain`,
 `bridge` ou `agent` ne connaît le simulateur. Un adaptateur vers le jeu réel
@@ -55,6 +55,12 @@ Deux points de vigilance, appris en ajoutant l'adaptation :
   `telemetry/__init__.py` ne ré-exporte volontairement pas `report`, qui dépend
   de `learning`, lequel dépend de `telemetry.events` : l'import du paquet
   bouclerait.
+- **`telemetry` ne connaît `agent` qu'en annotation.** `battle_logger` type ses
+  paramètres avec `Decision` sous `TYPE_CHECKING` : un import réel refermerait
+  la boucle `agent → learning → telemetry → agent`.
+- **`learning.evaluation` importe `run_battle` dans le corps de la fonction**,
+  pas au niveau du module : `simulation` dépend de `learning`, l'inverse ne doit
+  exister qu'au moment de l'appel.
 
 ## Décisions structurantes
 
@@ -98,6 +104,33 @@ l'arrière, ce qui replie encore les tireurs : l'armée recule indéfiniment san
 jamais combattre. Ce défaut a été observé puis corrigé pendant le développement
 du simulateur.
 
+### La sonde d'intégration parle un protocole séparé
+
+`bridge/command_models.py` définit un protocole **plus pauvre** que celui de
+`bridge/protocol.py` : une unité, un ordre de déplacement, un accusé. Ce n'est
+pas un doublon mais une sonde — son seul rôle est de répondre à « que peut-on
+réellement observer et commander dans le jeu ? » sur le plus petit périmètre
+possible.
+
+`FileBridge` n'implémente donc pas l'interface `Bridge` : il ne parle pas la même
+langue. `ProbeUnitState.to_unit_state()` montre le raccord vers le domaine
+complet, que l'adaptateur définitif empruntera une fois la question tranchée.
+
+Les deux moitiés sont maintenues cohérentes par `tests/integration/test_lua_protocol.py`,
+qui lit le script Lua pour vérifier que noms de fichiers, version de protocole et
+motifs d'analyse concordent avec le code Python.
+
+### Le banc est la référence, pas l'intuition
+
+`totalwar-ai bench` rejoue les dix scénarios de référence du `README.md` à
+graines fixes et **sans mémoire** — aucune doctrine apprise n'est appliquée, de
+sorte qu'un écart soit imputable au changement de code et à rien d'autre.
+
+La comparaison à la référence enregistrée se fait **scénario par scénario** :
+une amélioration en moyenne ne rachète pas l'effondrement d'une situation, et la
+survie du seigneur ne tolère aucune baisse. La commande sort en code 1 en cas de
+régression, ce qui la rend utilisable telle quelle comme garde-fou.
+
 ### Une doctrine ajoutée doit être mesurée avant d'être gardée
 
 `REORIENT_FRONT` a été implémenté puis retiré : la mesure sur le banc de
@@ -128,7 +161,10 @@ pas disparaître parce qu'une nouvelle bataille commence.
 
 ## Ce qui n'existe pas encore
 
-- mod Lua et pont réel (Phase 0 — voir `docs/feasibility.md`) ;
+- **l'intégration au jeu vérifiée.** La sonde `lua_mod/` et son pont Python sont
+  écrits et testés entre eux, mais n'ont jamais été exécutés dans
+  *WARHAMMER III*. Tant que [`feasibility.md`](feasibility.md) n'est pas rempli,
+  rien de ce qui touche au jeu ne doit être présenté comme fonctionnel ;
 - apprentissage par imitation, entraîneur hors ligne et évaluateur de modèles
   (Phases 5 et 6) ;
 - sièges, embuscades, sorts, doctrines par faction (Phase 7).

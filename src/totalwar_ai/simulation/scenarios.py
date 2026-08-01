@@ -55,6 +55,9 @@ def _unit(
     z: float,
     *,
     tags: tuple[str, ...] = (),
+    health: float = 1.0,
+    morale_ratio: float = 1.0,
+    routing: bool = False,
 ) -> UnitSpec:
     return UnitSpec(
         id=unit_id,
@@ -64,6 +67,9 @@ def _unit(
         heading=ALLY_HEADING if side is Side.ALLY else ENEMY_HEADING,
         tags=tags,
         unit_key=unit_id,
+        initial_health=health,
+        initial_morale_ratio=morale_ratio,
+        initial_routing=routing,
     )
 
 
@@ -187,6 +193,140 @@ def outnumbered() -> Scenario:
     )
 
 
+def numerical_superiority() -> Scenario:
+    """Superiorite numerique : savoir en profiter sans se disperser."""
+    units = [
+        *_line(Side.ALLY, UnitRole.MELEE_INFANTRY, 4, -60.0, prefix="a_inf", tags=("melee",)),
+        *_line(Side.ALLY, UnitRole.RANGED_INFANTRY, 2, -100.0, prefix="a_arc", tags=("missile",)),
+        _unit(
+            "a_cav1", Side.ALLY, UnitRole.SHOCK_CAVALRY, -140.0, -80.0, tags=("cavalry", "shock")
+        ),
+        _unit("a_lord1", Side.ALLY, UnitRole.LORD, 0.0, -120.0, tags=("lord",)),
+        *_line(Side.ENEMY, UnitRole.MELEE_INFANTRY, 3, 80.0, prefix="e_inf", tags=("melee",)),
+    ]
+    return Scenario(
+        name="numerical_superiority",
+        description="Huit unites alliees contre trois : exploiter l'avantage.",
+        units=tuple(units),
+        seed=67,
+        tags=("reference", "superiorite"),
+    )
+
+
+def slow_versus_mobile() -> Scenario:
+    """Armee lente contre armee mobile : ne pas courir apres la cavalerie."""
+    units = [
+        *_line(Side.ALLY, UnitRole.SPEAR_INFANTRY, 3, -60.0, prefix="a_spear", tags=("spear",)),
+        _unit("a_art1", Side.ALLY, UnitRole.ARTILLERY, 0.0, -120.0, tags=("artillery",)),
+        _unit("a_lord1", Side.ALLY, UnitRole.LORD, 0.0, -100.0, tags=("lord",)),
+        _unit("e_cav1", Side.ENEMY, UnitRole.LIGHT_CAVALRY, -150.0, 40.0, tags=("cavalry",)),
+        _unit("e_cav2", Side.ENEMY, UnitRole.LIGHT_CAVALRY, 150.0, 40.0, tags=("cavalry",)),
+        _unit("e_cav3", Side.ENEMY, UnitRole.SHOCK_CAVALRY, 0.0, 120.0, tags=("cavalry", "shock")),
+    ]
+    return Scenario(
+        name="slow_versus_mobile",
+        description="Infanterie et artillerie face a une armee entierement montee.",
+        units=tuple(units),
+        seed=71,
+        tags=("reference", "mobilite"),
+    )
+
+
+def monster_threat() -> Scenario:
+    """Presence de monstres : cibles prioritaires et lignes de lances."""
+    units = [
+        *_line(Side.ALLY, UnitRole.SPEAR_INFANTRY, 3, -60.0, prefix="a_spear", tags=("spear",)),
+        *_line(Side.ALLY, UnitRole.RANGED_INFANTRY, 2, -100.0, prefix="a_arc", tags=("missile",)),
+        _unit("a_lord1", Side.ALLY, UnitRole.LORD, 0.0, -120.0, tags=("lord",)),
+        _unit("e_mon1", Side.ENEMY, UnitRole.MONSTER, -40.0, 90.0, tags=("monster",)),
+        _unit("e_mon2", Side.ENEMY, UnitRole.MONSTER, 40.0, 90.0, tags=("monster",)),
+        _unit("e_inf1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 0.0, 110.0, tags=("melee",)),
+    ]
+    return Scenario(
+        name="monster_threat",
+        description="Deux monstres appuyes par une infanterie face a une ligne de lances.",
+        units=tuple(units),
+        seed=83,
+        tags=("reference", "monstres"),
+    )
+
+
+def fragile_lord() -> Scenario:
+    """Protection d'un seigneur deja entame : il doit survivre."""
+    units = [
+        *_line(Side.ALLY, UnitRole.MELEE_INFANTRY, 3, -60.0, prefix="a_inf", tags=("melee",)),
+        _unit("a_arc1", Side.ALLY, UnitRole.RANGED_INFANTRY, 0.0, -100.0, tags=("missile",)),
+        _unit("a_lord1", Side.ALLY, UnitRole.LORD, 0.0, -80.0, tags=("lord",), health=0.25),
+        _unit(
+            "a_hero1",
+            Side.ALLY,
+            UnitRole.HERO_CASTER,
+            40.0,
+            -110.0,
+            tags=("hero", "caster"),
+            health=0.4,
+        ),
+        *_line(Side.ENEMY, UnitRole.MELEE_INFANTRY, 3, 70.0, prefix="e_inf", tags=("melee",)),
+        _unit(
+            "e_cav1", Side.ENEMY, UnitRole.SHOCK_CAVALRY, -120.0, 30.0, tags=("cavalry", "shock")
+        ),
+    ]
+    return Scenario(
+        name="fragile_lord",
+        description="Le seigneur et le sorcier sont blesses : les preserver reste prioritaire.",
+        units=tuple(units),
+        seed=89,
+        tags=("reference", "commandement"),
+    )
+
+
+def rout_pursuit() -> Scenario:
+    """Fin de bataille : poursuivre sans se disperser."""
+    units = [
+        *_line(Side.ALLY, UnitRole.MELEE_INFANTRY, 3, -20.0, prefix="a_inf", tags=("melee",)),
+        _unit("a_cav1", Side.ALLY, UnitRole.LIGHT_CAVALRY, -80.0, -10.0, tags=("cavalry",)),
+        _unit("a_cav2", Side.ALLY, UnitRole.SHOCK_CAVALRY, 80.0, -10.0, tags=("cavalry", "shock")),
+        _unit("a_arc1", Side.ALLY, UnitRole.RANGED_INFANTRY, 0.0, -60.0, tags=("missile",)),
+        _unit(
+            "e_inf1",
+            Side.ENEMY,
+            UnitRole.MELEE_INFANTRY,
+            -40.0,
+            120.0,
+            tags=("melee",),
+            health=0.3,
+            routing=True,
+        ),
+        _unit(
+            "e_inf2",
+            Side.ENEMY,
+            UnitRole.MELEE_INFANTRY,
+            40.0,
+            140.0,
+            tags=("melee",),
+            health=0.25,
+            routing=True,
+        ),
+        _unit(
+            "e_inf3",
+            Side.ENEMY,
+            UnitRole.MELEE_INFANTRY,
+            0.0,
+            60.0,
+            tags=("melee",),
+            health=0.6,
+            morale_ratio=0.4,
+        ),
+    ]
+    return Scenario(
+        name="rout_pursuit",
+        description="L'ennemi rompt : achever sans lancer la cavalerie a l'autre bout du champ.",
+        units=tuple(units),
+        seed=97,
+        tags=("reference", "poursuite"),
+    )
+
+
 #: Registre des scenarios disponibles.
 SCENARIOS: dict[str, Callable[[], Scenario]] = {
     "balanced_clash": balanced_clash,
@@ -194,6 +334,11 @@ SCENARIOS: dict[str, Callable[[], Scenario]] = {
     "cavalry_flank_threat": cavalry_flank_threat,
     "artillery_assault": artillery_assault,
     "outnumbered": outnumbered,
+    "numerical_superiority": numerical_superiority,
+    "slow_versus_mobile": slow_versus_mobile,
+    "monster_threat": monster_threat,
+    "fragile_lord": fragile_lord,
+    "rout_pursuit": rout_pursuit,
 }
 
 

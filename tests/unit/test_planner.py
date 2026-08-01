@@ -272,3 +272,26 @@ def test_la_doctrine_n_emet_pas_de_reorientation(planner: Planner, make_unit, ma
     plan = planner.build_plan(state)
     types = {decision.action.type for decision in planner.tactical_decisions(state, plan)}
     assert ActionType.REORIENT_FRONT not in types
+
+
+def test_les_dix_scenarios_de_reference_sont_jouables() -> None:
+    """Chaque scenario du banc doit decrire deux camps non vides."""
+    from totalwar_ai.simulation.scenarios import ScenarioCatalog
+
+    for scenario in ScenarioCatalog().all():
+        assert scenario.army(Side.ALLY), scenario.name
+        assert scenario.army(Side.ENEMY), scenario.name
+        assert scenario.fingerprint(), scenario.name
+        assert scenario.description, scenario.name
+
+
+def test_etat_initial_degrade_des_scenarios() -> None:
+    """`fragile_lord` et `rout_pursuit` decrivent une bataille deja engagee."""
+    from totalwar_ai.simulation.scenarios import get_scenario
+
+    lord = next(spec for spec in get_scenario("fragile_lord").units if spec.role is UnitRole.LORD)
+    assert lord.initial_health < 0.5
+
+    routing = [spec for spec in get_scenario("rout_pursuit").units if spec.initial_routing]
+    assert len(routing) >= 2
+    assert all(spec.side is Side.ENEMY for spec in routing)

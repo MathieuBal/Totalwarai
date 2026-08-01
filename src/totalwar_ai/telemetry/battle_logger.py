@@ -16,11 +16,16 @@ import logging
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from types import TracebackType
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
-from totalwar_ai.agent.explainability import Decision
 from totalwar_ai.domain.battle_state import BattleState
 from totalwar_ai.telemetry.events import Event, EventType
+
+if TYPE_CHECKING:
+    # La telemetrie ne connait pas l'agent au chargement : `agent` importe
+    # `learning`, qui importe `telemetry.events`. Garder cet import au niveau
+    # des annotations casse le cycle sans rien perdre au typage.
+    from totalwar_ai.agent.explainability import Decision
 
 LOGGER = logging.getLogger("totalwar_ai.battle")
 

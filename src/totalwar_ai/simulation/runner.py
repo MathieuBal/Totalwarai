@@ -326,7 +326,10 @@ def _metrics(
     duration: float,
 ) -> dict[str, Any]:
     """Metriques de suivi listees dans le README (evaluation et regressions)."""
-    minutes = max(duration / 60.0, 1e-6)
+    # La limite de securite raisonne sur une fenetre glissante d'une minute :
+    # extrapoler une bataille de 9 secondes a la minute donnerait un chiffre
+    # spectaculaire et faux. On ne descend donc pas sous la minute.
+    minutes = max(duration, 60.0) / 60.0
     destroyed_allies = sum(
         1
         for event in events

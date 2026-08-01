@@ -91,18 +91,25 @@ Le cœur Python est implémenté et testable sans lancer *WARHAMMER III* :
 - protocole de pont versionné et `MockBridge` ;
 - agent tactique déterministe : classification, groupes, plan, ciblage ;
 - règles de sécurité et arrêt d’urgence ;
-- simulateur tactique déterministe et cinq scénarios reproductibles ;
+- simulateur tactique déterministe et dix scénarios reproductibles ;
 - journal d’événements, rapport post-bataille, mémoire SQLite persistante ;
 - adaptation bornée de la doctrine d’après l’historique, avec checkpoints ;
-- interface en ligne de commande (`totalwar-ai`).
+- banc des dix scénarios de référence et détection automatique de régressions ;
+- interface en ligne de commande (`totalwar-ai`) ;
+- prototype d’intégration au jeu — **écrit, pas encore essayé en bataille**.
 
 Voir [Démarrage rapide](#démarrage-rapide) pour l’essayer, et
 [`docs/architecture.md`](docs/architecture.md) pour ce que le dépôt contient
 réellement, par opposition à la cible décrite ici.
 
-**Ce qui n’existe pas encore : tout ce qui touche au jeu lui-même.** Aucun mod
-Lua, aucun pont réel, aucun contrôle d’une bataille de *WARHAMMER III*, aucun
-modèle appris.
+**Ce qui touche au jeu lui-même reste à vérifier.** Un prototype d’intégration
+existe désormais — une sonde Lua (`lua_mod/`) et un pont par fichiers
+(`src/totalwar_ai/bridge/file_bridge.py`) — mais **il n’a jamais été exécuté dans
+*WARHAMMER III***. Les deux moitiés sont testées l’une contre l’autre, ce qui ne
+prouve rien sur le jeu. L’état exact des vérifications, ligne par ligne, se tient
+dans [`docs/feasibility.md`](docs/feasibility.md).
+
+Aucun modèle appris non plus : l’adaptation reste à base de règles bornées.
 
 La priorité suivante n’est pas l’apprentissage automatique. C’est de vérifier ce que *WARHAMMER III* permet réellement d’observer et de commander depuis :
 
@@ -129,6 +136,18 @@ totalwar-ai simulate --scenario ranged_defense       # relancer : la mémoire es
 totalwar-ai history                                  # consulter les batailles passées
 totalwar-ai doctrine                                 # voir ce que l'agent a appris
 totalwar-ai report <identifiant>                     # relire un rapport
+totalwar-ai bench                                    # rejouer le banc de scénarios
+totalwar-ai probe --status                           # état du pont vers le jeu
+```
+
+Le banc rejoue les dix situations de référence à graines fixes et sans mémoire,
+puis compare à une référence enregistrée. Il sort en code 1 en cas de
+régression, ce qui en fait un garde-fou utilisable avant de pousser un
+changement :
+
+```bash
+totalwar-ai bench --save-baseline      # figer le niveau actuel
+totalwar-ai bench                      # comparer ; code retour 1 si régression
 ```
 
 À partir de la troisième bataille d’une même composition, l’agent ajuste sa
@@ -190,8 +209,8 @@ La suite de tests se lit en trois niveaux :
 | `tests/scenarios/` | les garde-fous du comportement : archers protégés, artillerie qui ne charge pas, poursuite refusée, tir concentré, réserve conservée, déterminisme |
 
 Toute doctrine ajoutée devrait être comparée à son absence sur le banc de
-scénarios avant d’être conservée : une intuition tactique plausible peut
-dégrader l’agent (exemple mesuré dans
+scénarios (`totalwar-ai bench`) avant d’être conservée : une intuition tactique
+plausible peut dégrader l’agent (exemple mesuré dans
 [`docs/decisions/0004-reorientation-du-front-mesuree-puis-ecartee.md`](docs/decisions/0004-reorientation-du-front-mesuree-puis-ecartee.md)).
 
 L’adaptation a ses propres garde-fous : `tests/unit/test_adaptation.py` vérifie
@@ -615,6 +634,8 @@ Le fait qu’un modèle récent ait gagné sa dernière bataille ne prouve pas q
 
 ### Scénarios de référence
 
+*Les dix sont implémentés — `totalwar-ai scenarios` pour la liste, `totalwar-ai bench` pour les rejouer.*
+
 Le banc de tests devra couvrir au minimum :
 
 1. armée équilibrée contre armée équilibrée ;
@@ -729,8 +750,8 @@ Un modèle candidat devient le modèle stable uniquement s’il :
 
 - [ ] Définir une méthode adaptée au volume de données réel.
 - [ ] Entraîner sur les expériences historiques.
-- [ ] Mettre en place l’évaluateur automatique.
-- [ ] Refuser les modèles instables.
+- [x] Mettre en place l’évaluateur automatique.
+- [x] Refuser les modèles instables.
 - [ ] Suivre les versions et métriques.
 
 **Livrable :** amélioration mesurable sur un banc de scénarios.
