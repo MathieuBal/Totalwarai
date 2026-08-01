@@ -39,7 +39,7 @@ branchement au jeu ne doit rien changer aux couches de droite.
 | `simulation` | Simulateur abstrait, scénarios, boucle de bataille. | tout le reste |
 | `telemetry` | Événements structurés, journal JSONL, rapport Markdown. | `domain`, `agent` |
 | `memory` | Persistance SQLite, transitions, tampon de rejeu. | `domain`, `telemetry` |
-| `learning` | Barème de récompense, adaptation de la doctrine et checkpoints. L'entraînement de modèles viendra en Phase 6. | `domain`, `telemetry`, `memory` |
+| `learning` | Barème de récompense, adaptation de la doctrine, checkpoints et banc d'évaluation. L'entraînement de modèles viendra en Phase 6. | `domain`, `telemetry`, `memory` |
 
 Règle de dépendance : `domain` ne dépend de rien, et rien dans `domain`,
 `bridge` ou `agent` ne connaît le simulateur. Un adaptateur vers le jeu réel
@@ -55,6 +55,12 @@ Deux points de vigilance, appris en ajoutant l'adaptation :
   `telemetry/__init__.py` ne ré-exporte volontairement pas `report`, qui dépend
   de `learning`, lequel dépend de `telemetry.events` : l'import du paquet
   bouclerait.
+- **`telemetry` ne connaît `agent` qu'en annotation.** `battle_logger` type ses
+  paramètres avec `Decision` sous `TYPE_CHECKING` : un import réel refermerait
+  la boucle `agent → learning → telemetry → agent`.
+- **`learning.evaluation` importe `run_battle` dans le corps de la fonction**,
+  pas au niveau du module : `simulation` dépend de `learning`, l'inverse ne doit
+  exister qu'au moment de l'appel.
 
 ## Décisions structurantes
 
@@ -97,6 +103,17 @@ l'armée entière. Ancré sur l'armée, replier les tireurs déplace le centre v
 l'arrière, ce qui replie encore les tireurs : l'armée recule indéfiniment sans
 jamais combattre. Ce défaut a été observé puis corrigé pendant le développement
 du simulateur.
+
+### Le banc est la référence, pas l'intuition
+
+`totalwar-ai bench` rejoue les dix scénarios de référence du `README.md` à
+graines fixes et **sans mémoire** — aucune doctrine apprise n'est appliquée, de
+sorte qu'un écart soit imputable au changement de code et à rien d'autre.
+
+La comparaison à la référence enregistrée se fait **scénario par scénario** :
+une amélioration en moyenne ne rachète pas l'effondrement d'une situation, et la
+survie du seigneur ne tolère aucune baisse. La commande sort en code 1 en cas de
+régression, ce qui la rend utilisable telle quelle comme garde-fou.
 
 ### Une doctrine ajoutée doit être mesurée avant d'être gardée
 

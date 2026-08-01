@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -19,6 +20,13 @@ from totalwar_ai import __version__
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
 from totalwar_ai.config import AppConfig, ConfigError, load_config
 from totalwar_ai.learning.checkpoints import CheckpointStore
+from totalwar_ai.learning.evaluation import (
+    DEFAULT_SEEDS,
+    BenchmarkReport,
+    compare,
+    render_table,
+    run_benchmark,
+)
 from totalwar_ai.memory.replay_buffer import ReplayBuffer
 from totalwar_ai.memory.repository import MemoryRepository
 from totalwar_ai.simulation.runner import run_battle
@@ -65,6 +73,19 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("battle_id", help="identifiant complet ou prefixe")
 
     subparsers.add_parser("doctrine", help="afficher les doctrines apprises")
+
+    bench = subparsers.add_parser(
+        "bench", help="rejouer le banc de scenarios et detecter les regressions"
+    )
+    bench.add_argument("--seeds", type=int, default=3, help="nombre de graines par scenario")
+    bench.add_argument("--scenario", action="append", help="limiter a ce scenario (repetable)")
+    bench.add_argument(
+        "--save-baseline", action="store_true", help="enregistrer ce banc comme reference"
+    )
+    bench.add_argument("--label", default="", help="etiquette libre pour la reference")
+    bench.add_argument(
+        "--no-compare", action="store_true", help="ne pas comparer a la reference enregistree"
+    )
     return parser
 
 
@@ -89,6 +110,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_history(args, config)
     if args.command == "doctrine":
         return _cmd_doctrine(config)
+    if args.command == "bench":
+        return _cmd_bench(args, config)
     # `required=True` sur les sous-commandes garantit qu'on ne passe jamais ici.
     return _cmd_report(args, config)
 
@@ -191,6 +214,64 @@ def _cmd_history(args: argparse.Namespace, config: AppConfig) -> int:
                 f"allies {battle.ally_remaining:5.0%}  recompense {battle.total_reward:+9.1f}"
             )
     return 0
+
+
+BASELINE_FILENAME = "benchmark-baseline.json"
+
+
+def _cmd_bench(args: argparse.Namespace, config: AppConfig) -> int:
+    """Rejoue le banc, l'affiche, et le compare a la reference enregistree.
+
+    Renvoie 1 en cas de regression : la commande est utilisable telle quelle
+    comme garde-fou avant de pousser un changement de doctrine.
+    """
+    catalog = ScenarioCatalog()
+    try:
+        scenarios = (
+            [catalog.get(name) for name in args.scenario] if args.scenario else catalog.all()
+        )
+    except KeyError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
+    seeds = tuple(DEFAULT_SEEDS[: args.seeds]) or DEFAULT_SEEDS
+    if args.seeds > len(DEFAULT_SEEDS):
+        # Graines supplementaires deterministes, pour ne pas dependre du hasard.
+        seeds = tuple(DEFAULT_SEEDS) + tuple(
+            101 + index for index in range(args.seeds - len(DEFAULT_SEEDS))
+        )
+
+    print(f"Banc : {len(scenarios)} scenarios x {len(seeds)} graines {seeds}\n")
+    report = run_benchmark(scenarios, seeds=seeds, config=config, label=args.label)
+    print(render_table(report))
+
+    baseline_path = Path(config.path("memory", "models_dir")) / BASELINE_FILENAME
+    if args.save_baseline:
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_path.write_text(
+            json.dumps(report.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        print(f"\nReference enregistree : {baseline_path}")
+        return 0
+
+    if args.no_compare or not baseline_path.exists():
+        if not args.no_compare:
+            print(
+                "\nAucune reference enregistree. "
+                "Utiliser `totalwar-ai bench --save-baseline` pour en creer une."
+            )
+        return 0
+
+    baseline = BenchmarkReport.from_dict(json.loads(baseline_path.read_text(encoding="utf-8")))
+    comparison = compare(baseline, report)
+    print(f"\nComparaison a la reference : {comparison.summary_line()}")
+    for change in comparison.improvements:
+        print(f"  + {change.describe()}")
+    for change in comparison.regressions:
+        print(f"  ! {change.describe()}")
+    for name in comparison.missing_scenarios:
+        print(f"  ? scenario absent du banc courant : {name}")
+    return 0 if comparison.acceptable else 1
 
 
 def _cmd_doctrine(config: AppConfig) -> int:

@@ -94,6 +94,7 @@ Le cœur Python est implémenté et testable sans lancer *WARHAMMER III* :
 - simulateur tactique déterministe et cinq scénarios reproductibles ;
 - journal d’événements, rapport post-bataille, mémoire SQLite persistante ;
 - adaptation bornée de la doctrine d’après l’historique, avec checkpoints ;
+- banc des dix scénarios de référence et détection automatique de régressions ;
 - interface en ligne de commande (`totalwar-ai`).
 
 Voir [Démarrage rapide](#démarrage-rapide) pour l’essayer, et
@@ -129,6 +130,17 @@ totalwar-ai simulate --scenario ranged_defense       # relancer : la mémoire es
 totalwar-ai history                                  # consulter les batailles passées
 totalwar-ai doctrine                                 # voir ce que l'agent a appris
 totalwar-ai report <identifiant>                     # relire un rapport
+totalwar-ai bench                                    # rejouer le banc de scénarios
+```
+
+Le banc rejoue les dix situations de référence à graines fixes et sans mémoire,
+puis compare à une référence enregistrée. Il sort en code 1 en cas de
+régression, ce qui en fait un garde-fou utilisable avant de pousser un
+changement :
+
+```bash
+totalwar-ai bench --save-baseline      # figer le niveau actuel
+totalwar-ai bench                      # comparer ; code retour 1 si régression
 ```
 
 À partir de la troisième bataille d’une même composition, l’agent ajuste sa
@@ -190,8 +202,8 @@ La suite de tests se lit en trois niveaux :
 | `tests/scenarios/` | les garde-fous du comportement : archers protégés, artillerie qui ne charge pas, poursuite refusée, tir concentré, réserve conservée, déterminisme |
 
 Toute doctrine ajoutée devrait être comparée à son absence sur le banc de
-scénarios avant d’être conservée : une intuition tactique plausible peut
-dégrader l’agent (exemple mesuré dans
+scénarios (`totalwar-ai bench`) avant d’être conservée : une intuition tactique
+plausible peut dégrader l’agent (exemple mesuré dans
 [`docs/decisions/0004-reorientation-du-front-mesuree-puis-ecartee.md`](docs/decisions/0004-reorientation-du-front-mesuree-puis-ecartee.md)).
 
 L’adaptation a ses propres garde-fous : `tests/unit/test_adaptation.py` vérifie
@@ -615,6 +627,8 @@ Le fait qu’un modèle récent ait gagné sa dernière bataille ne prouve pas q
 
 ### Scénarios de référence
 
+*Les dix sont implémentés — `totalwar-ai scenarios` pour la liste, `totalwar-ai bench` pour les rejouer.*
+
 Le banc de tests devra couvrir au minimum :
 
 1. armée équilibrée contre armée équilibrée ;
@@ -729,8 +743,8 @@ Un modèle candidat devient le modèle stable uniquement s’il :
 
 - [ ] Définir une méthode adaptée au volume de données réel.
 - [ ] Entraîner sur les expériences historiques.
-- [ ] Mettre en place l’évaluateur automatique.
-- [ ] Refuser les modèles instables.
+- [x] Mettre en place l’évaluateur automatique.
+- [x] Refuser les modèles instables.
 - [ ] Suivre les versions et métriques.
 
 **Livrable :** amélioration mesurable sur un banc de scénarios.

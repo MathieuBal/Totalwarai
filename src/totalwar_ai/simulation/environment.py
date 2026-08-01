@@ -146,6 +146,11 @@ class UnitSpec:
     tags: tuple[str, ...] = ()
     unit_key: str = ""
     name: str = ""
+    #: Etat initial : permet de decrire une bataille deja engagee (unite
+    #: entamee, unite deja en deroute) plutot que toujours partir a neuf.
+    initial_health: float = 1.0
+    initial_morale_ratio: float = 1.0
+    initial_routing: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,12 +210,13 @@ class SimulationEnvironment:
             template=template,
             position=spec.position,
             heading=spec.heading,
-            hp=max_hp,
+            hp=max_hp * clamp(spec.initial_health),
             max_hp=max_hp,
-            morale=template.morale,
+            morale=template.morale * clamp(spec.initial_morale_ratio),
             max_morale=template.morale,
             ammo=float(template.ammo),
             max_ammo=float(template.ammo),
+            routing=spec.initial_routing,
             tags=spec.tags,
             unit_key=spec.unit_key or spec.id,
             name=spec.name or spec.id,
