@@ -332,6 +332,120 @@ function PROBE:find_controllable_unit()
     return first, army, seen, controllable
 end
 
+--[[--------------------------------------------------------------------------
+    Recensement des capacites
+
+    Le mod tiers etudie ne lit ni les effectifs, ni le moral, ni la fatigue :
+    rien ne dit si le jeu les expose. Plutot que de supposer, on demande. Chaque
+    accesseur candidat est appele une fois sous `pcall` sur une unite reelle, et
+    le resultat est journalise. Une seule bataille suffit alors a trancher ce
+    que l'agent pourra observer.
+
+    Ce recensement ne tourne qu'au demarrage, une fois : ce n'est pas un cout
+    par tick.
+----------------------------------------------------------------------------]]
+
+--- Accesseurs sans argument a tester sur une unite alliee.
+local UNIT_ACCESSORS = {
+    "unique_ui_id",
+    "type",
+    "name",
+    "is_controllable",
+    "is_valid_target",
+    "number_of_men",
+    "number_of_men_alive",
+    "unary_hitpoints",
+    "unary_morale",
+    "is_routing",
+    "is_shattered",
+    "is_hidden",
+    "is_in_melee",
+    "can_fly",
+    "bearing",
+    "ammo_left",
+    "missile_range",
+    "fatigue",
+    "unary_fatigue",
+    "fatigue_level",
+    "speed",
+    "width",
+}
+
+--- Decrit brievement une valeur, sans jamais lever d'erreur.
+local function describe(value)
+    local kind = type(value)
+    if kind == "number" then
+        return "number " .. json_number(value)
+    end
+    if kind == "string" then
+        return "string " .. string.sub(value, 1, 48)
+    end
+    if kind == "boolean" then
+        return "boolean " .. tostring(value)
+    end
+    if kind == "nil" then
+        return "nil"
+    end
+    return kind
+end
+
+--- Journalise, pour une unite, les accesseurs disponibles et leur valeur.
+function PROBE:census_unit_accessors(unit)
+    self:log("--- recensement des accesseurs d'unite ---")
+    local disponibles = {}
+    for index = 1, #UNIT_ACCESSORS do
+        local name = UNIT_ACCESSORS[index]
+        local method = unit[name]
+        if type(method) ~= "function" then
+            self:log("  " .. name .. " : ABSENT")
+        else
+            local ok, value = pcall(method, unit)
+            if ok then
+                self:log("  " .. name .. " : " .. describe(value))
+                disponibles[#disponibles + 1] = name
+            else
+                self:log("  " .. name .. " : ERREUR " .. tostring(value))
+            end
+        end
+    end
+    self:log("accesseurs utilisables : " .. table.concat(disponibles, ", "))
+    self:log("--- fin du recensement ---")
+    return disponibles
+end
+
+--- Journalise ce que l'on peut savoir des alliances en presence.
+function PROBE:census_alliances()
+    self:log("--- recensement des alliances ---")
+    local ok, err = pcall(function()
+        local alliances = bm:alliances()
+        local total = alliances:count()
+        local locale = bm:local_alliance()
+        self:log("  alliances : " .. tostring(total) .. ", locale = " .. tostring(locale))
+        for index = 1, total do
+            local alliance = alliances:item(index)
+            local armies = alliance:armies()
+            local unites = 0
+            for army_index = 1, armies:count() do
+                unites = unites + armies:item(army_index):units():count()
+            end
+            self:log(
+                "  alliance "
+                    .. tostring(index)
+                    .. " : "
+                    .. tostring(armies:count())
+                    .. " armee(s), "
+                    .. tostring(unites)
+                    .. " unite(s)"
+                    .. (index == locale and " <- la notre" or "")
+            )
+        end
+    end)
+    if not ok then
+        self:log("  ERREUR pendant le recensement des alliances : " .. tostring(err))
+    end
+    self:log("--- fin du recensement ---")
+end
+
 function PROBE:unit_position(unit)
     local position = unit:position()
     return {
@@ -607,6 +721,16 @@ function PROBE:start()
             .. tostring(controllable) .. " controlables, "
             .. (unit and ("premiere = " .. self:unit_identifier(unit)) or "aucune utilisable")
     )
+
+    -- Recensement unique : il dit ce que le jeu expose vraiment, et remplace
+    -- les lignes « inconnue » de la fiche de faisabilite par des faits.
+    self:census_alliances()
+    if unit then
+        local ok, err = pcall(function() self:census_unit_accessors(unit) end)
+        if not ok then
+            self:log("ERREUR pendant le recensement des accesseurs : " .. tostring(err))
+        end
+    end
 
     bm:repeat_callback(function() self:guarded("publish_state") end,
         self.state_interval_ms, "totalwar_ai_state")
