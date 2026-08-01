@@ -86,12 +86,19 @@ def test_le_script_ne_contient_pas_de_code_tiers(lua_source: str) -> None:
 
 
 def test_le_depot_ne_contient_aucun_fichier_tiers() -> None:
+    """Aucun `.pack`, et aucun Lua qui ne soit le notre."""
     racine = Path(__file__).resolve().parents[2]
     assert list(racine.rglob("*.pack")) == []
+
+    autorises = {"totalwar_ai_probe.lua", "fake_battle.lua"}
+    interdits = ("aigeneral", "pancake", "modder_api_uc_manager", "pan_util")
     for chemin in racine.rglob("*.lua"):
         if ".venv" in chemin.parts:
             continue
-        assert chemin.name == "totalwar_ai_probe.lua", chemin
+        assert chemin.name in autorises, chemin
+        contenu = chemin.read_text(encoding="utf-8").lower()
+        for terme in interdits:
+            assert terme not in contenu, f"{chemin} contient {terme}"
 
 
 # --- reproduction de l'analyseur Lua -----------------------------------------
