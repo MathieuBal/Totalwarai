@@ -1,19 +1,16 @@
 # Faisabilité de l'intégration au jeu (Phase 0)
 
-> **Statut : trois essais en bataille. Le risque principal du projet est levé —
-> un script de bataille peut écrire et lire des fichiers. L'aller-retour complet
-> reste à faire.**
+> **Statut : quatre essais en bataille. L'aller-retour complet fonctionne.**
 >
-> Essai n° 3 (01/08/2026, 22 h 10) : `ECRITURE OK`. Le Lua écrit dans
-> `./totalwar_ai/`, Python y lit, et la sonde recense onze unités alliées réelles
-> toutes contrôlables. La publication d'états échouait ensuite sur une erreur de
-> notre code — `math.huge` n'existe pas dans le bac à sable Lua du jeu — depuis
-> corrigée et couverte par un test de non-régression.
+> Essai n° 4 (01/08/2026, 22 h 42) : Python a publié un ordre, le Lua l'a lu et
+> exécuté, l'unité `1001` s'est déplacée de **20,3 m** (x = 6,644 → 26,9 mesuré
+> par le jeu), et l'accusé est remonté. Les dix étapes du ticket sont franchies.
 >
-> Ce qui reste ouvert : commande lue par le Lua, déplacement réel, accusé,
-> non-répétition, restitution du contrôle. Tant que ces lignes ne sont pas
-> cochées dans la section [Résultats](#résultats-de-lessai-en-bataille), aucun
-> de ces comportements ne doit être présenté comme fonctionnel.
+> Restent à confirmer visuellement, faute de preuve dans les relevés : la
+> restitution du contrôle au joueur après cinq secondes, et l'arrêt d'urgence.
+> Tant que ces deux lignes ne sont pas cochées dans la section
+> [Résultats](#résultats-de-lessai-en-bataille), elles ne doivent pas être
+> présentées comme fonctionnelles.
 
 ## Légende
 
@@ -69,7 +66,7 @@ données existent et sont lisibles par un script de bataille** :
 | position (x, y, z) | `unit:position():get_x()` … | accessible | **accessible** — les trois accesseurs répondent (essai n° 3) ; y = altitude non nulle (21 à 33) |
 | unité contrôlable | `unit:is_controllable()` | accessible | **accessible** — vraie pour 11 unités sur 11 en phase de déploiement |
 | unité vivante | `unit:is_valid_target()` | accessible | **accessible** — vraie pour la première unité retenue |
-| temps de jeu | `bm:time_elapsed_ms()` | accessible | **non testée** — l'appel se situait juste après le point de crash |
+| temps de jeu | `bm:time_elapsed_ms()` | accessible | **accessible** — `game_time_ms` present dans chaque etat, essai n° 4 |
 | accès au battle_manager | `bm` global | accessible | **accessible** — `contexte de bataille detecte` au chargement |
 | type de partie | `bm:is_multiplayer()` | accessible | **accessible** — appelée sans erreur, a autorisé le démarrage |
 | rappels périodiques | `bm:repeat_callback()` | accessible | **accessible** — acceptée sans erreur au démarrage |
@@ -92,12 +89,12 @@ qu'elles sont indisponibles, seulement que nous n'avons aucun indice.
 
 | Ordre | API pressentie | Attendu | En bataille |
 | --- | --- | --- | --- |
-| créer un contrôleur | `army:create_unit_controller()` | accessible | **non testée** |
-| prendre une unité | `uc:add_units(unit)` | accessible, peut échouer sur groupe verrouillé | **non testée** |
-| déplacer vers un point | `uc:goto_location(v_to_ground(v(x,y,z)), run)` | accessible | **non testée** |
-| attaquer une unité | `uc:attack_unit(cible, primaire, courir)` | accessible | **non testée** |
+| créer un contrôleur | `army:create_unit_controller()` | accessible | **accessible** — essai n° 4 |
+| prendre une unité | `uc:add_units(unit)` | accessible, peut échouer sur groupe verrouillé | **accessible** — essai n° 4, sur le seigneur ; le cas du groupe verrouillé reste non rencontré |
+| déplacer vers un point | `uc:goto_location(v_to_ground(v(x,y,z)), run)` | accessible | **accessible** — 20,3 m parcourus, essai n° 4 |
+| attaquer une unité | `uc:attack_unit(cible, primaire, courir)` | accessible | **non testée** — hors périmètre du prototype |
 | stopper | `uc:halt()` | accessible | **non testée** |
-| **rendre la main** | `uc:release_control()` | accessible | **non testée** |
+| **rendre la main** | `uc:release_control()` | accessible | **non confirmée** — appelée sans erreur, effet non constaté |
 | comportements (tir à volonté…) | `uc:change_behaviour_active()` | accessible | **non testée** |
 
 ## Communication Lua ↔ Python
@@ -201,6 +198,65 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
 | `uc:add_units a echoue` | l'unité est dans un groupe verrouillé ; en essayer une autre |
 
 ## Résultats de l'essai en bataille
+
+### Essai n° 4 — 01/08/2026, 22 h 42
+
+**L'aller-retour complet est bouclé.**
+
+```text
+Unite 1001 (wh3_dlc20_chs_cha_daemon_prince_mnur) en (6.6, -330.9), controlable=True
+Ordre 1 publie : deplacement de 20 m.
+Accuse : accepted
+```
+
+Puis, à l'appel suivant, le jeu rapporte l'unité en `(26.9, -330.9)` : **20,3 m
+parcourus**. Ce chiffre vient de `unit:position():get_x()`, donc du moteur, pas
+d'une supposition.
+
+| Critère du ticket | Résultat | Notes |
+| --- | --- | --- |
+| le script Lua est chargé par le jeu | **réussi** | |
+| une unité réelle est détectée | **réussi** | `1001`, prince démon |
+| son identifiant et sa position sont transmis à Python | **réussi** | flux d'états continu, 1 par seconde |
+| une commande Python est lue par le Lua | **réussi** | |
+| l'unité se déplace réellement | **réussi** | 20,3 m mesurés par le jeu |
+| un accusé est reçu par Python | **réussi** | `accepted`, `deplacement lance` |
+| la commande ne peut pas être exécutée deux fois | **réussi côté Lua** | et c'est ce qui a révélé le défaut ci-dessous |
+| le joueur récupère le contrôle | **non confirmé** | le comportement est implémenté et testé hors jeu ; aucun relevé de cet essai ne l'atteste |
+| l'arrêt d'urgence libère tout | **non confirmé** | idem |
+
+**Le défaut, côté Python cette fois.** Trois `probe --move 20` successifs ont
+tous publié `Ordre 1`. Le compteur de séquence vivait dans le processus : chaque
+invocation du CLI repartait de 1. Le Lua a donc refusé les deux derniers ordres
+— sa règle anti-rejeu a parfaitement fonctionné — mais Python, relisant le flux
+d'accusés depuis le début, est retombé sur le **vieil** accusé du premier ordre,
+de même numéro, et a affiché `accepted`. Le CLI annonçait un succès pour une
+commande refusée, et l'unité ne bougeait qu'une fois sur trois.
+
+Deux défauts distincts, deux corrections :
+
+- `FileBridge.open()` **reprend** la numérotation là où le disque l'a laissée,
+  en lisant la plus grande séquence présente dans le fichier de commande et
+  dans le flux d'accusés ;
+- `wait_for_ack` ne considère que les accusés écrits **après** la commande. Un
+  accusé antérieur répond forcément à autre chose, même à numéro égal.
+
+Les trois tests de non-régression ont été vérifiés défaillants avec l'ancien
+code, où ils reproduisaient exactement le symptôme : un `ProbeAck(sequence=1,
+status=ACCEPTED)` rendu pour une commande que le Lua avait rejetée.
+
+**Une leçon d'ergonomie.** L'opérateur n'a pas vu l'unité bouger — vingt mètres
+sur une carte de bataille, pour une figurine unique, ne se voient pas. Le CLI
+mesure désormais le déplacement réellement constaté après chaque ordre, au lieu
+de s'arrêter à l'accusé :
+
+```text
+Verification du deplacement...
+Deplacement constate : 20.3 m.
+```
+
+Un ordre accepté mais sans effet — unité dans un groupe verrouillé, contrôle
+rendu trop tôt — est donc signalé au lieu de passer pour un succès.
 
 ### Essai n° 3 — 01/08/2026, 22 h 10
 
@@ -379,9 +435,15 @@ fichiers d'échange.*
 
 ## Ce qui est vérifié à ce stade
 
-**Établi en bataille réelle** (essai n° 3) : l'écriture et la lecture de
+**Établi en bataille réelle** (essais n° 3 et 4) : l'écriture et la lecture de
 fichiers depuis un script de bataille, la détection des unités alliées, leur
-identifiant, leur type, leur position, et le fait qu'elles soient contrôlables.
+identifiant, leur type, leur position, le fait qu'elles soient contrôlables —
+et **l'aller-retour complet** : ordre publié par Python, lu et exécuté par le
+Lua, déplacement mesuré par le jeu, accusé remonté à Python.
+
+**Restent non confirmés en jeu** : la restitution du contrôle au joueur après
+cinq secondes, et l'arrêt d'urgence. Les deux sont implémentés et couverts par
+les tests d'exécution Lua, ce qui n'est pas la même chose que les avoir vus.
 
 **Établi hors du jeu seulement** — vrai du code, muet sur le moteur :
 

@@ -441,3 +441,104 @@ def test_la_perte_du_droit_d_ecriture_ne_tue_pas_la_sonde(probe: Probe) -> None:
 
     assert len(probe.grep("STATE ")) > avant
     assert not probe.grep("ERREUR")
+
+
+# --- plusieurs invocations successives du CLI --------------------------------
+#
+# Reproduit le defaut constate en bataille reelle : trois `probe --move 20`
+# d'affilee publiaient tous `Ordre 1`, parce que chaque processus repartait de
+# la sequence 1. Le Lua refusait a juste titre les deux derniers ; Python
+# relisait le vieil accuse du premier et annoncait `accepted`. L'unite n'avait
+# bouge qu'une fois.
+
+
+def test_deux_ponts_successifs_ne_reutilisent_pas_la_sequence(probe: Probe, workdir: Path) -> None:
+    """Un nouveau pont doit reprendre la numerotation, pas la recommencer."""
+    probe.advance(2000)
+
+    premier = FileBridge.open(workdir)
+    etat = premier.wait_for_state(timeout=0, sleep=lambda _: None)
+    assert etat is not None
+    commande_1 = premier.move_unit(etat.unit_id, Vector3(etat.position.x + 20.0, 0.0, 0.0))
+    probe.advance(1000)
+
+    # Nouveau processus : le pont est rouvert a partir de zero.
+    second = FileBridge.open(workdir)
+    commande_2 = second.move_unit(etat.unit_id, Vector3(etat.position.x + 40.0, 0.0, 0.0))
+    probe.advance(1000)
+
+    assert commande_2.sequence > commande_1.sequence
+
+
+def test_trois_deplacements_successifs_bougent_vraiment_l_unite(
+    probe: Probe, workdir: Path
+) -> None:
+    """Chaque ordre doit produire un deplacement, pas seulement le premier."""
+    probe.advance(2000)
+
+    for _ in range(3):
+        bridge = FileBridge.open(workdir)
+        etat = bridge.wait_for_state(timeout=0, sleep=lambda _: None)
+        assert etat is not None
+        commande = bridge.move_unit(etat.unit_id, Vector3(etat.position.x + 20.0, 0.0, 0.0))
+        probe.advance(1000)
+        accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+        assert accuse is not None, f"aucun accuse pour la sequence {commande.sequence}"
+        assert accuse.accepted, f"ordre {commande.sequence} refuse : {accuse.error}"
+        probe.advance(6000)  # laisser le temps du deplacement et de la restitution
+
+    deplacements = [order for order in probe.orders() if order["kind"] == "goto"]
+    assert len(deplacements) == 3, f"seulement {len(deplacements)} deplacement(s) executes"
+
+
+def test_un_vieil_accuse_ne_repond_pas_a_une_nouvelle_commande(probe: Probe, workdir: Path) -> None:
+    """Un accuse anterieur a la commande ne doit jamais etre pris pour sa reponse."""
+    probe.advance(2000)
+
+    bridge = FileBridge.open(workdir)
+    etat = bridge.wait_for_state(timeout=0, sleep=lambda _: None)
+    assert etat is not None
+    bridge.move_unit(etat.unit_id, Vector3(etat.position.x + 20.0, 0.0, 0.0))
+    probe.advance(1000)
+
+    # Une commande reutilisant de force un numero deja accuse : le Lua la
+    # refuse en silence (deja traitee), donc aucun accuse ne doit remonter.
+    rejoue = bridge.move_unit(etat.unit_id, Vector3(0.0, 0.0, 0.0), sequence=1)
+    probe.advance(1000)
+
+    assert bridge.wait_for_ack(rejoue.sequence, timeout=0, sleep=lambda _: None) is None
+
+
+def test_le_cli_constate_le_deplacement_reel(probe: Probe, workdir: Path) -> None:
+    """Le CLI doit mesurer le deplacement, pas se fier a l'accuse seul.
+
+    Un accuse dit que l'ordre est parti. Vingt metres sur une carte de bataille
+    ne se voient pas a l'oeil nu — sans mesure, on ne sait pas si l'unite a
+    bouge.
+    """
+    from totalwar_ai.cli import _confirm_movement
+
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+    etat = bridge.wait_for_state(timeout=0, sleep=lambda _: None)
+    assert etat is not None
+
+    bridge.move_unit(etat.unit_id, Vector3(etat.position.x + 20.0, 0.0, etat.position.z))
+    probe.advance(1000)  # le Lua execute l'ordre : l'unite se teleporte dans le faux jeu
+    probe.advance(1000)  # un etat de plus, a la nouvelle position
+
+    assert _confirm_movement(bridge, etat.unit_id, etat.position, timeout=1.0) == 0
+
+
+def test_le_cli_signale_une_unite_qui_n_a_pas_bouge(probe: Probe, workdir: Path) -> None:
+    """Un ordre accepte mais sans effet doit etre signale, pas passe sous silence."""
+    from totalwar_ai.cli import _confirm_movement
+
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+    etat = bridge.wait_for_state(timeout=0, sleep=lambda _: None)
+    assert etat is not None
+
+    # Aucun ordre envoye : l'unite reste ou elle est.
+    probe.advance(2000)
+    assert _confirm_movement(bridge, etat.unit_id, etat.position, timeout=1.0) == 1
