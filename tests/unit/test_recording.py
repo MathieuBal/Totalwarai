@@ -213,3 +213,43 @@ def test_un_tour_sans_nouvel_etat_ne_gonfle_pas_le_compte(tmp_path: Path) -> Non
 
     assert recorder.turns == 2
     assert recorder.summary().metrics["turns"] == 2
+
+
+def test_une_unite_detruite_mais_encore_listee_ne_sauve_pas_l_adversaire() -> None:
+    """L'issue se juge sur les unites vivantes, pas sur la longueur des listes.
+
+    A la premiere bataille menee a son terme, le camp vaincu avait disparu des
+    listes du jeu et l'issue etait juste. Rien ne garantit qu'il en aille
+    toujours ainsi : une unite detruite mais encore publiee ferait basculer un
+    aneantissement en match nul.
+    """
+    from totalwar_ai.bridge.command_models import ProbeBattleState, ProbeUnitObservation
+    from totalwar_ai.bridge.live import LiveStep
+    from totalwar_ai.bridge.recording import BattleRecorder
+    from totalwar_ai.domain.battle_state import BattleOutcomeKind
+    from totalwar_ai.domain.geometry import Vector3
+
+    def unite(unit_id: str, *, alive: bool) -> ProbeUnitObservation:
+        return ProbeUnitObservation(unit_id=unit_id, position=Vector3(0.0, 0.0, 0.0), alive=alive)
+
+    recorder = BattleRecorder(directory=None)
+    recorder.observe(
+        LiveStep(
+            state=ProbeBattleState(
+                allies=(unite("a1", alive=True),),
+                enemies=(unite("e1", alive=True),),
+                phase="Deployed",
+            )
+        )
+    )
+    recorder.observe(
+        LiveStep(
+            state=ProbeBattleState(
+                allies=(unite("a1", alive=True),),
+                enemies=(unite("e1", alive=False),),
+                phase="Complete",
+            )
+        )
+    )
+
+    assert recorder.outcome is BattleOutcomeKind.VICTORY

@@ -400,6 +400,27 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_outcome(recorder: BattleRecorder) -> None:
+    """Issue et forces restantes, en une ligne.
+
+    Une session interrompue reste `unknown`, et le dit : deviner une victoire
+    parce que l'armee se portait bien au moment ou l'on a cesse de regarder
+    fausserait la seule comparaison qui compte.
+    """
+    from totalwar_ai.domain.battle_state import BattleOutcomeKind
+
+    fiche = recorder.summary()
+    if fiche.outcome is BattleOutcomeKind.UNKNOWN:
+        print(
+            "  Issue inconnue : la bataille n'a pas ete suivie jusqu'a son terme. Non comparable."
+        )
+        return
+    print(
+        f"  Issue : {fiche.outcome.value} — {fiche.ally_remaining:.0%} de nos unites "
+        f"debout, {fiche.enemy_remaining:.0%} des leurs, en {fiche.duration:.0f} s."
+    )
+
+
 def _battle_over(etape: LiveStep) -> bool:
     """La bataille est-elle terminee ?
 
@@ -504,6 +525,9 @@ def _supervise(
         f"\n{recorder.turns} tour(s), {recorder.orders_sent} intervention(s) sur "
         f"{len(confiees)} unite(s) confiees."
     )
+    # Le resultat au moment ou on le regarde, pas trois commandes plus tard :
+    # c'est le seul chiffre qui permette de comparer deux modes de pilotage.
+    _print_outcome(recorder)
     if not supervised:
         print("  Aucune regle n'etait active : c'est la mesure de reference.")
     if not interrompu and not terminee:
