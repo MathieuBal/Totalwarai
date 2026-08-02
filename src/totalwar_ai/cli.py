@@ -103,6 +103,14 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument(
         "--move", type=float, metavar="METRES", help="deplacer l'unite observee de N metres"
     )
+    probe.add_argument(
+        "--play",
+        type=float,
+        nargs="?",
+        const=120.0,
+        metavar="SECONDES",
+        help="laisser l'agent piloter la bataille pendant N secondes (defaut 120)",
+    )
     probe.add_argument("--abort", action="store_true", help="arret d'urgence : tout liberer")
     probe.add_argument("--reset", action="store_true", help="vider les flux avant de commencer")
     probe.add_argument(
@@ -275,6 +283,9 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         print("Arret d'urgence publie : le script Lua doit tout liberer.")
         return 0
 
+    if args.play:
+        return _play(bridge, args.play)
+
     if args.status or not (args.watch or args.move):
         _print_probe_status(bridge)
         return 0
@@ -316,6 +327,50 @@ def _cmd_probe(args: argparse.Namespace) -> int:
             return 1
         return _confirm_movement(bridge, state.unit_id, state.position)
 
+    return 0
+
+
+def _play(bridge: FileBridge, duration: float) -> int:
+    """Laisse l'agent piloter la bataille, en rendant compte a chaque tour.
+
+    **Ce que l'operateur doit savoir avant de lancer.** L'agent ne prend que les
+    unites qu'il decide de deplacer, et le jeu les rend au bout de cinq
+    secondes : reprendre la main a la souris est toujours possible, sans rien
+    arreter. `Ctrl+C` coupe la boucle et libere tout.
+    """
+    from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
+    from totalwar_ai.bridge.live import LiveSession
+
+    session = LiveSession(
+        bridge=bridge,
+        agent=DeterministicTacticalAgent.from_config(load_config()),
+    )
+    print(f"Pilotage pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.\n")
+
+    fin = time.monotonic() + duration
+    tours = 0
+    ordres = 0
+    try:
+        while time.monotonic() < fin:
+            etape = session.step()
+            tours += 1
+            ordres += etape.sent
+            print(f"  {etape.summary()}")
+            for explication in etape.decisions if etape.acted else ():
+                print(f"      {explication.splitlines()[0]}")
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print("\nInterruption : liberation de toutes les unites.")
+        session.stop()
+        return 130
+
+    print(f"\n{tours} tour(s), {ordres} ordre(s) de deplacement emis.")
+    if ordres == 0:
+        print(
+            "Aucun ordre : verifier que la bataille est engagee (phase Deployed) "
+            "et que les armees sont a portee l'une de l'autre.",
+            file=sys.stderr,
+        )
     return 0
 
 

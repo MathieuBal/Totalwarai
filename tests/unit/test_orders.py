@@ -1,0 +1,173 @@
+"""Traduction des intentions de l'agent en ordres pour le jeu.
+
+Deux exigences gouvernent ce module : etaler un groupe en ligne plutot que de
+l'empiler sur un point, et ne jamais approximer une action sans equivalent.
+"""
+
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from totalwar_ai.bridge.orders import OrderTranslator
+from totalwar_ai.domain.actions import ActionType, AgentAction, Formation
+from totalwar_ai.domain.battle_state import BattleState
+from totalwar_ai.domain.geometry import Vector3
+from totalwar_ai.domain.unit_state import Side, UnitState
+
+
+def _etat(*unit_ids: str) -> BattleState:
+    return BattleState(
+        battle_id="t",
+        units=tuple(
+            UnitState(id=unit_id, side=Side.ALLY, position=Vector3(0.0, 0.0, 0.0))
+            for unit_id in unit_ids
+        ),
+    )
+
+
+def _move(*unit_ids: str, heading: float | None = 0.0, spacing: float = 30.0) -> AgentAction:
+    parameters: dict[str, object] = {
+        "destination": Vector3(100.0, 0.0, 200.0),
+        "formation": Formation.LINE,
+        "spacing": spacing,
+    }
+    if heading is not None:
+        parameters["heading"] = heading
+    return AgentAction(type=ActionType.MOVE_GROUP, actor_ids=unit_ids, parameters=parameters)
+
+
+# --- mise en ligne -----------------------------------------------------------
+
+
+def test_un_groupe_est_etale_et_non_empile() -> None:
+    """Envoyer tout le monde au meme point produirait un tas."""
+    resultat = OrderTranslator().translate((_move("a", "b", "c"),), _etat("a", "b", "c"))
+
+    points = [point for _, point in resultat.moves]
+    assert len(points) == 3
+    assert len({(round(p.x, 3), round(p.z, 3)) for p in points}) == 3
+
+
+def test_la_ligne_est_perpendiculaire_au_cap() -> None:
+    """Une ligne face a l'ennemi, pas une colonne dans son axe.
+
+    Cap 0 signifie « vers +z » : les unites doivent donc s'aligner sur x.
+    """
+    resultat = OrderTranslator().translate(
+        (_move("a", "b", "c", heading=0.0),), _etat("a", "b", "c")
+    )
+
+    x = sorted(round(point.x, 3) for _, point in resultat.moves)
+    z = {round(point.z, 3) for _, point in resultat.moves}
+    assert x == [70.0, 100.0, 130.0]  # espacement 30, centre sur 100
+    assert z == {200.0}
+
+
+def test_un_cap_lateral_fait_pivoter_la_ligne() -> None:
+    """Cap pi/2 signifie « vers +x » : la ligne s'aligne alors sur z."""
+    action = _move("a", "b", heading=math.pi / 2)
+    resultat = OrderTranslator().translate((action,), _etat("a", "b"))
+
+    x = {round(point.x, 3) for _, point in resultat.moves}
+    z = sorted(round(point.z, 3) for _, point in resultat.moves)
+    assert x == {100.0}
+    assert z == [185.0, 215.0]
+
+
+def test_le_groupe_reste_centre_sur_sa_destination() -> None:
+    """Le barycentre de la ligne est le point demande par l'agent."""
+    resultat = OrderTranslator().translate((_move("a", "b", "c", "d"),), _etat("a", "b", "c", "d"))
+
+    points = [point for _, point in resultat.moves]
+    assert sum(p.x for p in points) / len(points) == pytest.approx(100.0)
+    assert sum(p.z for p in points) / len(points) == pytest.approx(200.0)
+
+
+def test_une_unite_seule_va_exactement_au_point() -> None:
+    resultat = OrderTranslator().translate((_move("a"),), _etat("a"))
+    assert resultat.moves[0][1] == Vector3(100.0, 0.0, 200.0)
+
+
+def test_une_unite_absente_de_l_etat_est_ignoree() -> None:
+    """Ordonner a une unite morte gaspillerait un ordre et fausserait la ligne."""
+    resultat = OrderTranslator().translate((_move("a", "disparue", "b"),), _etat("a", "b"))
+    assert [unit_id for unit_id, _ in resultat.moves] == ["a", "b"]
+
+
+# --- actions sans equivalent -------------------------------------------------
+
+
+def test_une_attaque_n_est_pas_traduite_en_deplacement() -> None:
+    """Avancer « vers » une cible n'est pas l'attaquer.
+
+    L'unite avancerait sans engager, et le compte rendu affirmerait qu'elle
+    attaque. Mieux vaut declarer l'action non rendue.
+    """
+    attaque = AgentAction(
+        type=ActionType.ATTACK_TARGET,
+        actor_ids=("a",),
+        parameters={"target_id": "e1"},
+    )
+    resultat = OrderTranslator().translate((attaque,), _etat("a"))
+
+    assert not resultat.moves
+    assert resultat.untranslated == ((ActionType.ATTACK_TARGET, "necessite uc:attack_unit"),)
+
+
+def test_tenir_la_position_ne_produit_aucun_ordre_et_n_est_pas_un_manque() -> None:
+    """Ne rien envoyer est exactement ce que cette action demande."""
+    tenir = AgentAction(type=ActionType.HOLD_POSITION, actor_ids=("a",))
+    resultat = OrderTranslator().translate((tenir,), _etat("a"))
+
+    assert not resultat.moves
+    assert not resultat.untranslated
+
+
+def test_une_destination_manquante_est_signalee() -> None:
+    """Un parametre absent doit se voir, pas produire un ordre vers l'origine."""
+    bancale = AgentAction(type=ActionType.RETREAT, actor_ids=("a",), parameters={})
+    resultat = OrderTranslator().translate((bancale,), _etat("a"))
+
+    assert not resultat.moves
+    assert resultat.untranslated[0][0] is ActionType.RETREAT
+    assert "destination" in resultat.untranslated[0][1]
+
+
+def test_le_repli_et_la_reserve_sont_traduits() -> None:
+    """Trois actions differentes, trois noms de parametre, un meme ordre."""
+    repli = AgentAction(
+        type=ActionType.RETREAT,
+        actor_ids=("a",),
+        parameters={"destination": Vector3(1.0, 0.0, 2.0)},
+    )
+    reserve = AgentAction(
+        type=ActionType.FORM_RESERVE,
+        actor_ids=("b",),
+        parameters={"rally_point": Vector3(3.0, 0.0, 4.0)},
+    )
+    resultat = OrderTranslator().translate((repli, reserve), _etat("a", "b"))
+
+    assert dict(resultat.moves) == {"a": Vector3(1.0, 0.0, 2.0), "b": Vector3(3.0, 0.0, 4.0)}
+
+
+def test_la_premiere_action_gagne_pour_une_unite_donnee() -> None:
+    """Deux ordres contradictoires s'annuleraient en jeu.
+
+    L'agent classe ses actions par priorite : la premiere emise pour une unite
+    est celle qu'il juge la plus importante.
+    """
+    prioritaire = AgentAction(
+        type=ActionType.RETREAT,
+        actor_ids=("a",),
+        parameters={"destination": Vector3(1.0, 0.0, 1.0)},
+    )
+    ensuite = AgentAction(
+        type=ActionType.MOVE_GROUP,
+        actor_ids=("a",),
+        parameters={"destination": Vector3(9.0, 0.0, 9.0), "formation": Formation.LINE},
+    )
+    resultat = OrderTranslator().translate((prioritaire, ensuite), _etat("a"))
+
+    assert resultat.moves == (("a", Vector3(1.0, 0.0, 1.0)),)
