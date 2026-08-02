@@ -85,7 +85,7 @@ La première ambition jouable est la suivante :
 
 **Statut : l'agent pilote une vraie bataille de *WARHAMMER III*.**
 
-Neuf essais en bataille ont établi, pas supposé :
+Onze essais en bataille ont établi, pas supposé :
 
 - un script Lua de bataille peut **écrire et lire des fichiers** — c'était le
   risque principal du projet, il est levé ;
@@ -125,12 +125,12 @@ détail est dans [`docs/feasibility.md`](docs/feasibility.md).
 passent par le même code, au jeu de règles près : c'est ce qui rend les deux
 résultats comparables.
 
-La colonne de droite n'est pas un détail. À l'essai n° 9, la délégation a bien
-créé le planificateur du moteur, mais sur six unités sur dix-huit — la sonde ne
-savait pas commander les armées de renfort. La supervision qui l'accompagnait a
-tourné sans effet, faute de lire les accusés. Les deux défauts sont corrigés en
-révision 9 et attendent leur essai. L'arrêt d'urgence, lui, a fonctionné : le
-jeu a tout libéré et repris les six unités.
+La colonne de droite n'est pas un détail. `--supervise` reste marqué non éprouvé
+alors qu'il a tourné : à l'essai n° 11 il n'a produit **aucune intervention**,
+l'armée étant en mêlée pure — ni artillerie, ni tir, et un seigneur jamais
+descendu sous le seuil critique. Aucune des trois règles ne pouvait donc se
+déclencher, et cette session ne dit rien de la supervision. L'éprouver demande
+une armée qui comporte de l'artillerie ou des tireurs.
 
 **Sur la délégation.** *WARHAMMER III* embarque sa propre IA de bataille,
 accessible par `script_ai_planner`. Elle connaît le terrain, le pathfinding et

@@ -253,7 +253,7 @@ pas disparaître parce qu'une nouvelle bataille commence.
 
 ## Ce qui est vérifié en jeu, et ce qui ne l'est pas
 
-Neuf essais en bataille ont eu lieu. La distinction ci-dessous est la seule qui
+Onze essais en bataille ont eu lieu. La distinction ci-dessous est la seule qui
 compte, et elle doit être tenue à jour à chaque essai — le détail chiffré est
 dans [`feasibility.md`](feasibility.md).
 
