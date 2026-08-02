@@ -213,12 +213,25 @@ dans `<installation>/data/` et l'activer. Le protocole d'essai complet est dans
 $env:TOTALWAR_AI_BRIDGE_DIR = "<installation de WARHAMMER III>"
 
 totalwar-ai probe --log 40        # doit afficher : Pack a jour (revision N)
+totalwar-ai probe --reset         # vider les flux et lever un arret precedent
 totalwar-ai probe --delegate      # l'IA du jeu prend l'armee
 totalwar-ai probe --supervise 300 # elle joue, nos regles corrigent
 totalwar-ai probe --play 120      # notre agent joue seul
 totalwar-ai probe --reclaim       # vous reprenez la main
 totalwar-ai probe --abort         # arret d'urgence, tout est libere
 ```
+
+**Essayer en escarmouche, pas dans une bataille de campagne scriptée.** Les
+batailles du prologue donnent leurs propres ordres, prennent et rendent le
+contrôle des unités, et suspendent le combat pendant les dialogues : rien de ce
+qu'on y observe ne peut être attribué de façon fiable à notre code ni à l'IA du
+moteur. L'escarmouche donne en plus une composition d'armée choisie, donc
+reproductible d'un essai à l'autre.
+
+**Après un `Ctrl+C` ou un `--abort`, passer par `--reset`.** La sentinelle
+d'arrêt reste sur le disque et le script Lua cesse définitivement de lire
+jusqu'à la bataille suivante — c'est voulu, un arrêt d'urgence ne doit pas se
+lever tout seul.
 
 **Le script Lua porte un numéro de révision**, affiché dès son chargement et
 comparé par `probe --log` à celui attendu par le paquet Python. Oublier de

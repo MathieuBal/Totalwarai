@@ -54,6 +54,7 @@ Relevé lors des essais du 01/08/2026 :
 | Type de bataille | bataille sans script dédié, avec « Battle Fundamentals scripted tour » actif |
 | Mods chargés | `script\_lib\mod\qa_console.lua`, `script\_lib\mod\test_script_here.lua` — **aucun mod utilisateur** |
 | Unités présentes | 22 `script_unit` : alliance 1 armée 1 = 11 unités (joueur), alliance 2 armée 1 = 11 unités |
+| Unités présentes, essai n° 9 | 40 : **18 alliées réparties sur plusieurs armées**, 22 adverses. Bataille du **prologue de campagne**, scriptée |
 | Répertoire de travail | le dossier d'installation : `./totalwar_ai/` créé à la main y est bien trouvé |
 | Bibliothèque `math` | **restreinte** — `math.huge` vaut `nil` (essai n° 3). Ne rien supposer du reste : la sonde n'utilise plus `math` du tout |
 
@@ -255,10 +256,19 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
    totalwar-ai probe --status      # doit afficher le dossier, tout absent
    ```
 
-### Essai, en campagne solo uniquement
+### Essai, en solo uniquement
 
-1. Lancer une bataille de campagne et la laisser démarrer (phase de déploiement
-   terminée).
+**Préférer une escarmouche à une bataille de campagne**, et surtout à celles du
+prologue. Une bataille scriptée donne ses propres ordres, prend et rend le
+contrôle des unités, et suspend le combat pendant les dialogues : rien de ce
+qu'on y observe ne peut être attribué de façon fiable à notre code ou à l'IA du
+moteur. L'essai n° 9 s'est déroulé dans le prologue, et il a fallu démêler
+après coup ce qui venait de nos défauts et ce qui venait du script du jeu.
+
+L'escarmouche donne en plus une composition d'armée choisie, donc reproductible
+d'un essai à l'autre — condition pour comparer un mode de pilotage à un autre.
+
+1. Lancer une bataille et la laisser démarrer (phase de déploiement terminée).
 2. Ouvrir le journal de script du jeu et chercher `[totalwar_ai]`. **Noter la
    première ligne** : elle dit si l'écriture de fichier est disponible.
 3. Côté Python :
@@ -326,6 +336,25 @@ inatteignables par le moindre ordre.
 C'est le cas d'une bataille avec renforts, ou d'une armée alliée. Le faux jeu
 ne savait pas représenter une alliance à plusieurs armées : voilà pourquoi
 aucun test ne l'avait vu. Il le sait maintenant.
+
+**Contexte à ne pas perdre : cet essai s'est déroulé dans le prologue de
+campagne**, une bataille scriptée, entrecoupée de dialogues et de séquences
+narratives. Les essais précédents, eux, alignaient onze unités dans une armée
+unique. Les armées multiples viennent donc très probablement du découpage
+narratif du prologue.
+
+Cela ne rend pas la correction moins nécessaire — une bataille de campagne
+ordinaire avec renforts ou armée alliée produit la même configuration, et
+l'agent n'a aucun moyen de savoir dans laquelle il joue. Mais cela veut dire
+que le défaut peut **ne pas se reproduire** en escarmouche, où chaque camp
+n'aligne qu'une armée. L'absence de refus lors du prochain essai ne prouvera
+donc rien à elle seule.
+
+**Une bataille scriptée est un mauvais banc de mesure.** Les scripts du jeu
+donnent leurs propres ordres, prennent et rendent le contrôle, et suspendent la
+bataille pendant les dialogues : impossible d'attribuer à l'IA du moteur ce
+qu'on observe. Pour mesurer ce que vaut `script_ai_planner`, il faut une
+escarmouche.
 
 **La supervision ne lisait aucun accusé.** Conséquence directe : chaque reprise
 était rejetée, rien ne le remarquait, la règle se redéclenchait au tour
