@@ -184,20 +184,39 @@ def test_une_unite_de_tir_est_reconnue_malgre_sa_cle() -> None:
     assert classifier.classify(horreurs.to_unit_state(Side.ALLY)) is UnitRole.RANGED_INFANTRY
 
 
-def test_un_seigneur_volant_reste_un_seigneur() -> None:
-    """`can_fly` n'est pas transforme en etiquette, et c'est deliberе.
+# --- identification du seigneur ----------------------------------------------
 
-    La regle `flying_unit` passe avant `lord` des lors que rien n'identifie le
-    seigneur : un prince demon volant y perdrait `ProtectLord`. La donnee reste
-    dans les metadonnees, disponible sans rien casser.
+
+def test_le_jeu_identifie_le_seigneur() -> None:
+    """`is_commanding_unit()` tranche ce que la cle d'unite ne peut pas.
+
+    Trouve en relisant AI General 3, qui commente au passage avoir longtemps
+    suppose que la premiere unite de l'armee etait le seigneur, et garde cette
+    supposition en repli. Le jeu repond directement : plus besoin de deviner
+    depuis le segment `_cha_`, que heros et seigneurs partagent.
     """
-    prince = ProbeUnitObservation(
+    seigneur = ProbeUnitObservation(
         unit_id="1001",
         position=Vector3(0.0, 0.0, 0.0),
         unit_type="wh3_dlc20_chs_cha_daemon_prince_mnur",
+        commanding=True,
         can_fly=True,
-        men_alive=1,
     ).to_unit_state(Side.ALLY)
 
-    assert "flying" not in prince.tags
-    assert UnitClassifier.from_config().classify(prince) is UnitRole.LORD
+    assert "lord" in seigneur.tags
+    assert UnitClassifier.from_config().classify(seigneur) is UnitRole.LORD
+
+
+def test_un_heros_volant_n_usurpe_plus_le_role_de_seigneur() -> None:
+    """Le segment `_cha_` couvre heros et seigneurs ; la mesure les separe."""
+    heros = ProbeUnitObservation(
+        unit_id="1004",
+        position=Vector3(0.0, 0.0, 0.0),
+        unit_type="wh3_main_tze_cha_exalted_lord_of_change",
+        commanding=False,
+        can_fly=True,
+    ).to_unit_state(Side.ALLY)
+
+    assert "lord" not in heros.tags
+    assert "flying" in heros.tags
+    assert UnitClassifier.from_config().classify(heros) is UnitRole.FLYING_UNIT

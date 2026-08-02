@@ -163,6 +163,8 @@ class ProbeUnitObservation:
     position: Vector3
     unit_type: str = ""
     controllable: bool = False
+    #: L'unite commande l'armee — le seigneur. `unit:is_commanding_unit()`.
+    commanding: bool = False
     alive: bool = True
     routing: bool = False
     shattered: bool = False
@@ -223,18 +225,25 @@ class ProbeUnitObservation:
     def _tags(self) -> tuple[str, ...]:
         """Etiquettes deduites de ce que le jeu mesure, non de la cle d'unite.
 
-        Les identifiants de WARHAMMER III ne disent pas si une unite tire :
-        `wh3_main_tze_inf_blue_horrors_0` n'a que le segment `_inf_`, alors que
-        le jeu lui donne une portee de 90 et 480 munitions. La mesure prime donc
-        sur le nom, et le classifieur applique ses regles par etiquette avant
-        celles par cle.
+                Les identifiants de WARHAMMER III ne disent pas si une unite tire :
+                `wh3_main_tze_inf_blue_horrors_0` n'a que le segment `_inf_`, alors que
+                le jeu lui donne une portee de 90 et 480 munitions. La mesure prime donc
+                sur le nom, et le classifieur applique ses regles par etiquette avant
+                celles par cle.
 
-        `can_fly` n'est deliberement pas transforme en etiquette : la regle
-        `flying_unit` passe avant `lord` des lors que rien n'identifie le
-        seigneur, et un prince demon volant y perdrait sa protection. La donnee
-        reste dans les metadonnees, disponible sans rien casser.
+        `can_fly` devient une etiquette **uniquement** pour les unites qui ne
+                commandent pas : la regle `flying_unit` passe avant `lord`, et un prince
+                demon volant y perdrait `ProtectLord`. Le jeu identifiant maintenant le
+                seigneur, l'ambiguite disparait.
         """
-        return ("missile",) if self.is_ranged else ()
+        tags: list[str] = []
+        if self.commanding:
+            tags.append("lord")
+        if self.is_ranged:
+            tags.append("missile")
+        if self.can_fly and not self.commanding:
+            tags.append("flying")
+        return tuple(tags)
 
     @classmethod
     def from_dict(cls, raw: Any) -> ProbeUnitObservation:
@@ -244,6 +253,7 @@ class ProbeUnitObservation:
             position=Vector3.from_dict(require_mapping(data.get("position"), "position")),
             unit_type=as_str(data, "type", default=""),
             controllable=as_bool(data, "controllable", default=False),
+            commanding=as_bool(data, "commanding", default=False),
             alive=as_bool(data, "alive", default=True),
             routing=as_bool(data, "routing", default=False),
             shattered=as_bool(data, "shattered", default=False),

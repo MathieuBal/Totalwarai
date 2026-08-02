@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 3
+TOTALWAR_AI_PROBE_REVISION = 4
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -385,6 +385,7 @@ function PROBE:unit_snapshot(unit)
     end
 
     add_bool("controllable", "is_controllable")
+    add_bool("commanding", "is_commanding_unit")
     add_bool("alive", "is_valid_target")
     add_bool("routing", "is_routing")
     add_bool("shattered", "is_shattered")
@@ -531,6 +532,8 @@ local UNIT_ACCESSORS = {
     "name",
     "is_controllable",
     "is_valid_target",
+    "is_commanding_unit",
+    "is_idle",
     "number_of_men",
     "number_of_men_alive",
     "unary_hitpoints",
