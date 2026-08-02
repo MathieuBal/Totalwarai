@@ -176,6 +176,7 @@ class SimulationEnvironment:
         tick_seconds: float = 0.5,
         max_battle_seconds: float = 900.0,
         field_radius: float = 400.0,
+        enemy_waits: bool = False,
     ) -> None:
         self.battle_id = battle_id
         self.parameters = parameters or SimulationParameters.load()
@@ -183,6 +184,8 @@ class SimulationEnvironment:
         self.tick_seconds = tick_seconds
         self.max_battle_seconds = max_battle_seconds
         self.field_radius = field_radius
+        #: L'adversaire laisse venir au lieu d'avancer (escarmouche).
+        self.enemy_waits = enemy_waits
         self.rng = random.Random(seed)
         self.seed = seed
         self.game_time = 0.0
@@ -423,7 +426,13 @@ class SimulationEnvironment:
     # --- IA adverse ----------------------------------------------------------
 
     def _enemy_policy(self) -> None:
-        """Adversaire scripte : avance, tire, et fond sur nos tireurs a cheval."""
+        """Adversaire scripte : avance, tire, et fond sur nos tireurs a cheval.
+
+        En mode `defensive`, il **attend** : il tire sur ce qui entre a portee
+        et repond au contact, mais n'avance jamais. C'est le comportement des
+        escarmouches du jeu, ou l'ennemi laisse venir — situation dans laquelle
+        un agent qui tient sa position aussi produit un match nul.
+        """
         allies = self.side_units(Side.ALLY, available_only=True)
         if not allies:
             return
@@ -443,6 +452,10 @@ class SimulationEnvironment:
                 and distance <= unit.template.missile_range
             ):
                 unit.order = Order(kind=OrderKind.FIRE, target_id=target.id)
+            elif self.enemy_waits:
+                # Il attend : ni poursuite, ni approche. Le contact viendra de
+                # nous, ou n'aura pas lieu.
+                unit.order = Order(kind=OrderKind.HOLD)
             else:
                 unit.order = Order(kind=OrderKind.ATTACK, target_id=target.id)
 

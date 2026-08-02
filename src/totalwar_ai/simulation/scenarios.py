@@ -28,6 +28,8 @@ class Scenario:
     units: tuple[UnitSpec, ...]
     seed: int = 1
     max_battle_seconds: float = 600.0
+    #: L'adversaire attend au lieu d'avancer, comme en escarmouche.
+    enemy_waits: bool = False
     tags: tuple[str, ...] = ()
 
     def army(self, side: Side) -> list[UnitSpec]:
@@ -113,6 +115,43 @@ def balanced_clash() -> Scenario:
         units=tuple(units),
         seed=11,
         tags=("reference", "equilibre"),
+    )
+
+
+def skirmish_standoff() -> Scenario:
+    """Escarmouche : l'adversaire laisse venir et n'avance jamais.
+
+    Situation constatee en jeu et absente du banc jusqu'ici : en escarmouche,
+    l'ennemi attend l'attaque. Un agent en posture defensive attend aussi, et
+    les deux armees se regardent jusqu'a la fin du temps imparti — un match nul
+    que personne n'a cherche.
+
+    Meme composition que `balanced_clash`, pour que la seule difference tenue
+    soit le comportement adverse.
+    """
+    units = [
+        *_line(Side.ALLY, UnitRole.MELEE_INFANTRY, 3, -60.0, prefix="a_inf", tags=("melee",)),
+        _unit("a_spear1", Side.ALLY, UnitRole.SPEAR_INFANTRY, 70.0, -60.0, tags=("spear",)),
+        *_line(Side.ALLY, UnitRole.RANGED_INFANTRY, 2, -95.0, prefix="a_arc", tags=("missile",)),
+        _unit(
+            "a_cav1", Side.ALLY, UnitRole.SHOCK_CAVALRY, -110.0, -80.0, tags=("cavalry", "shock")
+        ),
+        _unit("a_lord1", Side.ALLY, UnitRole.LORD, 0.0, -110.0, tags=("lord",)),
+        *_line(Side.ENEMY, UnitRole.MELEE_INFANTRY, 3, 160.0, prefix="e_inf", tags=("melee",)),
+        _unit("e_spear1", Side.ENEMY, UnitRole.SPEAR_INFANTRY, -70.0, 160.0, tags=("spear",)),
+        *_line(Side.ENEMY, UnitRole.RANGED_INFANTRY, 2, 195.0, prefix="e_arc", tags=("missile",)),
+        _unit(
+            "e_cav1", Side.ENEMY, UnitRole.SHOCK_CAVALRY, 110.0, 180.0, tags=("cavalry", "shock")
+        ),
+        _unit("e_lord1", Side.ENEMY, UnitRole.LORD, 0.0, 210.0, tags=("lord",)),
+    ]
+    return Scenario(
+        name="skirmish_standoff",
+        description="L'adversaire attend l'attaque : c'est a nous de la porter.",
+        units=tuple(units),
+        seed=11,
+        enemy_waits=True,
+        tags=("escarmouche", "initiative"),
     )
 
 
@@ -330,6 +369,7 @@ def rout_pursuit() -> Scenario:
 #: Registre des scenarios disponibles.
 SCENARIOS: dict[str, Callable[[], Scenario]] = {
     "balanced_clash": balanced_clash,
+    "skirmish_standoff": skirmish_standoff,
     "ranged_defense": ranged_defense,
     "cavalry_flank_threat": cavalry_flank_threat,
     "artillery_assault": artillery_assault,
