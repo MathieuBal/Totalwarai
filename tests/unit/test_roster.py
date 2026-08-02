@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import pytest
 
+from totalwar_ai.agent.unit_classifier import UnitClassifier
 from totalwar_ai.bridge.command_models import ProbeBattleState, ProbeUnitObservation
 from totalwar_ai.bridge.roster import RosterMemory
 from totalwar_ai.domain.geometry import Vector3
-from totalwar_ai.domain.unit_state import Side
+from totalwar_ai.domain.unit_state import Side, UnitRole
 
 
 def _unite(unit_id: str, men: int | None, hitpoints: float | None = None) -> ProbeUnitObservation:
@@ -115,3 +116,88 @@ def test_l_etat_de_bataille_applique_les_rapports() -> None:
     unite = domaine.unit("1002")
     assert unite is not None
     assert unite.effective_strength == pytest.approx(0.1)
+
+
+# --- munitions ---------------------------------------------------------------
+
+
+def _tireur(unit_id: str, ammo: int | None, portee: float = 90.0) -> ProbeUnitObservation:
+    return ProbeUnitObservation(
+        unit_id=unit_id,
+        position=Vector3(0.0, 0.0, 0.0),
+        men_alive=120,
+        ammo=ammo,
+        missile_range=portee,
+    )
+
+
+def test_les_munitions_deviennent_un_rapport() -> None:
+    """Le jeu donne un total — 480 pour 120 tireurs — le domaine veut 0 a 1."""
+    memoire = RosterMemory()
+    memoire.observe(_etat(_tireur("1002", 480)))
+    memoire.observe(_etat(_tireur("1002", 120)))
+
+    assert memoire.ammo_ratio(_tireur("1002", 120)) == pytest.approx(0.25)
+
+
+def test_une_unite_de_tir_sans_munition_connue_peut_tirer() -> None:
+    """`can_shoot` exige `ammo_ratio > 0` ; le defaut du domaine est 0.
+
+    Sans cette precaution, toute unite de tir aurait ete jugee a court de
+    munitions faute d'information — et n'aurait jamais tire de la bataille.
+    """
+    inconnu = _tireur("1002", None).to_unit_state(Side.ALLY)
+    assert inconnu.ammo_ratio == pytest.approx(1.0)
+
+
+def test_une_unite_de_melee_n_a_pas_de_munitions() -> None:
+    melee = ProbeUnitObservation(
+        unit_id="1001",
+        position=Vector3(0.0, 0.0, 0.0),
+        ammo=0,
+        missile_range=0.0,
+    ).to_unit_state(Side.ALLY)
+    assert melee.ammo_ratio == pytest.approx(0.0)
+
+
+# --- classification par la mesure, non par le nom ----------------------------
+
+
+def test_une_unite_de_tir_est_reconnue_malgre_sa_cle() -> None:
+    """`wh3_main_tze_inf_blue_horrors_0` n'a que `_inf_` — mais tire a 90 m.
+
+    Releve en bataille reelle : portee 90, munitions 480. Se fier a la cle en
+    ferait de l'infanterie de melee, donc une unite envoyee au contact au lieu
+    de tirer, et jamais protegee par `RangedUnitMustDisengage`.
+    """
+    horreurs = ProbeUnitObservation(
+        unit_id="1002",
+        position=Vector3(0.0, 0.0, 0.0),
+        unit_type="wh3_main_tze_inf_blue_horrors_0",
+        men_alive=120,
+        ammo=480,
+        missile_range=90.0,
+    )
+    assert "missile" in horreurs.to_unit_state(Side.ALLY).tags
+
+    classifier = UnitClassifier.from_config()
+    assert classifier.classify(horreurs.to_unit_state(Side.ALLY)) is UnitRole.RANGED_INFANTRY
+
+
+def test_un_seigneur_volant_reste_un_seigneur() -> None:
+    """`can_fly` n'est pas transforme en etiquette, et c'est deliberе.
+
+    La regle `flying_unit` passe avant `lord` des lors que rien n'identifie le
+    seigneur : un prince demon volant y perdrait `ProtectLord`. La donnee reste
+    dans les metadonnees, disponible sans rien casser.
+    """
+    prince = ProbeUnitObservation(
+        unit_id="1001",
+        position=Vector3(0.0, 0.0, 0.0),
+        unit_type="wh3_dlc20_chs_cha_daemon_prince_mnur",
+        can_fly=True,
+        men_alive=1,
+    ).to_unit_state(Side.ALLY)
+
+    assert "flying" not in prince.tags
+    assert UnitClassifier.from_config().classify(prince) is UnitRole.LORD

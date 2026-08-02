@@ -205,6 +205,37 @@ class ProbeUnitObservation:
             return self.hitpoints
         return 1.0
 
+    def _ammo_ratio(self, measured: float | None) -> float:
+        """Munitions restantes, en fraction de la dotation initiale.
+
+        `can_shoot` exige `ammo_ratio > 0`. Le defaut du domaine etant 0, une
+        unite de tir aurait ete jugee a court de munitions faute d'information
+        — et n'aurait jamais tire. Une portee de tir non nulle sans mesure de
+        munition vaut donc 1 : supposer l'unite approvisionnee plutot que lui
+        interdire son role.
+        """
+        if measured is not None:
+            return measured
+        if self.ammo is not None:
+            return 1.0 if self.ammo > 0 else 0.0
+        return 1.0 if self.is_ranged else 0.0
+
+    def _tags(self) -> tuple[str, ...]:
+        """Etiquettes deduites de ce que le jeu mesure, non de la cle d'unite.
+
+        Les identifiants de WARHAMMER III ne disent pas si une unite tire :
+        `wh3_main_tze_inf_blue_horrors_0` n'a que le segment `_inf_`, alors que
+        le jeu lui donne une portee de 90 et 480 munitions. La mesure prime donc
+        sur le nom, et le classifieur applique ses regles par etiquette avant
+        celles par cle.
+
+        `can_fly` n'est deliberement pas transforme en etiquette : la regle
+        `flying_unit` passe avant `lord` des lors que rien n'identifie le
+        seigneur, et un prince demon volant y perdrait sa protection. La donnee
+        reste dans les metadonnees, disponible sans rien casser.
+        """
+        return ("missile",) if self.is_ranged else ()
+
     @classmethod
     def from_dict(cls, raw: Any) -> ProbeUnitObservation:
         data = require_mapping(raw, "ProbeUnitObservation")
@@ -226,7 +257,13 @@ class ProbeUnitObservation:
             missile_range=_optional_float(data, "missile_range"),
         )
 
-    def to_unit_state(self, side: Side, *, entity_ratio: float | None = None) -> UnitState:
+    def to_unit_state(
+        self,
+        side: Side,
+        *,
+        entity_ratio: float | None = None,
+        ammo_ratio: float | None = None,
+    ) -> UnitState:
         """Traduction vers le domaine de l'agent.
 
         Le role reste `UNKNOWN` : c'est au classifieur de le deduire de la cle
@@ -256,6 +293,8 @@ class ProbeUnitObservation:
             unit_key=self.unit_type,
             health_ratio=self.hitpoints if self.hitpoints is not None else 1.0,
             entity_ratio=self._entity_ratio(entity_ratio),
+            ammo_ratio=self._ammo_ratio(ammo_ratio),
+            tags=self._tags(),
             is_routing=self.routing or self.shattered,
             is_engaged=self.in_melee,
             is_hidden=self.hidden,
@@ -301,6 +340,7 @@ class ProbeBattleState:
         battle_id: str = "live",
         *,
         entity_ratios: Mapping[str, float] | None = None,
+        ammo_ratios: Mapping[str, float] | None = None,
     ) -> BattleState:
         """Etat de bataille consommable par l'agent existant.
 
@@ -308,8 +348,13 @@ class ProbeBattleState:
         sujet, et les garder fausserait les barycentres et rapports de force.
         """
         ratios = entity_ratios or {}
+        munitions = ammo_ratios or {}
         units = [
-            observation.to_unit_state(side, entity_ratio=ratios.get(observation.unit_id))
+            observation.to_unit_state(
+                side,
+                entity_ratio=ratios.get(observation.unit_id),
+                ammo_ratio=munitions.get(observation.unit_id),
+            )
             for side, group in ((Side.ALLY, self.allies), (Side.ENEMY, self.enemies))
             for observation in group
             if observation.alive

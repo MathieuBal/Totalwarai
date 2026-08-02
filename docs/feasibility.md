@@ -118,6 +118,41 @@ fraction. Deux voies :
 La seconde voie est retenue (`bridge/roster.py`), la première ne servant que de
 repli pour les unités à entité unique.
 
+### Ce que le recensement d'une unité de troupe a montré (essai n° 7)
+
+Relevé sur `wh3_main_tze_inf_blue_horrors_0`, à côté du seigneur :
+
+| Accesseur | Seigneur (`_cha_`) | Troupe (`_inf_`) |
+| --- | --- | --- |
+| `number_of_men_alive` | 1 | **120** |
+| `unary_hitpoints` | 1 | 1 (unité intacte) |
+| `ammo_left` | 0 | **480** |
+| `missile_range` | 0 | **90** |
+| `can_fly` | true | false |
+| `bearing` | 0.972 | 2.741 |
+
+Deux conséquences, l'une et l'autre corrigées avant tout pilotage.
+
+**La clé d'unité ne dit pas qui tire.** `wh3_main_tze_inf_blue_horrors_0` ne
+porte que le segment `_inf_`, et aucun fragment de nom exploitable — la
+classification par clé en aurait fait de l'infanterie de mêlée. Le jeu, lui,
+mesure une portée de 90 m et 480 munitions. **La mesure prime donc sur le nom** :
+une portée non nulle pose l'étiquette `missile`, et les règles par étiquette
+passent avant les règles par clé. Sans cela, ces tireurs auraient été envoyés au
+contact, et jamais protégés par `RangedUnitMustDisengage`.
+
+**Les munitions sont un total, pas un rapport.** 480 pour 120 tireurs. Le
+domaine attend `ammo_ratio` dans [0, 1], dont le défaut est **zéro**, et
+`can_shoot` exige `ammo_ratio > 0` : toute unité de tir aurait été jugée à court
+de munitions et n'aurait jamais tiré. Même remède que pour les effectifs — le
+maximum observé fait la dotation initiale — et, à défaut de mesure, une unité
+dotée d'une portée est supposée approvisionnée plutôt que privée de son rôle.
+
+**`can_fly` n'est délibérément pas transformé en étiquette.** La règle
+`flying_unit` passe avant `lord` dès lors que rien n'identifie le seigneur : un
+prince démon volant y perdrait `ProtectLord`. La donnée reste dans les
+métadonnées, disponible sans rien casser.
+
 ### Deux manques qui pèsent sur la conception
 
 **Le moral n'est pas lisible.** `is_routing` et `is_shattered` donnent le
