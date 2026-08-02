@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from totalwar_ai import __version__
+from totalwar_ai.agent.planner import Posture
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
 from totalwar_ai.bridge.file_bridge import FileBridge, summarise
 from totalwar_ai.bridge.paths import EXPECTED_PROBE_REVISION, BridgeDirectoryNotFoundError
@@ -111,6 +112,13 @@ def build_parser() -> argparse.ArgumentParser:
         const=120.0,
         metavar="SECONDES",
         help="laisser l'agent piloter la bataille pendant N secondes (defaut 120)",
+    )
+    probe.add_argument(
+        "--posture",
+        choices=[item.value for item in Posture],
+        help="imposer une posture a l'agent pendant le pilotage "
+        "(en escarmouche, l'adversaire attend : sans cela les deux armees "
+        "ne s'affrontent jamais)",
     )
     probe.add_argument(
         "--no-record",
@@ -290,7 +298,12 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         return 0
 
     if args.play:
-        return _play(bridge, args.play, record=not args.no_record)
+        return _play(
+            bridge,
+            args.play,
+            record=not args.no_record,
+            posture=Posture(args.posture) if args.posture else None,
+        )
 
     if args.status or not (args.watch or args.move):
         _print_probe_status(bridge)
@@ -336,7 +349,13 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
-def _play(bridge: FileBridge, duration: float, *, record: bool = True) -> int:
+def _play(
+    bridge: FileBridge,
+    duration: float,
+    *,
+    record: bool = True,
+    posture: Posture | None = None,
+) -> int:
     """Laisse l'agent piloter la bataille, en rendant compte a chaque tour.
 
     **Ce que l'operateur doit savoir avant de lancer.** L'agent ne prend que les
@@ -351,10 +370,15 @@ def _play(bridge: FileBridge, duration: float, *, record: bool = True) -> int:
     from totalwar_ai.bridge.live import LiveSession
 
     config = load_config()
-    session = LiveSession(bridge=bridge, agent=DeterministicTacticalAgent.from_config(config))
+    agent = DeterministicTacticalAgent.from_config(config)
+    if posture is not None:
+        agent.planner.forced_posture = posture
+    session = LiveSession(bridge=bridge, agent=agent)
     recorder = BattleRecorder(directory=config.path("telemetry", "battles_dir") if record else None)
 
     print(f"Pilotage pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.")
+    if posture is not None:
+        print(f"Posture imposee : {posture.value} — ce n'est pas un choix de l'agent.")
     if recorder.path is not None:
         print(f"Enregistrement : {recorder.path}")
     print()

@@ -390,3 +390,47 @@ def test_les_ordres_reellement_emis_sont_traces(session: LiveSession, tmp_path: 
     ordres = entree["orders"]
     total = len(ordres["moves"]) + len(ordres["attacks"]) + len(ordres["halts"])
     assert total == etape.sent
+
+
+# --- posture imposee par l'operateur ------------------------------------------
+
+
+def test_une_posture_imposee_fait_avancer_l_armee(tmp_path: Path) -> None:
+    """En escarmouche l'adversaire attend : sans ordre, rien ne se passe.
+
+    Deux tentatives pour faire *decider* a l'agent de rompre l'impasse ont ete
+    mesurees nuisibles au banc (ADR 0005). Celle-ci n'est pas une decision de
+    l'agent : c'est un ordre que l'operateur lui donne, pour qu'une bataille ait
+    lieu et puisse etre observee.
+    """
+    from totalwar_ai.agent.planner import Posture
+
+    (tmp_path / "totalwar_ai").mkdir()
+    probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
+    probe.advance(2000)
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+
+    agent = DeterministicTacticalAgent.from_config(load_config())
+    agent.planner.forced_posture = Posture.ADVANCE
+    session = LiveSession(bridge=FileBridge.open(tmp_path), agent=agent)
+
+    etape = session.step()
+    assert agent.plan is not None
+    assert agent.plan.posture is Posture.ADVANCE
+    assert "imposee par l'operateur" in agent.plan.rationale
+    assert etape.acted, etape.summary()
+
+
+def test_la_posture_imposee_survit_au_rechargement_de_doctrine() -> None:
+    """La perdre rendrait l'ordre de l'operateur silencieusement caduc."""
+    from totalwar_ai.agent.planner import Posture
+    from totalwar_ai.learning.adaptation import DoctrineProfile
+
+    agent = DeterministicTacticalAgent.from_config(load_config())
+    agent.planner.forced_posture = Posture.ENVELOP
+    agent.apply_doctrine(
+        DoctrineProfile(fingerprint="t", adjustments={"line_spacing": 50.0}, rationale="essai")
+    )
+
+    assert agent.planner.forced_posture is Posture.ENVELOP
