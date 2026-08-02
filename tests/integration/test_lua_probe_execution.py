@@ -828,3 +828,85 @@ def test_sans_ecriture_le_journal_recoit_tout(tmp_path: Path) -> None:
     probe = Probe(tmp_path, units=[("1001", "unite", 0.0, 0.0, True)])
     probe.advance(30_000)
     assert len(probe.grep("STATE ")) > 20
+
+
+# --- deplacement de groupe ---------------------------------------------------
+
+
+def test_toute_l_armee_bouge_en_une_commande(bataille: Probe, workdir: Path) -> None:
+    """Une armee se deploie d'un bloc, pas une unite par seconde."""
+    probe, bridge = bataille, FileBridge.open(workdir)
+    probe.advance(2000)
+
+    commande = bridge.move_units(
+        [
+            ("1001", Vector3(0.0, 0.0, -300.0)),
+            ("1002", Vector3(20.0, 0.0, -300.0)),
+        ]
+    )
+    probe.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None and accuse.accepted
+
+    deplacements = [order for order in probe.orders() if order["kind"] == "goto"]
+    assert {order["unit_id"] for order in deplacements} == {"1001", "1002"}
+    # Chaque unite garde sa destination : c'est une formation, pas un troupeau.
+    par_unite = {order["unit_id"]: order for order in deplacements}
+    assert par_unite["1001"]["x"] == pytest.approx(0.0)
+    assert par_unite["1002"]["x"] == pytest.approx(20.0)
+    assert par_unite["1001"]["z"] == pytest.approx(-300.0)
+
+
+def test_une_unite_en_echec_n_annule_pas_les_autres(bataille: Probe, workdir: Path) -> None:
+    """Dix-neuf unites ne doivent pas rester immobiles a cause d'une vingtieme."""
+    probe, bridge = bataille, FileBridge.open(workdir)
+    probe.advance(2000)
+
+    commande = bridge.move_units(
+        [
+            ("1001", Vector3(0.0, 0.0, -300.0)),
+            ("9999", Vector3(0.0, 0.0, -300.0)),  # n'existe pas
+            ("1002", Vector3(20.0, 0.0, -300.0)),
+        ]
+    )
+    probe.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None
+    assert accuse.accepted
+    # Un accuse « accepte » qui tairait l'echec serait un mensonge.
+    assert accuse.detail is not None
+    assert "2 unite(s) lancee(s), 1 refusee(s)" in str(accuse.detail)
+    assert accuse.error is not None and "9999" in accuse.error
+
+    bouges = {order["unit_id"] for order in probe.orders() if order["kind"] == "goto"}
+    assert bouges == {"1001", "1002"}
+
+
+def test_un_groupe_entierement_en_echec_est_refuse(bataille: Probe, workdir: Path) -> None:
+    probe, bridge = bataille, FileBridge.open(workdir)
+    probe.advance(2000)
+
+    commande = bridge.move_units([("9998", Vector3(0.0, 0.0, 0.0))])
+    probe.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None
+    assert not accuse.accepted
+
+
+def test_le_groupe_rend_le_controle_de_chaque_unite(bataille: Probe, workdir: Path) -> None:
+    """La restitution vaut pour toutes les unites prises, pas seulement la premiere."""
+    probe, bridge = bataille, FileBridge.open(workdir)
+    probe.advance(2000)
+
+    bridge.move_units(
+        [("1001", Vector3(0.0, 0.0, -300.0)), ("1002", Vector3(20.0, 0.0, -300.0))],
+        release_after_ms=1000,
+    )
+    probe.advance(3000)
+
+    liberations = [order for order in probe.orders() if order["kind"] == "release"]
+    assert len(liberations) >= 2
+    assert len(probe.grep("controle rendu")) >= 2

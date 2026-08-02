@@ -20,6 +20,7 @@ from totalwar_ai.bridge.command_models import (
     ProbeMessageType,
     ProbeMoveCommand,
     ProbeStatus,
+    ProbeUnitObservation,
     ProbeUnitState,
     decode_command,
 )
@@ -32,6 +33,7 @@ from totalwar_ai.bridge.paths import (
 )
 from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.domain.serialization import SchemaError
+from totalwar_ai.domain.unit_state import Side
 
 PROTOCOL = "0.1.0"
 
@@ -480,3 +482,30 @@ def test_une_ligne_windows_incomplete_n_est_pas_consommee(tmp_path: Path) -> Non
         handle.write((suivante[40:] + "\r\n").encode("utf-8"))
     assert [state.sequence for state in bridge.read_states()] == [2]
     assert not bridge.malformed
+
+
+def test_une_unite_exsangue_ne_vaut_pas_la_moitie_d_une_intacte() -> None:
+    """`effective_strength` multiplie effectifs et sante ; le jeu ne donne que la sante.
+
+    `number_of_men` est absent du bac a sable Lua. Laisser `entity_ratio` a 1
+    ferait valoir 0,5 a une unite a l'agonie — de quoi fausser tous les rapports
+    de puissance, donc le choix de posture et le ciblage.
+    """
+    intacte = ProbeUnitObservation(
+        unit_id="1", position=Vector3(0.0, 0.0, 0.0), hitpoints=1.0
+    ).to_unit_state(Side.ALLY)
+    exsangue = ProbeUnitObservation(
+        unit_id="2", position=Vector3(0.0, 0.0, 0.0), hitpoints=0.05
+    ).to_unit_state(Side.ALLY)
+
+    assert intacte.effective_strength == pytest.approx(1.0)
+    assert exsangue.effective_strength < 0.1
+
+
+def test_une_sante_absente_ne_penalise_pas_l_unite() -> None:
+    """Faute de donnee, supposer l'unite intacte plutot que d'inventer un chiffre."""
+    inconnue = ProbeUnitObservation(
+        unit_id="1", position=Vector3(0.0, 0.0, 0.0), hitpoints=None
+    ).to_unit_state(Side.ALLY)
+    assert inconnue.effective_strength == pytest.approx(1.0)
+    assert inconnue.metadata["morale_available"] is False

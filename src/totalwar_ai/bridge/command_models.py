@@ -56,6 +56,8 @@ class ProbeMessageType(StrEnum):
     #: Bataille entiere : toutes les unites alliees, et tout ce qui ne l'est pas.
     BATTLE_STATE = "battle_state"
     MOVE_UNIT = "move_unit"
+    #: Deplacement groupe : une armee se deploie d'un bloc ou pas du tout.
+    MOVE_UNITS = "move_units"
     ACTION_RESULT = "action_result"
     #: Ordre d'arret : le Lua libere toutes ses unites et cesse de lire.
     ABORT = "abort"
@@ -232,6 +234,12 @@ class ProbeUnitObservation:
             heading=self.bearing if self.bearing is not None else 0.0,
             unit_key=self.unit_type,
             health_ratio=self.hitpoints if self.hitpoints is not None else 1.0,
+            # `number_of_men` est absent du bac a sable : impossible de calculer
+            # un vrai rapport d'effectifs. Laisser `entity_ratio` a 1 fausserait
+            # `effective_strength`, qui multiplie les deux — une unite exsangue
+            # y vaudrait encore 0,5. `unary_hitpoints` agrege la sante de toutes
+            # les entites d'une unite : c'est l'approximation la plus proche.
+            entity_ratio=self.hitpoints if self.hitpoints is not None else 1.0,
             is_routing=self.routing or self.shattered,
             is_engaged=self.in_melee,
             is_hidden=self.hidden,
@@ -337,6 +345,65 @@ class ProbeMoveCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ProbeMoveGroupCommand:
+    """Ordre de deplacement portant sur plusieurs unites a la fois.
+
+    Un ordre par unite obligerait a autant d'allers-retours par fichier, chacun
+    avec sa sequence et son accuse : deplacer vingt unites prendrait vingt
+    secondes, et l'armee arriverait en file indienne. Chaque unite garde sa
+    propre destination — c'est ce qui distingue une formation d'un troupeau.
+    """
+
+    #: `(identifiant, destination)`, dans l'ordre voulu par l'appelant.
+    moves: tuple[tuple[str, Vector3], ...]
+    sequence: int = 1
+    release_after_ms: int = 5000
+    protocol_version: str = PROTOCOL_VERSION
+
+    def __post_init__(self) -> None:
+        if not self.moves:
+            raise SchemaError("Un deplacement de groupe doit porter sur au moins une unite")
+        if self.sequence < 1:
+            raise SchemaError("Le numero de sequence doit etre superieur ou egal a 1")
+        if any(not unit_id for unit_id, _ in self.moves):
+            raise SchemaError("Chaque deplacement doit designer une unite")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "protocol_version": self.protocol_version,
+            "type": ProbeMessageType.MOVE_UNITS.value,
+            "sequence": self.sequence,
+            "release_after_ms": self.release_after_ms,
+            "moves": [
+                {"unit_id": unit_id, "destination": jsonable_vector(destination)}
+                for unit_id, destination in self.moves
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> ProbeMoveGroupCommand:
+        data = require_mapping(raw, "ProbeMoveGroupCommand")
+        version = as_str(data, "protocol_version")
+        check_version(version)
+        _require_type(data, ProbeMessageType.MOVE_UNITS)
+        moves = []
+        for item in _as_list(data, "moves"):
+            entry = require_mapping(item, "move")
+            moves.append(
+                (
+                    as_str(entry, "unit_id"),
+                    Vector3.from_dict(require_mapping(entry.get("destination"), "destination")),
+                )
+            )
+        return cls(
+            moves=tuple(moves),
+            sequence=as_int(data, "sequence", default=1),
+            release_after_ms=as_int(data, "release_after_ms", default=5000),
+            protocol_version=version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ProbeAbortCommand:
     """Arret d'urgence : le Lua libere tout et cesse de lire les commandes."""
 
@@ -406,7 +473,7 @@ class ProbeAck:
         )
 
 
-ProbeCommand = ProbeMoveCommand | ProbeAbortCommand
+ProbeCommand = ProbeMoveCommand | ProbeMoveGroupCommand | ProbeAbortCommand
 
 
 def decode_command(raw: Any) -> ProbeCommand:
@@ -415,6 +482,8 @@ def decode_command(raw: Any) -> ProbeCommand:
     message_type = as_str(data, "type")
     if message_type == ProbeMessageType.MOVE_UNIT.value:
         return ProbeMoveCommand.from_dict(data)
+    if message_type == ProbeMessageType.MOVE_UNITS.value:
+        return ProbeMoveGroupCommand.from_dict(data)
     if message_type == ProbeMessageType.ABORT.value:
         return ProbeAbortCommand.from_dict(data)
     raise SchemaError(f"Type de commande inconnu : {message_type!r}")
