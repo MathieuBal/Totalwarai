@@ -9,7 +9,7 @@ Version actuelle : **0.1.0** (`totalwar_ai.bridge.protocol.PROTOCOL_VERSION`).
 | Module | `bridge/protocol.py` | `bridge/command_models.py` |
 | Transport | en mémoire (`MockBridge`), simulateur | trois fichiers partagés avec le jeu |
 | Vocabulaire | 11 types d'action tactique, `UnitState` complet | déplacer, attaquer, immobiliser, déléguer, reprendre |
-| Statut | conçu, jamais exécuté contre le jeu | **exécuté en bataille, huit essais** |
+| Statut | conçu, jamais exécuté contre le jeu | **exécuté en bataille, neuf essais** |
 
 Le premier est la cible : il décrit tout ce qu'un agent tactique voudrait dire.
 Le second est ce que le jeu accepte réellement d'entendre, mesuré et non
@@ -215,7 +215,7 @@ entier incrémenté à chaque changement de comportement du script.
 
 - Lua : `TOTALWAR_AI_PROBE_REVISION` dans `totalwar_ai_probe.lua` ;
 - Python : `EXPECTED_PROBE_REVISION` dans `bridge/paths.py` ;
-- révision courante : **8**.
+- révision courante : **9**.
 
 Les deux ne peuvent pas diverger en silence :
 `tests/integration/test_lua_protocol.py` lit le script Lua et compare. Côté

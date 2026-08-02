@@ -1,6 +1,6 @@
 # Faisabilité de l'intégration au jeu (Phase 0)
 
-> **Statut : huit essais en bataille. L'agent pilote une vraie bataille.**
+> **Statut : neuf essais en bataille. L'agent pilote une vraie bataille.**
 >
 > L'aller-retour complet est acquis depuis l'essai n° 4 — ordre publié par
 > Python, lu et exécuté par le Lua, unité déplacée de **20,3 m** mesurés par le
@@ -12,12 +12,15 @@
 > fonctionnel :
 >
 > - la restitution automatique du contrôle après cinq secondes ;
-> - l'arrêt d'urgence, par commande comme par fichier sentinelle ;
+> - l'arrêt d'urgence **par commande** — celui par fichier sentinelle, lui, est
+>   vérifié depuis l'essai n° 9 ;
 > - **les ordres d'attaque et d'immobilisation** : le code est écrit et le Lua
 >   les acquitte, mais aucun essai n'a mesuré leur effet — les pilotages n'ont
 >   émis que des déplacements ;
-> - la délégation à `script_ai_planner` et la supervision (révisions 7 et 8),
->   écrites et testées contre le faux jeu, jamais exécutées dans le vrai.
+> - **que l'IA du jeu joue effectivement la bataille une fois l'armée confiée** :
+>   l'essai n° 9 a bien créé le `script_ai_planner`, mais sur six unités sur
+>   dix-huit, et la supervision qui l'accompagnait tournait à vide ;
+> - que la reprise d'une unité mal employée produise l'effet attendu.
 >
 > Les essais n° 7 et 8 n'ont pas de compte rendu détaillé ci-dessous : seuls
 > leurs enseignements ont été reportés dans les tableaux.
@@ -299,6 +302,71 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
 | `uc:add_units a echoue` | l'unité est dans un groupe verrouillé ; en essayer une autre |
 
 ## Résultats de l'essai en bataille
+
+### Essai n° 9 — 02/08/2026, 08 h 09 — première délégation en jeu
+
+Premier essai de `--supervise` dans le vrai jeu. **Il a échoué, et c'est le
+plus instructif de tous** : il a révélé un défaut qui invalidait discrètement
+tout ce que l'agent croyait faire depuis plusieurs essais.
+
+**La sonde observait dix-huit unités et n'en commandait que six.** Le journal
+est sans ambiguïté :
+
+```text
+ACK {"sequence":37,"status":"accepted","error":"1007 : unite introuvable",
+     "detail":{"note":"6 unite(s) confiee(s)"}}
+```
+
+Dix-huit demandées, six confiées, et l'accusé porte pourtant `accepted`.
+`alliance_snapshot` parcourt **toutes** les armées de l'alliance ;
+`find_unit_by_id` n'en parcourait qu'une, `bm:local_army()`. Les douze unités
+des autres armées étaient donc publiées, classées, planifiées — et
+inatteignables par le moindre ordre.
+
+C'est le cas d'une bataille avec renforts, ou d'une armée alliée. Le faux jeu
+ne savait pas représenter une alliance à plusieurs armées : voilà pourquoi
+aucun test ne l'avait vu. Il le sait maintenant.
+
+**La supervision ne lisait aucun accusé.** Conséquence directe : chaque reprise
+était rejetée, rien ne le remarquait, la règle se redéclenchait au tour
+suivant. Vingt-trois interventions annoncées, **aucune appliquée**, l'unité
+1011 reprise quatre fois. Une boucle ouverte se lit comme une boucle qui
+travaille.
+
+**Deux sessions suivantes ont tourné à vide sans le dire.** Après le Ctrl+C,
+la sentinelle d'arrêt reste sur le disque et le Lua cesse définitivement de
+lire (`SONDE ARRETEE : fichier d'arret present`). Les deux relances ont
+pourtant annoncé « 18 unite(s) confiees » avant de compter `0 tour(s)` : elles
+relisaient le flux depuis son début et prenaient le dernier état de la session
+précédente pour l'état courant.
+
+Corrigé en révision 9 : recherche sur toute l'alliance, accusés nommant les
+unités refusées, boucle fermée qui écarte une unité que le jeu refuse, pilotage
+qui part de la fin du flux et refuse de démarrer sur une sentinelle laissée en
+place.
+
+**Trois acquis, en revanche, et ce sont les garde-fous.** Le Ctrl+C a produit
+exactement la séquence attendue :
+
+```text
+controle rendu au joueur : 6 unite(s) reprises a l'IA du jeu
+toutes les unites relachees (fichier d'arret present)
+SONDE ARRETEE : fichier d'arret present
+```
+
+Sont donc **vérifiés en jeu**, pour la première fois :
+
+- **l'arrêt d'urgence par fichier sentinelle** — le Lua l'a vu et a tout libéré ;
+- **la reprise d'unités confiées à l'IA du jeu** — six unités reprises, comptées ;
+- **la création du `script_ai_planner`** — le planificateur du moteur a bien été
+  instancié sur les unités que la sonde avait su trouver.
+
+C'est le seul point de sûreté qui restait non vérifié depuis le début du projet.
+
+**Ce que cet essai n'a pas pu établir**, la délégation ayant été partielle et la
+supervision ayant tourné à vide : que `script_ai_planner` joue effectivement la
+bataille, et que la reprise d'une unité mal employée produise l'effet attendu.
+Les deux restent à vérifier.
 
 ### Essai n° 6 — 02/08/2026, 01 h 56
 

@@ -85,7 +85,7 @@ La première ambition jouable est la suivante :
 
 **Statut : l'agent pilote une vraie bataille de *WARHAMMER III*.**
 
-Huit essais en bataille ont établi, pas supposé :
+Neuf essais en bataille ont établi, pas supposé :
 
 - un script Lua de bataille peut **écrire et lire des fichiers** — c'était le
   risque principal du projet, il est levé ;
@@ -96,11 +96,14 @@ Huit essais en bataille ont établi, pas supposé :
 - l'agent a mené une bataille de bout en bout, et chaque décision est
   enregistrée.
 
+- **l'arrêt d'urgence fonctionne** : le fichier sentinelle a fait tout libérer
+  au jeu et reprendre les unités confiées à son IA (essai n° 9).
+
 Ce qui est écrit mais **jamais mesuré en bataille**, et qu'il ne faut donc pas
 tenir pour acquis : les ordres d'attaque et d'arrêt, la restitution automatique
-du contrôle, l'arrêt d'urgence, la délégation et la supervision. Le Lua les
-acquitte, le harnais Lua embarqué les couvre — mais aucun essai n'en a constaté
-l'effet dans le jeu.
+du contrôle après cinq secondes, et surtout **que l'IA du jeu joue effectivement
+la bataille** une fois l'armée confiée. Le Lua acquitte, le harnais Lua embarqué
+couvre — mais un ordre acquitté n'est pas un ordre exécuté.
 
 Ce que le jeu **ne** donne pas, vérifié accesseur par accesseur : ni moral, ni
 fatigue, ni vitesse, ni largeur de front, ni la moindre donnée de terrain. Le
@@ -110,17 +113,20 @@ détail est dans [`docs/feasibility.md`](docs/feasibility.md).
 
 | Commande | Qui décide | Éprouvé en bataille |
 | --- | --- | --- |
-| `probe --delegate` | **l'IA du jeu** joue toute l'armée | non |
+| `probe --delegate` | **l'IA du jeu** joue toute l'armée | partiellement |
 | `probe --supervise` | l'IA du jeu joue, **nos règles corrigent** ses angles morts | non |
 | `probe --play` | **notre agent** joue seul | oui |
-| `probe --reclaim` / `--abort` | **vous** reprenez la main | non |
+| `probe --reclaim` / `--abort` | **vous** reprenez la main | oui |
 
 Les trois premiers enregistrent la bataille dans le même format, ce qui permet
 de les comparer.
 
-La colonne de droite n'est pas un détail : seul `--play` a réellement tourné
-dans le jeu. Les trois autres sont arrivés avec les révisions 7 et 8 du script
-Lua, qui n'ont pas encore été rejouées en bataille.
+La colonne de droite n'est pas un détail. À l'essai n° 9, la délégation a bien
+créé le planificateur du moteur, mais sur six unités sur dix-huit — la sonde ne
+savait pas commander les armées de renfort. La supervision qui l'accompagnait a
+tourné sans effet, faute de lire les accusés. Les deux défauts sont corrigés en
+révision 9 et attendent leur essai. L'arrêt d'urgence, lui, a fonctionné : le
+jeu a tout libéré et repris les six unités.
 
 **Sur la délégation.** *WARHAMMER III* embarque sa propre IA de bataille,
 accessible par `script_ai_planner`. Elle connaît le terrain, le pathfinding et
@@ -744,16 +750,18 @@ Un modèle candidat devient le modèle stable uniquement s’il :
 - [ ] Tester un ordre d’attaque. — *`uc:attack_unit` est écrit et acquitté, mais
       aucun essai n'a mesuré son effet : les pilotages n'ont émis que des
       déplacements*
-- [ ] Tester la reprise manuelle du contrôle. — *écrite, jamais déclenchée en
-      bataille : ni la restitution après 5 s, ni l'arrêt d'urgence*
+- [x] Tester la reprise manuelle du contrôle. — *arrêt d'urgence par fichier
+      sentinelle vérifié à l'essai n° 9 : le jeu a tout libéré et repris six
+      unités. La restitution automatique après 5 s reste non déclenchée*
 - [x] Tester un moyen de communication local. — *trois fichiers dans
       `<installation>/totalwar_ai/`, aller-retour complet*
 - [x] Documenter les impossibilités et contournements. —
       [`docs/feasibility.md`](docs/feasibility.md)
 
 **Livrable :** preuve de concept capable d’observer au moins une unité et de lui
-envoyer un ordre contrôlé. — *atteint à l'essai n° 4 ; la phase reste ouverte sur
-la reprise du contrôle, qui est le seul point de sûreté non vérifié*
+envoyer un ordre contrôlé. — *atteint à l'essai n° 4 ; les garde-fous sont
+vérifiés depuis l'essai n° 9. Restent ouverts : la version du jeu, jamais
+relevée, et l'effet réel des ordres d'attaque*
 
 ### Phase 1 — Simulateur et contrats
 
