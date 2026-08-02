@@ -65,11 +65,14 @@ local function make_unit(id, unit_type, x, z, controllable)
         controllable = controllable,
         men = 80,
         men_alive = 64,
+        commanding = false,
         unique_ui_id = function(self) return self.id end,
         type = function(self) return self.unit_type end,
         position = function(self) return self.pos end,
         is_controllable = function(self) return self.controllable end,
         is_valid_target = function(self) return true end,
+        -- Le jeu identifie le seigneur : la premiere unite de l'armee.
+        is_commanding_unit = function(self) return self.commanding == true end,
 
         -- Accesseurs supplementaires, volontairement partiels : le vrai jeu
         -- n'expose pas tout, et le recensement doit savoir le dire. Les noms
@@ -149,6 +152,8 @@ end
 --- Met en place la bataille. `enemies` est facultatif : sans lui, un seul camp,
 --- ce qui reste utile pour les tests qui n'observent que le notre.
 function FAKE:setup(units, enemies)
+    -- La premiere unite alliee commande, comme en jeu.
+    if units and units[1] then units[1].commanding = true end
     local army = make_army(units)
     local alliance = {
         armies_collection = make_collection({ army }),

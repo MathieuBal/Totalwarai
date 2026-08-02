@@ -123,3 +123,57 @@ Rien de ceci n'a été vérifié par nos soins dans une bataille réelle. Ce son
 constats de lecture sur un mod tiers, qui orientent la conception mais ne la
 valident pas. L'état des vérifications se tient dans
 [`../feasibility.md`](../feasibility.md).
+
+## Seconde relecture ciblée (02/08/2026)
+
+Faite en réponse à une question légitime : pourquoi découvrir en jeu ce qu'un
+mod avancé sait déjà ? Recherche par motifs sur les questions restées ouvertes.
+**Aucun code n'est repris** — seuls les noms d'API et les mécanismes sont
+consignés, en nos propres termes.
+
+### Ce que la relecture a apporté
+
+| Question ouverte | Réponse trouvée |
+| --- | --- |
+| identifier le seigneur | **`unit:is_commanding_unit()`**. Le mod commente avoir longtemps supposé que la première unité de l'armée était le seigneur, et garde cette supposition en repli |
+| ordre d'attaque | `uc:attack_unit(cible, primaire, courir)`, précédé au besoin de `uc:melee(true)` pour forcer le corps à corps |
+| comportements | `unit:can_use_behaviour(nom)`, `unit:is_behaviour_active(nom)`, `uc:change_behaviour_active(nom, actif)`. Noms constatés : **`fire_at_will`**, **`skirmish`** |
+| prendre plusieurs unités | `uc:add_units()` accepte **plusieurs unités à la fois**. Le mod l'enveloppe dans un `pcall` en notant que l'appel échoue si l'unité est dans un groupe verrouillé |
+| unité inactive | `unit:is_idle()` |
+
+### Ce que la relecture a montré comme impasses
+
+**Le moral et la fatigue n'apparaissent nulle part dans ce mod** — zéro
+occurrence de `morale`, `fatigue`, `exhaust` ou `tired` dans l'intégralité du
+`.pack`. Il ne les lit pas. Notre recensement en bataille avait déjà conclu à
+leur absence ; la relecture confirme qu'il n'y avait rien à en apprendre.
+
+**`land_units` n'est pas une API de bataille.** Le mod y fait référence dans ses
+commentaires — « depuis `land_units_table`, où munitions primaires > 0 et
+AiUsage contient melee » — pour documenter **des listes codées en dur**, obtenues
+en interrogeant la base de données hors du jeu. Il n'existe donc pas d'accès à
+ces statistiques depuis un script de bataille. Notre approche — déduire le rôle
+de ce que le jeu mesure (`missile_range`, `ammo_left`) — reste la bonne, et se
+trouve même être plus robuste qu'une liste figée.
+
+### Ce que la relecture ne pouvait pas éviter
+
+Pour être juste envers la question posée, voici l'origine réelle des difficultés
+rencontrées jusqu'ici :
+
+| Difficulté | Le mod pouvait-il l'éviter ? |
+| --- | --- |
+| `math.huge` absent du bac à sable | **Non** — il n'utilise pas `math.huge` |
+| écriture de fichier en bataille | **Non** — il n'écrit que depuis le frontend, ce qui était déjà consigné ici comme le risque principal |
+| moral et fatigue inaccessibles | **Non** — il ne les lit pas |
+| munitions données en total | **Non** — il ne s'en sert pas |
+| décalage d'offset sur fins de ligne Windows | **Non** — défaut Python, sans rapport |
+| séquence non reprise entre processus | **Non** — défaut Python, sans rapport |
+| commande survivant à la bataille | **Non** — conception propre à notre pont |
+| identification du seigneur | **Oui** — perdu faute d'avoir cherché plus tôt |
+| ordres d'attaque et comportements | **Oui** — évite un tâtonnement à venir |
+
+La leçon n'est pas « il fallait tout lire d'emblée », mais **« relire le code
+tiers dès qu'une question précise se pose »**. Une recherche ciblée sur une
+question formulée trouve en quelques minutes ce qu'une lecture exhaustive
+préalable aurait noyé.
