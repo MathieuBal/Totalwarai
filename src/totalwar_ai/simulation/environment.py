@@ -21,7 +21,7 @@ from totalwar_ai.domain.actions import ActionResult, ActionStatus, ActionType, A
 from totalwar_ai.domain.battle_state import BattleOutcomeKind, BattlePhase, BattleState
 from totalwar_ai.domain.geometry import Vector3, centroid, is_in_rear_arc, spread_positions
 from totalwar_ai.domain.serialization import clamp
-from totalwar_ai.domain.unit_state import RANGED_ROLES, Side, UnitRole, UnitState
+from totalwar_ai.domain.unit_state import Side, UnitRole, UnitState
 from totalwar_ai.simulation.unit_templates import (
     SimulationParameters,
     SimulationRules,
@@ -177,8 +177,16 @@ class SimulationEnvironment:
         max_battle_seconds: float = 900.0,
         field_radius: float = 400.0,
         enemy_waits: bool = False,
+        ally_autopilot: bool = False,
     ) -> None:
         self.battle_id = battle_id
+        #: Notre armee est-elle menee par la doublure de l'IA du moteur ?
+        #:
+        #: Faux par defaut : le simulateur sert d'abord a mesurer notre agent,
+        #: qui donne alors tous les ordres. Vrai pour mesurer la supervision.
+        self.ally_autopilot = ally_autopilot
+        #: Unites alliees soustraites a la doublure, parce que reprises.
+        self.manual: set[str] = set()
         self.parameters = parameters or SimulationParameters.load()
         self.rules: SimulationRules = self.parameters.rules
         self.tick_seconds = tick_seconds
@@ -407,6 +415,8 @@ class SimulationEnvironment:
         self.sequence += 1
 
         self._enemy_policy()
+        if self.ally_autopilot:
+            self._ally_policy()
         self._update_engagements(events)
         self._move_units(delta)
         self._resolve_missiles(delta, events)
@@ -432,32 +442,44 @@ class SimulationEnvironment:
         et repond au contact, mais n'avance jamais. C'est le comportement des
         escarmouches du jeu, ou l'ennemi laisse venir — situation dans laquelle
         un agent qui tient sa position aussi produit un match nul.
+
+        La decision par unite vit dans :mod:`totalwar_ai.simulation.native_ai`,
+        parce que la meme politique sert aussi de doublure a l'IA du moteur pour
+        mener **notre** armee. Deux copies divergeraient, et la mesure de la
+        supervision ne vaudrait plus rien.
         """
-        allies = self.side_units(Side.ALLY, available_only=True)
-        if not allies:
+        self._drive(Side.ENEMY, Side.ALLY, waits=self.enemy_waits)
+
+    def _ally_policy(self) -> None:
+        """Notre armee menee par la doublure, sauf les unites que l'on tient.
+
+        C'est ce qui rend la supervision mesurable au banc : l'IA joue, nos
+        regles reprennent quelques unites, et l'on compare. Les unites de
+        `manual` sont laissees telles quelles — leur ordre vient du superviseur
+        et ne doit pas etre ecrase au tour suivant.
+        """
+        self._drive(Side.ALLY, Side.ENEMY, waits=False, skip=self.manual)
+
+    def _drive(
+        self,
+        side: Side,
+        against: Side,
+        *,
+        waits: bool,
+        skip: set[str] | None = None,
+    ) -> None:
+        from totalwar_ai.simulation.native_ai import scripted_order
+
+        opponents = self.side_units(against, available_only=True)
+        if not opponents:
             return
-        for unit in self.side_units(Side.ENEMY, available_only=True):
-            if unit.is_engaged:
+        ignores = skip or set()
+        for unit in self.side_units(side, available_only=True):
+            if unit.id in ignores:
                 continue
-            preferred: list[SimUnit] = allies
-            if unit.role in (UnitRole.LIGHT_CAVALRY, UnitRole.SHOCK_CAVALRY, UnitRole.FLYING_UNIT):
-                exposed = [ally for ally in allies if ally.role in RANGED_ROLES]
-                if exposed:
-                    preferred = exposed
-            target = min(preferred, key=lambda ally: unit.position.distance_2d(ally.position))
-            distance = unit.position.distance_2d(target.position)
-            if (
-                unit.template.is_ranged
-                and unit.ammo > 0
-                and distance <= unit.template.missile_range
-            ):
-                unit.order = Order(kind=OrderKind.FIRE, target_id=target.id)
-            elif self.enemy_waits:
-                # Il attend : ni poursuite, ni approche. Le contact viendra de
-                # nous, ou n'aura pas lieu.
-                unit.order = Order(kind=OrderKind.HOLD)
-            else:
-                unit.order = Order(kind=OrderKind.ATTACK, target_id=target.id)
+            order = scripted_order(unit, opponents, waits=waits)
+            if order is not None:
+                unit.order = order
 
     # --- resolution ----------------------------------------------------------
 

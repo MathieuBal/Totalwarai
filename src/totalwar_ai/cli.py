@@ -38,7 +38,7 @@ from totalwar_ai.learning.evaluation import (
 from totalwar_ai.memory.replay_buffer import ReplayBuffer
 from totalwar_ai.memory.repository import MemoryRepository
 from totalwar_ai.simulation.runner import run_battle
-from totalwar_ai.simulation.scenarios import ScenarioCatalog
+from totalwar_ai.simulation.scenarios import Scenario, ScenarioCatalog
 from totalwar_ai.telemetry.battle_logger import configure_logging
 
 if TYPE_CHECKING:
@@ -96,6 +96,12 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--label", default="", help="etiquette libre pour la reference")
     bench.add_argument(
         "--no-compare", action="store_true", help="ne pas comparer a la reference enregistree"
+    )
+    bench.add_argument(
+        "--supervised",
+        action="store_true",
+        help="mesurer la supervision : doublure de l'IA du moteur seule, "
+        "puis la meme doublure avec nos regles",
     )
 
     probe = subparsers.add_parser("probe", help="piloter la sonde d'integration au jeu (prototype)")
@@ -878,6 +884,63 @@ def _print_probe_status(bridge: FileBridge) -> None:
         print(f"Dernier accuse : sequence {dernier.sequence}, statut {dernier.status.value}")
 
 
+def _bench_supervised(
+    scenarios: Sequence[Scenario], seeds: tuple[int, ...], config: AppConfig
+) -> int:
+    """La doublure de l'IA du moteur, seule puis supervisee.
+
+    Repond a la seule question qui vaille pour la supervision : **nos regles
+    ameliorent-elles une bataille que l'IA menait deja ?** Le CLI ne compare pas
+    a une reference enregistree mais aux deux moities du meme banc, jouees a
+    graines identiques — la difference est donc imputable aux regles et a rien
+    d'autre.
+    """
+    from totalwar_ai.bridge.supervision import Supervisor
+    from totalwar_ai.simulation.runner import run_supervised_battle
+
+    print(
+        f"Banc supervise : {len(scenarios)} scenarios x {len(seeds)} graines {seeds}\n"
+        "  ATTENTION : la doublure n'est pas l'IA du jeu. Elle ignore le terrain,\n"
+        "  les formations et le pathfinding. C'est un filtre rapide, pas un juge —\n"
+        "  un gain constate ici reste a confirmer en bataille reelle.\n"
+    )
+
+    seule = run_benchmark(
+        scenarios,
+        seeds=seeds,
+        config=config,
+        label="doublure seule",
+        battle_runner=lambda scenario, **kw: run_supervised_battle(scenario, **kw),
+    )
+    supervisee = run_benchmark(
+        scenarios,
+        seeds=seeds,
+        config=config,
+        label="doublure supervisee",
+        # Un superviseur neuf par bataille : il retient les unites reprises, et
+        # le partager ferait deteindre une bataille sur la suivante.
+        battle_runner=lambda scenario, **kw: run_supervised_battle(
+            scenario, supervisor=Supervisor(), **kw
+        ),
+    )
+
+    print("--- l'IA du moteur seule (reference) ---")
+    print(render_table(seule))
+    print("\n--- la meme, avec nos regles ---")
+    print(render_table(supervisee))
+
+    verdict = compare(seule, supervisee)
+    print("\n--- verdict ---")
+    print(verdict.summary_line())
+    for ecart in verdict.regressions:
+        print(f"  - {ecart.scenario} {ecart.metric} : {ecart.before:.0%} -> {ecart.after:.0%}")
+    for ecart in verdict.improvements:
+        print(f"  + {ecart.scenario} {ecart.metric} : {ecart.before:.0%} -> {ecart.after:.0%}")
+    if verdict.acceptable and not verdict.improvements:
+        print("  Nos regles ne changent rien de mesurable sur ce banc.")
+    return 0 if verdict.acceptable else 1
+
+
 def _cmd_bench(args: argparse.Namespace, config: AppConfig) -> int:
     """Rejoue le banc, l'affiche, et le compare a la reference enregistree.
 
@@ -899,6 +962,9 @@ def _cmd_bench(args: argparse.Namespace, config: AppConfig) -> int:
         seeds = tuple(DEFAULT_SEEDS) + tuple(
             101 + index for index in range(args.seeds - len(DEFAULT_SEEDS))
         )
+
+    if args.supervised:
+        return _bench_supervised(scenarios, seeds, config)
 
     print(f"Banc : {len(scenarios)} scenarios x {len(seeds)} graines {seeds}\n")
     report = run_benchmark(scenarios, seeds=seeds, config=config, label=args.label)
