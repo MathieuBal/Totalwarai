@@ -65,7 +65,12 @@ class LiveStep:
                 noms = ", ".join(sorted({item[0].value for item in reste}))
                 return f"{entete} — aucun ordre traduisible ({noms})"
             return f"{entete} — rien a faire"
-        return f"{entete} — {self.sent} unite(s) en mouvement"
+        detail = []
+        if self.translation.moves:
+            detail.append(f"{len(self.translation.moves)} deplacement(s)")
+        if self.translation.attacks:
+            detail.append(f"{len(self.translation.attacks)} attaque(s)")
+        return f"{entete} — " + ", ".join(detail)
 
 
 @dataclass
@@ -126,12 +131,18 @@ class LiveSession:
                 translation=translation,
             )
 
-        self.bridge.move_units(translation.moves, release_after_ms=self.release_after_ms)
+        # Un seul message : deux commandes successives se perdraient, le
+        # fichier etant remplace et relu toutes les 500 ms seulement.
+        self.bridge.send_orders(
+            translation.moves,
+            translation.attacks,
+            release_after_ms=self.release_after_ms,
+        )
         return LiveStep(
             state=state,
             decisions=tuple(tour.explanations()),
             translation=translation,
-            sent=len(translation.moves),
+            sent=translation.order_count,
         )
 
     def stop(self) -> None:
@@ -158,7 +169,11 @@ class LiveSession:
         return resultats
 
 
-#: Actions que la boucle sait rendre aujourd'hui. Le reste attend le point 3.
+#: Actions que la boucle sait rendre aujourd'hui.
+#:
+#: Seule `REORIENT_FRONT` reste hors de portee : elle demande un ordre
+#: d'orientation que le jeu n'expose pas, et elle avait ete retiree du perimetre
+#: de l'agent apres mesure (voir ADR 0004).
 TRANSLATABLE_ACTIONS: frozenset[ActionType] = frozenset(
     {
         ActionType.MOVE_GROUP,
@@ -166,5 +181,10 @@ TRANSLATABLE_ACTIONS: frozenset[ActionType] = frozenset(
         ActionType.DISENGAGE,
         ActionType.FORM_RESERVE,
         ActionType.HOLD_POSITION,
+        ActionType.ATTACK_TARGET,
+        ActionType.FOCUS_FIRE,
+        ActionType.CHASE_ROUTING,
+        ActionType.FLANK,
+        ActionType.PROTECT,
     }
 )

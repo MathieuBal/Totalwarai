@@ -99,21 +99,30 @@ def test_une_unite_absente_de_l_etat_est_ignoree() -> None:
 # --- actions sans equivalent -------------------------------------------------
 
 
-def test_une_attaque_n_est_pas_traduite_en_deplacement() -> None:
-    """Avancer « vers » une cible n'est pas l'attaquer.
+def test_une_action_sans_equivalent_est_nommee_et_non_approximee() -> None:
+    """Le principe, teste sur la seule action qui reste hors de portee.
 
-    L'unite avancerait sans engager, et le compte rendu affirmerait qu'elle
-    attaque. Mieux vaut declarer l'action non rendue.
+    `REORIENT_FRONT` demande un ordre d'orientation que le jeu n'expose pas.
+    On pourrait la rendre par un deplacement sur place — l'unite pivoterait
+    peut-etre, par effet de bord — mais le compte rendu affirmerait alors une
+    reorientation dont rien ne garantit qu'elle a eu lieu.
+
+    Ce test porte sur la regle, pas sur cette action : toute action que le pont
+    ne sait pas rendre doit ressortir avec son nom et son motif, jamais sous la
+    forme d'un ordre qui lui ressemble.
     """
-    attaque = AgentAction(
-        type=ActionType.ATTACK_TARGET,
+    reorientation = AgentAction(
+        type=ActionType.REORIENT_FRONT,
         actor_ids=("a",),
-        parameters={"target_id": "e1"},
+        parameters={"heading": 1.57},
     )
-    resultat = OrderTranslator().translate((attaque,), _etat("a"))
+    resultat = OrderTranslator().translate((reorientation,), _etat("a"))
 
     assert not resultat.moves
-    assert resultat.untranslated == ((ActionType.ATTACK_TARGET, "necessite uc:attack_unit"),)
+    assert not resultat.attacks
+    assert resultat.untranslated == (
+        (ActionType.REORIENT_FRONT, "necessite un ordre d'orientation"),
+    )
 
 
 def test_tenir_la_position_ne_produit_aucun_ordre_et_n_est_pas_un_manque() -> None:
@@ -171,3 +180,180 @@ def test_la_premiere_action_gagne_pour_une_unite_donnee() -> None:
     resultat = OrderTranslator().translate((prioritaire, ensuite), _etat("a"))
 
     assert resultat.moves == (("a", Vector3(1.0, 0.0, 1.0)),)
+
+
+# --- engagement --------------------------------------------------------------
+
+
+def _cible(state_ids: tuple[str, ...], target: str) -> BattleState:
+    return BattleState(
+        battle_id="t",
+        units=(
+            *(
+                UnitState(id=unit_id, side=Side.ALLY, position=Vector3(0.0, 0.0, 0.0))
+                for unit_id in state_ids
+            ),
+            UnitState(id=target, side=Side.ENEMY, position=Vector3(0.0, 0.0, 100.0)),
+        ),
+    )
+
+
+def test_une_attaque_devient_un_ordre_d_engagement() -> None:
+    """Le manque constate en bataille : l'agent decidait sans pouvoir agir."""
+    action = AgentAction(
+        type=ActionType.ATTACK_TARGET,
+        actor_ids=("a", "b"),
+        parameters={"target_id": "e1"},
+    )
+    resultat = OrderTranslator().translate((action,), _cible(("a", "b"), "e1"))
+
+    assert not resultat.untranslated
+    assert [(item.unit_id, item.target_id) for item in resultat.attacks] == [
+        ("a", "e1"),
+        ("b", "e1"),
+    ]
+
+
+def test_le_tir_concentre_ne_force_pas_la_melee() -> None:
+    """Imposer le corps a corps a un tireur lui ferait perdre son avantage."""
+    tir = AgentAction(type=ActionType.FOCUS_FIRE, actor_ids=("a",), parameters={"target_id": "e1"})
+    charge = AgentAction(
+        type=ActionType.ATTACK_TARGET, actor_ids=("b",), parameters={"target_id": "e1"}
+    )
+    resultat = OrderTranslator().translate((tir, charge), _cible(("a", "b"), "e1"))
+
+    par_unite = {item.unit_id: item.melee for item in resultat.attacks}
+    assert par_unite == {"a": False, "b": True}
+
+
+def test_une_cible_disparue_est_signalee() -> None:
+    """Attaquer une unite morte gaspillerait l'ordre, sans que rien ne le dise."""
+    action = AgentAction(
+        type=ActionType.ATTACK_TARGET, actor_ids=("a",), parameters={"target_id": "fantome"}
+    )
+    resultat = OrderTranslator().translate((action,), _cible(("a",), "e1"))
+
+    assert not resultat.attacks
+    assert resultat.untranslated[0][0] is ActionType.ATTACK_TARGET
+    assert "fantome" in resultat.untranslated[0][1]
+
+
+def test_une_unite_ne_recoit_pas_a_la_fois_un_deplacement_et_une_attaque() -> None:
+    """Les deux ordres se contrediraient : le premier emis gagne."""
+    attaque = AgentAction(
+        type=ActionType.ATTACK_TARGET, actor_ids=("a",), parameters={"target_id": "e1"}
+    )
+    repli = AgentAction(
+        type=ActionType.RETREAT,
+        actor_ids=("a",),
+        parameters={"destination": Vector3(0.0, 0.0, -50.0)},
+    )
+    resultat = OrderTranslator().translate((attaque, repli), _cible(("a",), "e1"))
+
+    assert len(resultat.attacks) == 1
+    assert not resultat.moves
+
+
+def test_deplacements_et_attaques_coexistent_dans_un_meme_tour() -> None:
+    """Une manoeuvre reelle melange les deux : les separer perdrait la moitie."""
+    attaque = AgentAction(
+        type=ActionType.ATTACK_TARGET, actor_ids=("a",), parameters={"target_id": "e1"}
+    )
+    repli = AgentAction(
+        type=ActionType.RETREAT,
+        actor_ids=("b",),
+        parameters={"destination": Vector3(0.0, 0.0, -50.0)},
+    )
+    resultat = OrderTranslator().translate((attaque, repli), _cible(("a", "b"), "e1"))
+
+    assert resultat.order_count == 2
+    assert [item.unit_id for item in resultat.attacks] == ["a"]
+    assert [unit_id for unit_id, _ in resultat.moves] == ["b"]
+
+
+# --- manoeuvres ---------------------------------------------------------------
+
+
+def _affrontement() -> BattleState:
+    """Notre ligne au sud, une cible au nord : un affrontement lisible."""
+    return BattleState(
+        battle_id="t",
+        units=(
+            UnitState(id="cav", side=Side.ALLY, position=Vector3(0.0, 0.0, -100.0)),
+            UnitState(id="ligne", side=Side.ALLY, position=Vector3(0.0, 0.0, -100.0)),
+            UnitState(id="archers", side=Side.ALLY, position=Vector3(0.0, 0.0, -120.0)),
+            UnitState(id="e1", side=Side.ENEMY, position=Vector3(0.0, 0.0, 100.0)),
+        ),
+    )
+
+
+def test_le_contournement_se_place_sur_le_flanc_de_la_cible() -> None:
+    """Prendre a revers, c'est arriver de cote — pas foncer de face."""
+    flanc = AgentAction(
+        type=ActionType.FLANK,
+        actor_ids=("cav",),
+        parameters={"target_id": "e1", "side": "right"},
+    )
+    resultat = OrderTranslator().translate((flanc,), _affrontement())
+
+    assert not resultat.untranslated
+    point = dict(resultat.moves)["cav"]
+    # L'axe d'attaque va vers +z : le flanc est donc ecarte sur x.
+    assert abs(point.x) > 50.0
+    # Et l'unite depasse la cible, au lieu de s'arreter a sa hauteur.
+    assert point.z > 100.0
+
+
+def test_les_deux_ailes_contournent_de_cotes_opposes() -> None:
+    """Deux ailes qui se croiseraient ne prendraient personne a revers."""
+    droite = AgentAction(
+        type=ActionType.FLANK, actor_ids=("cav",), parameters={"target_id": "e1", "side": "right"}
+    )
+    gauche = AgentAction(
+        type=ActionType.FLANK, actor_ids=("ligne",), parameters={"target_id": "e1", "side": "left"}
+    )
+    resultat = OrderTranslator().translate((droite, gauche), _affrontement())
+
+    points = dict(resultat.moves)
+    assert points["cav"].x * points["ligne"].x < 0.0, "les deux ailes vont du meme cote"
+
+
+def test_un_contournement_sans_cible_est_signale() -> None:
+    flanc = AgentAction(
+        type=ActionType.FLANK, actor_ids=("cav",), parameters={"target_id": "disparu"}
+    )
+    resultat = OrderTranslator().translate((flanc,), _affrontement())
+
+    assert not resultat.moves
+    assert resultat.untranslated[0] == (ActionType.FLANK, "cible introuvable")
+
+
+def test_l_escorte_se_place_entre_le_protege_et_la_menace() -> None:
+    """Se porter sur le protege ne le protege pas : l'escorte arriverait apres."""
+    protection = AgentAction(
+        type=ActionType.PROTECT,
+        actor_ids=("cav",),
+        parameters={"protected_ids": ["archers"]},
+    )
+    resultat = OrderTranslator().translate((protection,), _affrontement())
+
+    point = dict(resultat.moves)["cav"]
+    archers, menace = -120.0, 100.0
+    assert archers < point.z < menace, "l'escorte n'est pas sur le trajet"
+    # Plus pres de la menace que du protege : on l'accroche avant le contact.
+    assert point.z - archers > menace - point.z
+
+
+def test_une_protection_sans_ennemi_visible_est_signalee() -> None:
+    """Sans menace, il n'y a rien a intercepter."""
+    sans_ennemi = BattleState(
+        battle_id="t",
+        units=(UnitState(id="cav", side=Side.ALLY, position=Vector3(0.0, 0.0, 0.0)),),
+    )
+    protection = AgentAction(
+        type=ActionType.PROTECT, actor_ids=("cav",), parameters={"protected_ids": ["cav"]}
+    )
+    resultat = OrderTranslator().translate((protection,), sans_ennemi)
+
+    assert not resultat.moves
+    assert resultat.untranslated[0][0] is ActionType.PROTECT

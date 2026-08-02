@@ -8,6 +8,7 @@ que la boucle **refuse** de faire.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ pytest.importorskip("lupa", reason="lupa n'est pas installe")
 from tests.integration.test_lua_probe_execution import Probe
 
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
+from totalwar_ai.bridge.command_models import ProbeAttack, ProbeOrdersCommand, decode_command
 from totalwar_ai.bridge.file_bridge import FileBridge
 from totalwar_ai.bridge.live import LiveSession
 from totalwar_ai.config import load_config
@@ -105,7 +107,7 @@ def test_la_boucle_explique_ce_qu_elle_fait(session: LiveSession) -> None:
     etape = session.step()
     assert etape.decisions
     assert any("Action" in ligne for ligne in etape.decisions)
-    assert "unite(s) en mouvement" in etape.summary()
+    assert "deplacement(s)" in etape.summary()
 
 
 # --- ce que la boucle refuse de faire ----------------------------------------
@@ -193,3 +195,60 @@ def _destinations(etape: object) -> list[tuple[str, tuple[float, float, float]]]
 
     assert isinstance(etape, LiveStep)
     return [(unit_id, (point.x, point.y, point.z)) for unit_id, point in etape.translation.moves]
+
+
+# --- engagement ---------------------------------------------------------------
+
+
+def test_l_agent_engage_reellement_l_ennemi(tmp_path: Path) -> None:
+    """Le manque revele en bataille : l'agent decidait d'attaquer, sans effet.
+
+    Releve en jeu : « aucun ordre traduisible (ATTACK_TARGET) » a la plupart des
+    tours. L'agent voyait juste et ne pouvait rien faire.
+    """
+    (tmp_path / "totalwar_ai").mkdir()
+    # Les armees au contact : l'agent doit vouloir engager.
+    proches = [(unit_id, cle, x, -20.0, True) for unit_id, cle, x, _, _ in ARMEE]
+    face = [(unit_id, cle, x, 20.0, False) for unit_id, cle, x, _, _ in ENNEMIS]
+
+    probe = Probe(tmp_path, units=proches, enemies=face)
+    probe.advance(2000)
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+
+    session = LiveSession(
+        bridge=FileBridge.open(tmp_path),
+        agent=DeterministicTacticalAgent.from_config(load_config()),
+    )
+    for _ in range(6):
+        etape = session.step()
+        probe.advance(2000)
+        if etape.translation.attacks:
+            break
+    else:  # pragma: no cover - filet, l'agent doit engager a cette distance
+        pytest.fail("l'agent n'a jamais engage a vingt metres de l'ennemi")
+
+    attaques = [order for order in probe.orders() if order["kind"] == "attack"]
+    assert attaques, "aucun ordre d'attaque n'est arrive jusqu'au jeu"
+    assert all(order["target_id"] for order in attaques)
+
+
+def test_deplacements_et_attaques_partent_ensemble(tmp_path: Path) -> None:
+    """Deux commandes successives se perdraient : le fichier est remplace.
+
+    Le Lua ne relit le fichier de commande que toutes les 500 ms. Publier les
+    deplacements puis les attaques ferait disparaitre les premiers en silence.
+    """
+
+    (tmp_path / "totalwar_ai").mkdir()
+    bridge = FileBridge.open(tmp_path)
+    bridge.send_orders(
+        moves=[
+            ("1001", __import__("totalwar_ai.domain.geometry", fromlist=["V"]).Vector3(1, 0, 2))
+        ],
+        attacks=[ProbeAttack(unit_id="1002", target_id="2001", melee=True)],
+    )
+
+    publiee = decode_command(json.loads(bridge.paths.command.read_text(encoding="utf-8")))
+    assert isinstance(publiee, ProbeOrdersCommand)
+    assert publiee.order_count == 2
