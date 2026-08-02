@@ -1,16 +1,37 @@
 # Faisabilité de l'intégration au jeu (Phase 0)
 
-> **Statut : quatre essais en bataille. L'aller-retour complet fonctionne.**
+> **Statut : neuf essais en bataille. L'agent pilote une vraie bataille.**
 >
-> Essai n° 4 (01/08/2026, 22 h 42) : Python a publié un ordre, le Lua l'a lu et
-> exécuté, l'unité `1001` s'est déplacée de **20,3 m** (x = 6,644 → 26,9 mesuré
-> par le jeu), et l'accusé est remonté. Les dix étapes du ticket sont franchies.
+> L'aller-retour complet est acquis depuis l'essai n° 4 — ordre publié par
+> Python, lu et exécuté par le Lua, unité déplacée de **20,3 m** mesurés par le
+> jeu, accusé remonté. Depuis : observation de l'armée entière, recensement des
+> accesseurs, classification des unités, agent en pilotage de bout en bout,
+> enregistrement des batailles.
 >
-> Restent à confirmer visuellement, faute de preuve dans les relevés : la
-> restitution du contrôle au joueur après cinq secondes, et l'arrêt d'urgence.
-> Tant que ces deux lignes ne sont pas cochées dans la section
-> [Résultats](#résultats-de-lessai-en-bataille), elles ne doivent pas être
-> présentées comme fonctionnelles.
+> **Ce qui reste non confirmé en jeu**, et ne doit donc pas être présenté comme
+> fonctionnel :
+>
+> - la restitution automatique du contrôle après cinq secondes ;
+> - l'arrêt d'urgence **par commande** — celui par fichier sentinelle, lui, est
+>   vérifié depuis l'essai n° 9 ;
+> - **les ordres d'attaque et d'immobilisation** : le code est écrit et le Lua
+>   les acquitte, mais aucun essai n'a mesuré leur effet — les pilotages n'ont
+>   émis que des déplacements ;
+> - **que l'IA du jeu joue effectivement la bataille une fois l'armée confiée** :
+>   l'essai n° 9 a bien créé le `script_ai_planner`, mais sur six unités sur
+>   dix-huit, et la supervision qui l'accompagnait tournait à vide ;
+> - que la reprise d'une unité mal employée produise l'effet attendu.
+>
+> Les essais n° 7 et 8 n'ont pas de compte rendu détaillé ci-dessous : seuls
+> leurs enseignements ont été reportés dans les tableaux.
+
+## Ce que le jeu permet, en une phrase
+
+Un script de bataille peut **observer toute la bataille et donner des ordres**,
+mais il ne voit ni le moral, ni la fatigue, ni le terrain. Le moteur, lui, voit
+tout : son IA de bataille est accessible par `script_ai_planner`, et lui confier
+des unités contourne d'un coup toutes ces limites — au prix de toute
+explicabilité.
 
 ## Légende
 
@@ -33,6 +54,7 @@ Relevé lors des essais du 01/08/2026 :
 | Type de bataille | bataille sans script dédié, avec « Battle Fundamentals scripted tour » actif |
 | Mods chargés | `script\_lib\mod\qa_console.lua`, `script\_lib\mod\test_script_here.lua` — **aucun mod utilisateur** |
 | Unités présentes | 22 `script_unit` : alliance 1 armée 1 = 11 unités (joueur), alliance 2 armée 1 = 11 unités |
+| Unités présentes, essai n° 9 | 40 : **18 alliées réparties sur plusieurs armées**, 22 adverses. Bataille du **prologue de campagne**, scriptée |
 | Répertoire de travail | le dossier d'installation : `./totalwar_ai/` créé à la main y est bien trouvé |
 | Bibliothèque `math` | **restreinte** — `math.huge` vaut `nil` (essai n° 3). Ne rien supposer du reste : la sonde n'utilise plus `math` du tout |
 
@@ -234,10 +256,19 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
    totalwar-ai probe --status      # doit afficher le dossier, tout absent
    ```
 
-### Essai, en campagne solo uniquement
+### Essai, en solo uniquement
 
-1. Lancer une bataille de campagne et la laisser démarrer (phase de déploiement
-   terminée).
+**Préférer une escarmouche à une bataille de campagne**, et surtout à celles du
+prologue. Une bataille scriptée donne ses propres ordres, prend et rend le
+contrôle des unités, et suspend le combat pendant les dialogues : rien de ce
+qu'on y observe ne peut être attribué de façon fiable à notre code ou à l'IA du
+moteur. L'essai n° 9 s'est déroulé dans le prologue, et il a fallu démêler
+après coup ce qui venait de nos défauts et ce qui venait du script du jeu.
+
+L'escarmouche donne en plus une composition d'armée choisie, donc reproductible
+d'un essai à l'autre — condition pour comparer un mode de pilotage à un autre.
+
+1. Lancer une bataille et la laisser démarrer (phase de déploiement terminée).
 2. Ouvrir le journal de script du jeu et chercher `[totalwar_ai]`. **Noter la
    première ligne** : elle dit si l'écriture de fichier est disponible.
 3. Côté Python :
@@ -281,6 +312,90 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
 | `uc:add_units a echoue` | l'unité est dans un groupe verrouillé ; en essayer une autre |
 
 ## Résultats de l'essai en bataille
+
+### Essai n° 9 — 02/08/2026, 08 h 09 — première délégation en jeu
+
+Premier essai de `--supervise` dans le vrai jeu. **Il a échoué, et c'est le
+plus instructif de tous** : il a révélé un défaut qui invalidait discrètement
+tout ce que l'agent croyait faire depuis plusieurs essais.
+
+**La sonde observait dix-huit unités et n'en commandait que six.** Le journal
+est sans ambiguïté :
+
+```text
+ACK {"sequence":37,"status":"accepted","error":"1007 : unite introuvable",
+     "detail":{"note":"6 unite(s) confiee(s)"}}
+```
+
+Dix-huit demandées, six confiées, et l'accusé porte pourtant `accepted`.
+`alliance_snapshot` parcourt **toutes** les armées de l'alliance ;
+`find_unit_by_id` n'en parcourait qu'une, `bm:local_army()`. Les douze unités
+des autres armées étaient donc publiées, classées, planifiées — et
+inatteignables par le moindre ordre.
+
+C'est le cas d'une bataille avec renforts, ou d'une armée alliée. Le faux jeu
+ne savait pas représenter une alliance à plusieurs armées : voilà pourquoi
+aucun test ne l'avait vu. Il le sait maintenant.
+
+**Contexte à ne pas perdre : cet essai s'est déroulé dans le prologue de
+campagne**, une bataille scriptée, entrecoupée de dialogues et de séquences
+narratives. Les essais précédents, eux, alignaient onze unités dans une armée
+unique. Les armées multiples viennent donc très probablement du découpage
+narratif du prologue.
+
+Cela ne rend pas la correction moins nécessaire — une bataille de campagne
+ordinaire avec renforts ou armée alliée produit la même configuration, et
+l'agent n'a aucun moyen de savoir dans laquelle il joue. Mais cela veut dire
+que le défaut peut **ne pas se reproduire** en escarmouche, où chaque camp
+n'aligne qu'une armée. L'absence de refus lors du prochain essai ne prouvera
+donc rien à elle seule.
+
+**Une bataille scriptée est un mauvais banc de mesure.** Les scripts du jeu
+donnent leurs propres ordres, prennent et rendent le contrôle, et suspendent la
+bataille pendant les dialogues : impossible d'attribuer à l'IA du moteur ce
+qu'on observe. Pour mesurer ce que vaut `script_ai_planner`, il faut une
+escarmouche.
+
+**La supervision ne lisait aucun accusé.** Conséquence directe : chaque reprise
+était rejetée, rien ne le remarquait, la règle se redéclenchait au tour
+suivant. Vingt-trois interventions annoncées, **aucune appliquée**, l'unité
+1011 reprise quatre fois. Une boucle ouverte se lit comme une boucle qui
+travaille.
+
+**Deux sessions suivantes ont tourné à vide sans le dire.** Après le Ctrl+C,
+la sentinelle d'arrêt reste sur le disque et le Lua cesse définitivement de
+lire (`SONDE ARRETEE : fichier d'arret present`). Les deux relances ont
+pourtant annoncé « 18 unite(s) confiees » avant de compter `0 tour(s)` : elles
+relisaient le flux depuis son début et prenaient le dernier état de la session
+précédente pour l'état courant.
+
+Corrigé en révision 9 : recherche sur toute l'alliance, accusés nommant les
+unités refusées, boucle fermée qui écarte une unité que le jeu refuse, pilotage
+qui part de la fin du flux et refuse de démarrer sur une sentinelle laissée en
+place.
+
+**Trois acquis, en revanche, et ce sont les garde-fous.** Le Ctrl+C a produit
+exactement la séquence attendue :
+
+```text
+controle rendu au joueur : 6 unite(s) reprises a l'IA du jeu
+toutes les unites relachees (fichier d'arret present)
+SONDE ARRETEE : fichier d'arret present
+```
+
+Sont donc **vérifiés en jeu**, pour la première fois :
+
+- **l'arrêt d'urgence par fichier sentinelle** — le Lua l'a vu et a tout libéré ;
+- **la reprise d'unités confiées à l'IA du jeu** — six unités reprises, comptées ;
+- **la création du `script_ai_planner`** — le planificateur du moteur a bien été
+  instancié sur les unités que la sonde avait su trouver.
+
+C'est le seul point de sûreté qui restait non vérifié depuis le début du projet.
+
+**Ce que cet essai n'a pas pu établir**, la délégation ayant été partielle et la
+supervision ayant tourné à vide : que `script_ai_planner` joue effectivement la
+bataille, et que la reprise d'une unité mal employée produise l'effet attendu.
+Les deux restent à vérifier.
 
 ### Essai n° 6 — 02/08/2026, 01 h 56
 

@@ -222,12 +222,21 @@ end
 
 --- Met en place la bataille. `enemies` est facultatif : sans lui, un seul camp,
 --- ce qui reste utile pour les tests qui n'observent que le notre.
-function FAKE:setup(units, enemies)
+---
+--- `reinforcements` place des unites alliees dans une **seconde armee** de
+--- notre alliance. C'est le cas d'une bataille avec renforts, et le faux jeu ne
+--- savait pas le representer : la sonde a donc pu partir en bataille en
+--- observant dix-huit unites tout en n'en commandant que six, sans qu'aucun
+--- test ne s'en apercoive.
+function FAKE:setup(units, enemies, reinforcements)
     -- La premiere unite alliee commande, comme en jeu.
     if units and units[1] then units[1].commanding = true end
-    local army = make_army(units)
+    local armies = { make_army(units) }
+    if reinforcements then
+        armies[#armies + 1] = make_army(reinforcements)
+    end
     local alliance = {
-        armies_collection = make_collection({ army }),
+        armies_collection = make_collection(armies),
         armies = function(self) return self.armies_collection end,
     }
 

@@ -99,6 +99,26 @@ class FileBridge:
         bridge._next_sequence = _highest_sequence_on_disk(paths) + 1
         return bridge
 
+    def tail(self) -> FileBridge:
+        """Ignore tout ce qui est deja ecrit : seule la suite compte.
+
+        **A appeler avant de piloter.** Les flux sont append-only et ne sont
+        jamais purges : un nouveau processus qui les lit depuis le debut prend
+        le dernier etat de la session precedente pour l'etat courant. Constate
+        en bataille — deux sessions ont annonce « 18 unites confiees » alors que
+        la sonde etait arretee depuis plusieurs minutes, et n'ont jamais recu le
+        moindre etat ensuite.
+
+        La relecture d'archive, elle, a besoin du flux entier : c'est pourquoi
+        `open()` ne le fait pas d'office.
+        """
+        self._state_offset = _size_or_zero(self.paths.state)
+        self._ack_offset = _size_or_zero(self.paths.ack)
+        self._ack_watermark = self._ack_offset
+        self._pending_states.clear()
+        self._pending_battle_states.clear()
+        return self
+
     # --- Python -> Lua -------------------------------------------------------
 
     def send_command(self, command: ProbeCommand) -> Path:
@@ -443,6 +463,14 @@ def _sequence_in(path: Path) -> int:
             if isinstance(value, int):
                 highest = max(highest, value)
     return highest
+
+
+def _size_or_zero(path: Path) -> int:
+    """Taille d'un flux, ou zero s'il n'existe pas encore."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def _highest_sequence_on_disk(paths: BridgePaths) -> int:

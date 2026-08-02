@@ -47,6 +47,7 @@ class Probe:
         units: list[tuple[str, str, float, float, bool]],
         *,
         enemies: list[tuple[str, str, float, float, bool]] | None = None,
+        reinforcements: list[tuple[str, str, float, float, bool]] | None = None,
         restricted_math: bool = False,
     ) -> None:
         from lupa import LuaRuntime
@@ -79,7 +80,12 @@ class Probe:
         if restricted_math:
             self.runtime.execute("math.huge = nil\nmath.floor = nil\n")
         self.fake = self.lua.FAKE
-        self.fake.setup(self.fake, self._lua_units(units), self._lua_units(enemies))
+        self.fake.setup(
+            self.fake,
+            self._lua_units(units),
+            self._lua_units(enemies),
+            self._lua_units(reinforcements),
+        )
 
         self.runtime.execute(PROBE.read_text(encoding="utf-8"))
 
@@ -1072,3 +1078,94 @@ def test_reprendre_sans_rien_avoir_confie_est_sans_effet(probe: Probe, workdir: 
     accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
     assert accuse is not None
     assert not probe.grep("ERREUR dans")
+
+
+# --- une alliance a plusieurs armees -------------------------------------------
+#
+# Le defaut le plus couteux du projet, et le plus discret : `alliance_snapshot`
+# parcourait toutes les armees de l'alliance, `find_unit_by_id` une seule. La
+# sonde publiait donc dix-huit unites dont douze n'etaient joignables par aucun
+# ordre. Le faux jeu ne savait pas representer ce cas ; il le sait maintenant.
+
+
+@pytest.fixture
+def renforts(workdir: Path) -> Probe:
+    """Notre alliance compte deux armees, comme une bataille avec renforts."""
+    return Probe(
+        workdir,
+        units=[
+            ("1001", "wh3_dlc20_chs_cha_daemon_prince_mnur", 0.0, -330.0, True),
+            ("1002", "wh3_main_nur_inf_plaguebearers_1", 20.0, -330.0, True),
+        ],
+        reinforcements=[
+            ("1007", "wh3_main_pro_ksl_inf_tzar_guard_0", 60.0, -330.0, True),
+            ("1008", "wh3_main_pro_ksl_inf_tzar_guard_0", 80.0, -330.0, True),
+        ],
+        enemies=[("2001", "wh_main_emp_inf_handgunners", 0.0, 330.0, False)],
+    )
+
+
+def test_toute_unite_observee_peut_recevoir_un_ordre(renforts: Probe, workdir: Path) -> None:
+    """Observer et commander doivent porter sur le meme ensemble d'unites.
+
+    Sans cette egalite, l'agent raisonne sur une armee qu'il ne commande pas :
+    il place ses tireurs, choisit ses cibles, et le jeu refuse chaque ordre par
+    « unite introuvable » sans que le plan en soit averti.
+    """
+    renforts.advance(2000)
+    renforts.enter_phase("Deployed")
+    renforts.advance(2000)
+
+    bridge = FileBridge.open(workdir)
+    etat = bridge.latest_battle_state()
+    assert etat is not None
+    observees = [unite.unit_id for unite in etat.allies]
+    assert set(observees) == {"1001", "1002", "1007", "1008"}
+
+    commande = bridge.delegate(observees)
+    renforts.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None and accuse.accepted
+    assert accuse.refused_ids == (), "des unites publiees restent hors de portee des ordres"
+
+
+def test_une_unite_d_une_autre_armee_se_deplace(renforts: Probe, workdir: Path) -> None:
+    """La regression se voit sur le deplacement, pas seulement sur la delegation."""
+    renforts.advance(2000)
+    renforts.enter_phase("Deployed")
+    renforts.advance(2000)
+
+    bridge = FileBridge.open(workdir)
+    commande = bridge.move_unit("1007", Vector3(180.0, 0.0, -330.0))
+    renforts.advance(3000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None, "aucun accuse"
+    assert accuse.accepted, f"ordre refuse : {accuse.error}"
+    deplacements = [
+        order
+        for order in renforts.orders()
+        if order["kind"] == "goto" and order["unit_id"] == "1007"
+    ]
+    assert deplacements, "l'unite du renfort n'a recu aucun ordre de deplacement"
+
+
+def test_le_jeu_nomme_les_unites_qu_il_refuse(renforts: Probe, workdir: Path) -> None:
+    """Un compte global ne suffit pas : Python doit savoir lesquelles ecarter.
+
+    Un accuse peut etre **accepte et partiel**. Sans la liste, l'appelant garde
+    les unites refusees dans son perimetre et leur adresse un ordre par seconde
+    jusqu'a la fin de la bataille.
+    """
+    renforts.advance(2000)
+    renforts.enter_phase("Deployed")
+    renforts.advance(2000)
+
+    bridge = FileBridge.open(workdir)
+    commande = bridge.delegate(["1001", "9998", "1007", "9999"])
+    renforts.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None and accuse.accepted, "les unites valides devaient etre confiees"
+    assert set(accuse.refused_ids) == {"9998", "9999"}
