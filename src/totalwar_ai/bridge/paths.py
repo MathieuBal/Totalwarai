@@ -22,6 +22,13 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+#: Revision du script Lua attendue par cette version de Python.
+#:
+#: Doit valoir `TOTALWAR_AI_PROBE_REVISION` dans
+#: `lua_mod/script/battle/mod/totalwar_ai_probe.lua`. Un test verifie l'egalite,
+#: pour que les deux ne puissent pas diverger en silence.
+EXPECTED_PROBE_REVISION = 1
+
 #: Variable d'environnement qui court-circuite toute la detection.
 BRIDGE_DIR_ENV_VAR = "TOTALWAR_AI_BRIDGE_DIR"
 

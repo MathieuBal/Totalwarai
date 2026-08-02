@@ -31,7 +31,20 @@
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
 -- bataille) et quoi qu'il advienne ensuite. Son absence signifie que le jeu
 -- n'a pas trouve le fichier — pas que la sonde a echoue.
-out("[totalwar_ai] === fichier charge (sonde v0.1.0) ===")
+-- Numero de revision du script, incremente a chaque modification de ce fichier.
+--
+-- Le pack doit etre reconstruit apres toute modification, et l'oubli est le
+-- diagnostic le plus frequent de ce projet : quatre essais en bataille y sont
+-- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
+-- celui du depot — la question « mon pack est-il a jour ? » se repond alors
+-- sans avoir a la poser.
+TOTALWAR_AI_PROBE_REVISION = 1
+
+out(
+    "[totalwar_ai] === fichier charge (sonde v0.1.0, revision "
+        .. TOTALWAR_AI_PROBE_REVISION
+        .. ") ==="
+)
 
 -- Le meme fichier peut etre place a deux emplacements dans le pack, par
 -- prudence. Sans cette garde, il tournerait en double.
