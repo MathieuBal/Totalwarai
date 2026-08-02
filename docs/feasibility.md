@@ -1,16 +1,16 @@
 # Faisabilité de l'intégration au jeu (Phase 0)
 
-> **Statut : quatre essais en bataille. L'aller-retour complet fonctionne.**
+> **Statut : huit essais en bataille. L'agent pilote une vraie bataille.**
 >
-> Essai n° 4 (01/08/2026, 22 h 42) : Python a publié un ordre, le Lua l'a lu et
-> exécuté, l'unité `1001` s'est déplacée de **20,3 m** (x = 6,644 → 26,9 mesuré
-> par le jeu), et l'accusé est remonté. Les dix étapes du ticket sont franchies.
+> L'aller-retour complet est acquis depuis l'essai n° 4 — ordre publié par
+> Python, lu et exécuté par le Lua, unité déplacée de **20,3 m** mesurés par le
+> jeu, accusé remonté. Depuis : observation de l'armée entière, ordres
+> d'attaque et d'arrêt, agent en pilotage, enregistrement des batailles.
 >
-> Restent à confirmer visuellement, faute de preuve dans les relevés : la
-> restitution du contrôle au joueur après cinq secondes, et l'arrêt d'urgence.
-> Tant que ces deux lignes ne sont pas cochées dans la section
-> [Résultats](#résultats-de-lessai-en-bataille), elles ne doivent pas être
-> présentées comme fonctionnelles.
+> **Ce qui reste non confirmé en jeu**, et ne doit donc pas être présenté comme
+> fonctionnel : la restitution automatique du contrôle après cinq secondes,
+> l'arrêt d'urgence, et la délégation à l'IA du jeu — écrite et testée contre le
+> faux jeu, jamais exécutée dans le vrai.
 
 ## Ce que le jeu permet, en une phrase
 
