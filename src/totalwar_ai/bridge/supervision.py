@@ -94,8 +94,9 @@ class RangedInMeleeRule(SupervisionRule):
     **La condition de munitions n'est pas un detail : sans elle, cette regle
     faisait perdre des batailles.** Mesuree seule au banc supervise, sur onze
     scenarios et trois graines, elle faisait tomber l'ensemble de 30/33
-    victoires a 27/33 en vingt-sept reprises. Avec elle : 30/33 et trois
-    reprises.
+    victoires a 27/33, en vingt-sept reprises. Avec elle, le jeu de regles
+    complet revient a 30/33 — le niveau atteint sans aucune supervision — pour
+    quinze reprises et douze points de survie du seigneur gagnes.
 
     L'explication tient en une phrase. Un tireur a court de munitions n'est
     plus qu'une unite de melee mediocre ; le degager ne lui rend aucune valeur,
@@ -142,6 +143,9 @@ class WoundedLordRule(SupervisionRule):
 
 
 #: Regles appliquees, dans l'ordre. La premiere qui repond gagne pour une unite.
+#:
+#: **Les regles de detresse passent en premier.** Sauver une unite coute moins
+#: cher que saisir une occasion, et le budget de reprises est borne.
 DEFAULT_RULES: tuple[SupervisionRule, ...] = (
     WoundedLordRule(),
     ArtilleryInMeleeRule(),
