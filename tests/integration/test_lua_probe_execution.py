@@ -1169,3 +1169,41 @@ def test_le_jeu_nomme_les_unites_qu_il_refuse(renforts: Probe, workdir: Path) ->
     accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
     assert accuse is not None and accuse.accepted, "les unites valides devaient etre confiees"
     assert set(accuse.refused_ids) == {"9998", "9999"}
+
+
+# --- la sentinelle d'arret ne doit pas survivre a sa bataille -------------------
+#
+# Elle protege des unites. Celles de la bataille precedente n'existent plus, et
+# la lire comme un ordre coupait la sonde quelques secondes apres le chargement,
+# avant meme le deploiement. L'arret du Lua etant definitif, plus rien du cote
+# Python ne pouvait rattraper la situation : il fallait relancer la bataille.
+
+
+def test_une_sentinelle_heritee_ne_coupe_pas_la_bataille_suivante(workdir: Path) -> None:
+    """Constate en bataille : `SONDE ARRETEE` a 26,7 s, avant le deploiement."""
+    stop = workdir / "totalwar_ai" / "totalwar_ai_stop"
+    stop.write_text("arret demande par l'operateur\n", encoding="utf-8")
+
+    probe = Probe(workdir, units=[("1001", "wh_main_grn_inf_orc_boyz", 0.0, -330.0, True)])
+    probe.advance(3000)
+
+    assert probe.grep("levee"), "la sentinelle heritee n'a pas ete levee"
+    assert not probe.grep("SONDE ARRETEE"), "la sonde s'est coupee sur une sentinelle perimee"
+
+    bridge = FileBridge.open(workdir)
+    assert bridge.latest_battle_state() is not None, "aucun etat publie"
+    assert not bridge.stop_requested, "Python lit encore un arret la ou il n'y en a plus"
+
+
+def test_un_arret_demande_pendant_la_bataille_coupe_bien_la_sonde(workdir: Path) -> None:
+    """La correction ne doit pas desarmer le garde-fou qu'elle assouplit."""
+    probe = Probe(workdir, units=[("1001", "wh_main_grn_inf_orc_boyz", 0.0, -330.0, True)])
+    probe.advance(3000)
+    assert not probe.grep("SONDE ARRETEE")
+
+    bridge = FileBridge.open(workdir)
+    bridge.abort("arret demande par l'operateur")
+    assert bridge.stop_requested
+    probe.advance(2000)
+
+    assert probe.grep("SONDE ARRETEE"), "l'arret d'urgence n'a plus d'effet"

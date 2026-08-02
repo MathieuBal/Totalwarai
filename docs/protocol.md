@@ -215,7 +215,7 @@ entier incrémenté à chaque changement de comportement du script.
 
 - Lua : `TOTALWAR_AI_PROBE_REVISION` dans `totalwar_ai_probe.lua` ;
 - Python : `EXPECTED_PROBE_REVISION` dans `bridge/paths.py` ;
-- révision courante : **10**.
+- révision courante : **11**.
 
 Les deux ne peuvent pas diverger en silence :
 `tests/integration/test_lua_protocol.py` lit le script Lua et compare. Côté
@@ -380,7 +380,10 @@ son propre jeu même si le Python est planté ou le Lua muet :
    sentinelle ;
 2. **créer le fichier `totalwar_ai_stop` à la main** suffit : le Lua le teste
    toutes les 500 ms, **avant** d'analyser la moindre commande, donc il
-   fonctionne même si l'analyse échoue ;
+   fonctionne même si l'analyse échoue. Il ne survit pas à sa bataille : la
+   sonde le marque `consumed` au démarrage de la suivante, faute de quoi une
+   sentinelle oubliée coupait la sonde avant le déploiement — et son arrêt
+   étant définitif, plus rien du côté Python ne pouvait la relancer ;
 3. **`release_after_ms`** rend les unités toutes seules au bout de cinq secondes,
    même si plus personne n'écoute — sauf les unités déléguées, qui exigent une
    reprise explicite.
