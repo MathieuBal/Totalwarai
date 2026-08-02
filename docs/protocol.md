@@ -215,7 +215,7 @@ entier incrémenté à chaque changement de comportement du script.
 
 - Lua : `TOTALWAR_AI_PROBE_REVISION` dans `totalwar_ai_probe.lua` ;
 - Python : `EXPECTED_PROBE_REVISION` dans `bridge/paths.py` ;
-- révision courante : **11**.
+- révision courante : **12**.
 
 Les deux ne peuvent pas diverger en silence :
 `tests/integration/test_lua_protocol.py` lit le script Lua et compare. Côté

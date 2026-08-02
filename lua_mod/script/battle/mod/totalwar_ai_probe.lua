@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 11
+TOTALWAR_AI_PROBE_REVISION = 12
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -674,6 +674,45 @@ local UNIT_ACCESSORS = {
     "width",
 }
 
+--- Methodes candidates de `script_ai_planner`.
+---
+--- **Aucune n'est acquise au-dela des cinq premieres**, seules a avoir ete vues
+--- employees par un mod existant. Les suivantes viennent de descriptions d'API
+--- que nous n'avons jamais verifiees, et tout un plan de « profils
+--- d'agressivite » en depend : les recenser coute un essai, batir dessus sans
+--- les recenser en couterait plusieurs.
+local PLANNER_METHODS = {
+    -- Vues a l'oeuvre dans un mod existant.
+    "new",
+    "add_sunits",
+    "remove_sunits",
+    "release",
+    "ensure_units_are_released",
+    -- Annoncees, jamais constatees ici.
+    "attack_force",
+    "rush_force",
+    "rush_unit",
+    "defend_position",
+    "set_should_reorder",
+    "set_intercept_range",
+    "set_priority",
+    "attack_unit",
+    "start",
+    "stop",
+}
+
+--- Methodes candidates au niveau de l'armee.
+---
+--- `army_handicap` decide de la reponse a « la difficulte de bataille change-t-elle
+--- le comportement du planificateur ? ». Sans elle, la question reste ouverte.
+local ARMY_METHODS = {
+    "army_handicap",
+    "units",
+    "create_unit_controller",
+    "is_commanding_unit_alive",
+    "unit_count",
+}
+
 --- Decrit brievement une valeur, sans jamais lever d'erreur.
 local function describe(value)
     local kind = type(value)
@@ -725,6 +764,77 @@ function PROBE:census_unit_accessors(unit, label)
         self.available[disponibles[index]] = true
     end
     return disponibles
+end
+
+--- Recense l'API du planificateur de bataille du moteur, **sans l'instancier**.
+---
+--- On inspecte la table de classe : `type(script_ai_planner.rush_force)` dit si
+--- la methode existe, sans creer de planificateur ni confier la moindre unite.
+--- Un recensement ne doit jamais changer l'etat de la bataille.
+---
+--- La reponse decide de ce qui est constructible : sans `rush_force` ni
+--- `attack_force`, un profil « tres difficile » ne serait qu'un nom.
+function PROBE:census_planner_api()
+    self:log("--- recensement de script_ai_planner ---")
+    if type(script_ai_planner) ~= "table" then
+        self:log("  script_ai_planner : ABSENT — la delegation est impossible")
+        self:log("--- fin du recensement ---")
+        return {}
+    end
+
+    local disponibles = {}
+    for index = 1, #PLANNER_METHODS do
+        local name = PLANNER_METHODS[index]
+        if type(script_ai_planner[name]) == "function" then
+            self:log("  " .. name .. " : presente")
+            disponibles[#disponibles + 1] = name
+        else
+            self:log("  " .. name .. " : ABSENT")
+        end
+    end
+    self:log("methodes du planificateur : " .. table.concat(disponibles, ", "))
+    self:log("--- fin du recensement ---")
+    return disponibles
+end
+
+--- Recense ce qu'une armee expose, et lit la difficulte de bataille.
+---
+--- `army_handicap()` vaut 1 facile, 0 normal, -1 difficile, -2 tres difficile.
+--- Le relever des deux cotes permettra de savoir si le planificateur auquel on
+--- confie nos unites se comporte differemment selon le reglage — question
+--- ouverte, qu'aucune documentation ne tranche.
+function PROBE:census_army_api()
+    self:log("--- recensement de l'armee ---")
+    local alliances = bm:alliances()
+    local locale = bm:local_alliance()
+
+    for a = 1, alliances:count() do
+        local armies = alliances:item(a):armies()
+        for b = 1, armies:count() do
+            local army = armies:item(b)
+            local camp = (a == locale) and "nous" or "eux"
+            for index = 1, #ARMY_METHODS do
+                local name = ARMY_METHODS[index]
+                local method = army[name]
+                if type(method) ~= "function" then
+                    if a == locale and b == 1 then
+                        self:log("  " .. name .. " : ABSENT")
+                    end
+                elseif name == "army_handicap" or name == "unit_count" then
+                    -- Seuls ces deux-la sont appeles : les autres ont des effets
+                    -- de bord, et un recensement doit rester sans consequence.
+                    local ok, value = pcall(method, army)
+                    self:log(
+                        "  " .. camp .. " alliance " .. tostring(a) .. " armee " .. tostring(b)
+                            .. " " .. name .. " : " .. (ok and describe(value) or "ERREUR")
+                    )
+                elseif a == locale and b == 1 then
+                    self:log("  " .. name .. " : presente")
+                end
+            end
+        end
+    end
+    self:log("--- fin du recensement ---")
 end
 
 --- Appelle un accesseur si le recensement l'a declare utilisable.
@@ -1533,6 +1643,8 @@ function PROBE:start()
     -- Recensement unique : il dit ce que le jeu expose vraiment, et remplace
     -- les lignes « inconnue » de la fiche de faisabilite par des faits.
     self:census_alliances()
+    self:guarded("census_planner_api")
+    self:guarded("census_army_api")
     if unit then
         local ok, err = pcall(function() self:census_unit_accessors(unit, "premiere unite") end)
         if not ok then
