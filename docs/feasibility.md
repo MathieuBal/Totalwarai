@@ -1,6 +1,7 @@
 # Faisabilité de l'intégration au jeu (Phase 0)
 
-> **Statut : neuf essais en bataille. L'agent pilote une vraie bataille.**
+> **Statut : onze essais en bataille. L'IA du jeu a gagne une bataille entiere,
+> enregistree.**
 >
 > L'aller-retour complet est acquis depuis l'essai n° 4 — ordre publié par
 > Python, lu et exécuté par le Lua, unité déplacée de **20,3 m** mesurés par le

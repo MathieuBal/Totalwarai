@@ -131,9 +131,18 @@ class BattleRecorder:
         """
         if self._last_state is None or self._last_state.phase != "Complete":
             return BattleOutcomeKind.UNKNOWN
-        if not self._last_state.enemies:
+
+        # **Seules les unites vivantes comptent** — precaution, non correction
+        # d'un defaut constate. La premiere bataille menee a son terme a bien
+        # renvoye `victory` : a la phase `Complete`, le camp vaincu ne figurait
+        # plus du tout dans les listes du jeu. Rien ne garantit qu'il en aille
+        # toujours ainsi, et une unite detruite mais encore listee ferait
+        # basculer un aneantissement en match nul.
+        allies = [unite for unite in self._last_state.allies if unite.alive]
+        enemies = [unite for unite in self._last_state.enemies if unite.alive]
+        if not enemies and allies:
             return BattleOutcomeKind.VICTORY
-        if not self._last_state.allies:
+        if not allies and enemies:
             return BattleOutcomeKind.DEFEAT
         return BattleOutcomeKind.DRAW
 

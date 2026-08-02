@@ -85,7 +85,7 @@ La première ambition jouable est la suivante :
 
 **Statut : l'agent pilote une vraie bataille de *WARHAMMER III*.**
 
-Neuf essais en bataille ont établi, pas supposé :
+Onze essais en bataille ont établi, pas supposé :
 
 - un script Lua de bataille peut **écrire et lire des fichiers** — c'était le
   risque principal du projet, il est levé ;
@@ -96,7 +96,10 @@ Neuf essais en bataille ont établi, pas supposé :
 - l'agent a mené une bataille de bout en bout, et chaque décision est
   enregistrée ;
 - **l'arrêt d'urgence fonctionne** : le fichier sentinelle a fait tout libérer
-  au jeu et reprendre les unités confiées à son IA (essai n° 9).
+  au jeu et reprendre les unités confiées à son IA (essai n° 9) ;
+- **une bataille entière a été jouée par l'IA du moteur et enregistrée**
+  (essai n° 11) : victoire, 87 % de l'armée debout, 237,8 s. C'est la première
+  mesure réelle du projet, et la référence que l'agent doit battre.
 
 Ce qui est écrit mais **jamais mesuré en bataille**, et qu'il ne faut donc pas
 tenir pour acquis : les ordres d'attaque et d'arrêt, la restitution automatique
@@ -112,7 +115,7 @@ détail est dans [`docs/feasibility.md`](docs/feasibility.md).
 
 | Commande | Qui décide | Éprouvé en bataille |
 | --- | --- | --- |
-| `probe --observe` | **l'IA du jeu** joue seule — la référence à battre | non |
+| `probe --observe` | **l'IA du jeu** joue seule — la référence à battre | **oui** |
 | `probe --delegate` | l'IA du jeu prend l'armée, sans enregistrement | partiellement |
 | `probe --supervise` | l'IA du jeu joue, **nos règles corrigent** ses angles morts | non |
 | `probe --play` | **notre agent** joue seul | oui |
@@ -122,12 +125,12 @@ détail est dans [`docs/feasibility.md`](docs/feasibility.md).
 passent par le même code, au jeu de règles près : c'est ce qui rend les deux
 résultats comparables.
 
-La colonne de droite n'est pas un détail. À l'essai n° 9, la délégation a bien
-créé le planificateur du moteur, mais sur six unités sur dix-huit — la sonde ne
-savait pas commander les armées de renfort. La supervision qui l'accompagnait a
-tourné sans effet, faute de lire les accusés. Les deux défauts sont corrigés en
-révision 9 et attendent leur essai. L'arrêt d'urgence, lui, a fonctionné : le
-jeu a tout libéré et repris les six unités.
+La colonne de droite n'est pas un détail. `--supervise` reste marqué non éprouvé
+alors qu'il a tourné : à l'essai n° 11 il n'a produit **aucune intervention**,
+l'armée étant en mêlée pure — ni artillerie, ni tir, et un seigneur jamais
+descendu sous le seuil critique. Aucune des trois règles ne pouvait donc se
+déclencher, et cette session ne dit rien de la supervision. L'éprouver demande
+une armée qui comporte de l'artillerie ou des tireurs.
 
 **Sur la délégation.** *WARHAMMER III* embarque sa propre IA de bataille,
 accessible par `script_ai_planner`. Elle connaît le terrain, le pathfinding et
