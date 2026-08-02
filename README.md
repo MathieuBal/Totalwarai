@@ -96,7 +96,10 @@ Neuf essais en bataille ont établi, pas supposé :
 - l'agent a mené une bataille de bout en bout, et chaque décision est
   enregistrée ;
 - **l'arrêt d'urgence fonctionne** : le fichier sentinelle a fait tout libérer
-  au jeu et reprendre les unités confiées à son IA (essai n° 9).
+  au jeu et reprendre les unités confiées à son IA (essai n° 9) ;
+- **une bataille entière a été jouée par l'IA du moteur et enregistrée**
+  (essai n° 11) : victoire, 87 % de l'armée debout, 237,8 s. C'est la première
+  mesure réelle du projet, et la référence que l'agent doit battre.
 
 Ce qui est écrit mais **jamais mesuré en bataille**, et qu'il ne faut donc pas
 tenir pour acquis : les ordres d'attaque et d'arrêt, la restitution automatique
@@ -112,7 +115,7 @@ détail est dans [`docs/feasibility.md`](docs/feasibility.md).
 
 | Commande | Qui décide | Éprouvé en bataille |
 | --- | --- | --- |
-| `probe --observe` | **l'IA du jeu** joue seule — la référence à battre | non |
+| `probe --observe` | **l'IA du jeu** joue seule — la référence à battre | **oui** |
 | `probe --delegate` | l'IA du jeu prend l'armée, sans enregistrement | partiellement |
 | `probe --supervise` | l'IA du jeu joue, **nos règles corrigent** ses angles morts | non |
 | `probe --play` | **notre agent** joue seul | oui |
