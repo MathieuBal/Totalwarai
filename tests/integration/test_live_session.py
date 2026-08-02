@@ -337,3 +337,56 @@ def test_un_refus_de_securite_apparait_dans_le_resume(session: LiveSession) -> N
         blocked=("Action : charger (1002) | Cause : ...",),
     )
     assert "1 refusee(s) par la securite" in etape.summary()
+
+
+# --- enregistrement -----------------------------------------------------------
+
+
+def test_une_bataille_pilotee_est_enregistree(
+    session: LiveSession, bataille: Probe, tmp_path: Path
+) -> None:
+    """Le but : comparer un jour le simulateur au jeu sur les memes mesures.
+
+    Deux corrections mesurees comme benefiques en jeu se sont revelees nuisibles
+    au banc, sans qu'on puisse dire lequel des deux juges dit vrai. Departager
+    demande des batailles reelles enregistrees dans le meme format.
+    """
+    from totalwar_ai.bridge.recording import LIVE_SCENARIO, BattleRecorder
+    from totalwar_ai.memory.repository import MemoryRepository
+
+    enregistrement = tmp_path / "enregistrement"
+    recorder = BattleRecorder(directory=enregistrement)
+    for _ in range(3):
+        recorder.observe(session.step())
+        bataille.advance(2000)  # le jeu publie un nouvel etat
+    recorder.close()
+
+    assert recorder.turns == 3
+    assert recorder.path is not None
+    lignes = recorder.path.read_text(encoding="utf-8").splitlines()
+    assert len(lignes) == 3
+
+    premier = json.loads(lignes[0])
+    assert premier["allies"] == len(ARMEE)
+    assert premier["enemies"] == len(ENNEMIS)
+    assert premier["phase"] == "Deployed"
+    assert premier["decisions"], "les decisions de l'agent ne sont pas conservees"
+
+    repository = MemoryRepository(tmp_path / "memoire.sqlite3")
+    repository.save_episode(recorder.episode())
+    assert repository.list_battles(scenario=LIVE_SCENARIO)
+
+
+def test_les_ordres_reellement_emis_sont_traces(session: LiveSession, tmp_path: Path) -> None:
+    """Un enregistrement qui perdrait les ordres ne servirait a rien."""
+    from totalwar_ai.bridge.recording import BattleRecorder
+
+    recorder = BattleRecorder(directory=tmp_path)
+    etape = session.step()
+    recorder.observe(etape)
+    recorder.close()
+
+    entree = recorder.entries[0]
+    ordres = entree["orders"]
+    total = len(ordres["moves"]) + len(ordres["attacks"]) + len(ordres["halts"])
+    assert total == etape.sent
