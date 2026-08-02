@@ -606,3 +606,40 @@ def test_le_mode_de_reference_confie_tout_et_n_intervient_jamais(tmp_path: Path)
         etape = session.step()
         assert not etape.interventions, "une reprise a eu lieu sans aucune regle active"
         assert not etape.returned
+
+
+def test_la_fin_de_bataille_est_publiee_et_enregistree(tmp_path: Path) -> None:
+    """Sans état final, deux batailles enregistrées ne sont pas comparables.
+
+    La sonde s'arrête à la phase `Complete` et retire son publieur d'états. Si
+    elle ne publie rien avant, Python ne voit jamais la fin : l'issue reste
+    `unknown`, et la boucle de pilotage tourne jusqu'à son minuteur sur une
+    bataille déjà terminée.
+    """
+    from totalwar_ai.bridge.recording import BattleRecorder
+    from totalwar_ai.domain.battle_state import BattleOutcomeKind
+
+    (tmp_path / "totalwar_ai").mkdir()
+    probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
+    probe.advance(2000)
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+
+    bridge = FileBridge.open(tmp_path).tail()
+    probe.advance(1200)
+    recorder = BattleRecorder(directory=None)
+    from totalwar_ai.bridge.live import LiveStep
+
+    en_cours = bridge.latest_battle_state()
+    assert en_cours is not None
+    recorder.observe(LiveStep(state=en_cours))
+    assert recorder.outcome is BattleOutcomeKind.UNKNOWN
+
+    probe.enter_phase("Complete")
+
+    final = bridge.latest_battle_state()
+    assert final is not None, "aucun etat publie a la fin de la bataille"
+    assert final.phase == "Complete"
+
+    recorder.observe(LiveStep(state=final))
+    assert recorder.outcome is not BattleOutcomeKind.UNKNOWN, "l'issue reste inconnue"

@@ -1526,6 +1526,12 @@ function PROBE:start()
     -- Filet de securite : quoi qu'il arrive, rien ne reste pris a la fin.
     bm:register_phase_change_callback("Complete", function()
         self.phase = "Complete"
+        -- Publier un dernier etat **avant** de tout arreter. Sans lui, Python ne
+        -- voit jamais la fin de la bataille : le publieur d'etats disparait avec
+        -- l'arret, l'issue reste `unknown`, et deux batailles enregistrees ne
+        -- peuvent plus etre comparees — ce qui est pourtant tout l'interet de
+        -- les enregistrer.
+        self:guarded("emit_battle_state")
         self:abort("fin de bataille")
     end)
 end

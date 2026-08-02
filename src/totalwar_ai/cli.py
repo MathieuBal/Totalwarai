@@ -17,6 +17,7 @@ import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from totalwar_ai import __version__
 from totalwar_ai.agent.planner import Posture
@@ -39,6 +40,9 @@ from totalwar_ai.memory.repository import MemoryRepository
 from totalwar_ai.simulation.runner import run_battle
 from totalwar_ai.simulation.scenarios import ScenarioCatalog
 from totalwar_ai.telemetry.battle_logger import configure_logging
+
+if TYPE_CHECKING:
+    from totalwar_ai.bridge.live import LiveStep
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -396,6 +400,16 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def _battle_over(etape: LiveStep) -> bool:
+    """La bataille est-elle terminee ?
+
+    Le jeu publie un dernier etat en phase `Complete`, puis la sonde s'arrete.
+    Continuer a tourner apres coup ne mesure plus rien : la duree demandee est
+    un plafond, pas une consigne d'attente.
+    """
+    return etape.state is not None and etape.state.phase == "Complete"
+
+
 def _supervise(
     bridge: FileBridge,
     duration: float,
@@ -462,6 +476,7 @@ def _supervise(
 
     fin = time.monotonic() + duration
     interrompu = False
+    terminee = False
     try:
         while time.monotonic() < fin:
             etape = session.step()
@@ -473,6 +488,10 @@ def _supervise(
                     print(f"      ! {lignes[0]} — {lignes[-1]}")
                 for unit_id, motif in etape.refused:
                     print(f"      x {unit_id} hors de portee du jeu : {motif}")
+            if _battle_over(etape):
+                print("  Bataille terminee.")
+                terminee = True
+                break
             time.sleep(1.0)
     except KeyboardInterrupt:
         print("\nInterruption : liberation de toutes les unites.")
@@ -487,7 +506,7 @@ def _supervise(
     )
     if not supervised:
         print("  Aucune regle n'etait active : c'est la mesure de reference.")
-    if not interrompu:
+    if not interrompu and not terminee:
         print("Les unites restent confiees a l'IA du jeu.")
         print("  `totalwar-ai probe --reclaim` pour reprendre la main.")
     if record and recorder.turns:
@@ -601,6 +620,9 @@ def _play(
                 print(f"      + {explication.splitlines()[0]}")
             for refus in etape.blocked:
                 print(f"      - {refus.splitlines()[0]}")
+            if _battle_over(etape):
+                print("  Bataille terminee.")
+                break
             time.sleep(1.0)
     except KeyboardInterrupt:
         print("\nInterruption : liberation de toutes les unites.")
