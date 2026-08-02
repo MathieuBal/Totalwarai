@@ -20,7 +20,8 @@ fait :
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
@@ -68,6 +69,12 @@ class LiveStep:
     interventions: tuple[Intervention, ...] = ()
     #: Unites rendues a l'IA du jeu ce tour-ci.
     returned: tuple[str, ...] = ()
+    #: Unites que le jeu a **refuse** de rendre ou de reprendre, avec le motif.
+    #:
+    #: Une supervision qui ne lit pas les accuses croit avoir agi : constate en
+    #: bataille, la meme unite reprise quatre fois parce que chaque reprise
+    #: etait rejetee sans que rien ne le remarque.
+    refused: tuple[tuple[str, str], ...] = ()
     sent: int = 0
 
     @property
@@ -109,6 +116,8 @@ class LiveStep:
             detail.append(f"{len(self.interventions)} reprise(s) a l'IA du jeu")
         if self.returned:
             detail.append(f"{len(self.returned)} rendue(s) a l'IA du jeu")
+        if self.refused:
+            detail.append(f"{len(self.refused)} refusee(s) par le jeu")
 
         return f"{entete} — " + (", ".join(detail) if detail else "rien a faire")
 
@@ -301,15 +310,41 @@ class SupervisedSession:
     #: Nettement plus long que pour un ordre ordinaire : une unite reprise doit
     #: avoir le temps de se degager avant que le jeu ne la rende au joueur.
     release_after_ms: int = 20_000
+    #: Delai d'attente d'un accuse, en secondes.
+    #:
+    #: Le Lua relit le fichier de commande toutes les 500 ms ; deux secondes
+    #: laissent la marge d'un cycle manque sans figer la boucle.
+    ack_timeout: float = 2.0
+    #: Comment patienter entre deux lectures d'accuse.
+    #:
+    #: Le jeu continue de tourner pendant l'attente ; un banc d'essai, lui, doit
+    #: faire avancer sa fausse sonde. Injecter l'attente est ce qui permet de
+    #: tester la boucle fermee sans horloge reelle.
+    wait: Callable[[float], None] = time.sleep
+    #: Unites que le jeu refuse d'atteindre. On cesse de les compter comme
+    #: notres : insister produit un ordre refuse par seconde, sans fin.
+    unreachable: set[str] = field(default_factory=set)
 
     def delegate_all(self, state: ProbeBattleState) -> list[str]:
-        """Confie a l'IA du jeu toutes les unites controlables."""
+        """Confie a l'IA du jeu toutes les unites controlables.
+
+        **Le compte rendu est celui du jeu, pas le notre.** Annoncer dix-huit
+        unites confiees quand le Lua n'en a pris que six s'est produit en
+        bataille : l'accuse portait `accepted` et le vrai compte dans son
+        detail, que personne ne lisait.
+        """
         unit_ids = [unite.unit_id for unite in state.allies if unite.controllable and unite.alive]
         if not unit_ids:
             return []
-        self.bridge.delegate(unit_ids)
-        self.delegated = set(unit_ids)
-        return unit_ids
+        commande = self.bridge.delegate(unit_ids)
+        ack = self.bridge.wait_for_ack(commande.sequence, timeout=self.ack_timeout, sleep=self.wait)
+        if ack is None or not ack.accepted:
+            self.delegated = set()
+            return []
+        self.unreachable.update(ack.refused_ids)
+        confiees = [unit_id for unit_id in unit_ids if unit_id not in self.unreachable]
+        self.delegated = set(confiees)
+        return confiees
 
     def step(self) -> LiveStep:
         """Un tour de surveillance. Ne leve pas."""
@@ -330,12 +365,15 @@ class SupervisedSession:
 
         interventions = self.supervisor.review(domaine, self.delegated)
         rendues = self.supervisor.ready_to_return(domaine)
+        refuses: list[tuple[str, str]] = []
 
-        for intervention in interventions:
-            self.delegated.discard(intervention.unit_id)
         if interventions:
             # Reprise partielle : l'IA du jeu continue de mener le reste.
-            self.bridge.reclaim([item.unit_id for item in interventions])
+            demandees = [item.unit_id for item in interventions]
+            refuses += self._confirm(self.bridge.reclaim(demandees).sequence, demandees, "reprise")
+            interventions = [item for item in interventions if item.unit_id not in self.unreachable]
+            for intervention in interventions:
+                self.delegated.discard(intervention.unit_id)
             moves = [
                 (item.unit_id, item.destination)
                 for item in interventions
@@ -345,7 +383,8 @@ class SupervisedSession:
                 self.bridge.send_orders(moves, release_after_ms=self.release_after_ms)
 
         if rendues:
-            self.bridge.delegate(rendues)
+            refuses += self._confirm(self.bridge.delegate(rendues).sequence, rendues, "restitution")
+            rendues = [unit_id for unit_id in rendues if unit_id not in self.unreachable]
             self.delegated.update(rendues)
             self.supervisor.forget(rendues)
 
@@ -354,8 +393,38 @@ class SupervisedSession:
             decisions=tuple(item.explain() for item in interventions),
             interventions=tuple(interventions),
             returned=tuple(rendues),
+            refused=tuple(refuses),
             sent=len(interventions) + len(rendues),
         )
+
+    def _confirm(self, sequence: int, demandees: Sequence[str], quoi: str) -> list[tuple[str, str]]:
+        """Attend l'accuse et retient les unites que le jeu refuse d'atteindre.
+
+        **Sans cette confirmation la supervision tourne a vide.** Constate en
+        bataille : chaque reprise etait rejetee par « unite introuvable », rien
+        ne le lisait, la regle se redeclenchait au tour suivant — vingt-trois
+        interventions, aucune appliquee, la meme unite reprise quatre fois.
+
+        Une unite refusee est retenue dans `unreachable` et cesse d'etre
+        supervisee. Insister ne la ramenerait pas et produirait un ordre refuse
+        par seconde jusqu'a la fin de la bataille.
+        """
+        ack = self.bridge.wait_for_ack(sequence, timeout=self.ack_timeout, sleep=self.wait)
+        if ack is None:
+            perdues = [item for item in demandees if item not in self.unreachable]
+            self.unreachable.update(perdues)
+            self.supervisor.forget(list(perdues))
+            return [(item, f"{quoi} sans accuse du jeu") for item in perdues]
+
+        motif = ack.error or f"{quoi} refusee par le jeu"
+        # Un accuse peut etre accepte **et** partiel : la liste prime sur le statut.
+        rejetees = list(ack.refused_ids) if ack.accepted else list(demandees)
+        nouvelles = [item for item in rejetees if item not in self.unreachable]
+        self.unreachable.update(nouvelles)
+        self.supervisor.forget(list(nouvelles))
+        for unit_id in nouvelles:
+            self.delegated.discard(unit_id)
+        return [(item, motif) for item in nouvelles]
 
     def stop(self) -> None:
         """Arret d'urgence : le jeu libere tout et le joueur reprend la main."""

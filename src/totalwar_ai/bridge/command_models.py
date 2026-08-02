@@ -717,6 +717,21 @@ class ProbeAck:
     def accepted(self) -> bool:
         return self.status in (ProbeStatus.ACCEPTED, ProbeStatus.COMPLETED, ProbeStatus.RELEASED)
 
+    @property
+    def refused_ids(self) -> tuple[str, ...]:
+        """Unites que le jeu n'a pas pu traiter, meme si le statut est accepte.
+
+        **Un accuse peut etre accepte et partiel.** Constate en bataille : une
+        delegation de dix-huit unites acquittee `accepted`, dont six seulement
+        avaient ete confiees. Sans cette liste, l'appelant supervise douze
+        unites qu'il ne tient pas, et chaque ordre qu'il leur adresse est refuse
+        sans que rien ne l'arrete.
+        """
+        raw = self.detail.get("refused")
+        if not isinstance(raw, list):
+            return ()
+        return tuple(str(item) for item in raw)
+
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "protocol_version": self.protocol_version,

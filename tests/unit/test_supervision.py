@@ -259,3 +259,43 @@ def test_le_seuil_du_seigneur_est_une_limite_franche() -> None:
     assert Supervisor().review(au_dessus, _confiees("lord")) == []
     assert len(Supervisor().review(en_dessous, _confiees("lord"))) == 1
     assert pytest.approx(0.35) == LORD_CRITICAL_HEALTH
+
+
+# --- ce que la supervision fait d'un refus du jeu -------------------------------
+#
+# Vingt-trois interventions en bataille, aucune appliquee : chaque reprise etait
+# rejetee par « unite introuvable », rien ne lisait l'accuse, et la regle se
+# redeclenchait au tour suivant. Une unite a ete reprise quatre fois.
+
+
+def test_une_unite_oubliee_puis_toujours_mal_employee_est_reprise_de_nouveau() -> None:
+    """`forget` doit rendre l'unite eligible, sinon un refus la fige a jamais."""
+    superviseur = Supervisor()
+    etat = _etat(
+        _unite("art", UnitRole.ARTILLERY, engaged=True),
+        _unite("e1", UnitRole.MELEE_INFANTRY, x=10.0, side=Side.ENEMY),
+    )
+    confiees = _confiees("art")
+
+    assert len(superviseur.review(etat, confiees)) == 1
+    superviseur.forget(["art"])
+    assert len(superviseur.review(etat, confiees)) == 1
+
+
+def test_une_unite_retiree_du_perimetre_n_est_plus_examinee() -> None:
+    """C'est ce qui arrete la boucle : hors du perimetre, plus de reprise.
+
+    Une unite que le jeu refuse d'atteindre sort des unites confiees. Sans cela,
+    la regle se redeclenche a chaque tour et produit un ordre refuse par seconde
+    jusqu'a la fin de la bataille.
+    """
+    superviseur = Supervisor()
+    etat = _etat(
+        _unite("art", UnitRole.ARTILLERY, engaged=True),
+        _unite("e1", UnitRole.MELEE_INFANTRY, x=10.0, side=Side.ENEMY),
+    )
+
+    superviseur.review(etat, _confiees("art"))
+    superviseur.forget(["art"])
+
+    assert superviseur.review(etat, _confiees()) == []

@@ -316,6 +316,15 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         print("Arret d'urgence publie : le script Lua doit tout liberer.")
         return 0
 
+    # Les trois modes de pilotage attendent des etats du jeu. Une sentinelle
+    # d'arret oubliee les fait tourner a vide, sans qu'aucun n'en dise rien.
+    if args.supervise or args.delegate or args.play:
+        if _stop_sentinel_blocks(bridge):
+            return 1
+        # On ne pilote jamais sur une archive : seuls les etats publies a partir
+        # de maintenant disent ou en est reellement la bataille.
+        bridge.tail()
+
     if args.supervise:
         return _supervise(bridge, args.supervise, record=not args.no_record)
     if args.delegate:
@@ -403,11 +412,21 @@ def _supervise(bridge: FileBridge, duration: float, *, record: bool = True) -> i
         print("Aucun etat recu : la bataille est-elle lancee ?", file=sys.stderr)
         return 1
 
+    demandees = [unite.unit_id for unite in state.allies if unite.controllable and unite.alive]
     confiees = session.delegate_all(state)
     if not confiees:
-        print("Aucune unite controlable a confier.", file=sys.stderr)
+        print("Aucune unite confiee : le jeu a refuse la delegation.", file=sys.stderr)
         return 1
+    # Le compte annonce est celui du jeu. En annoncer un autre s'est produit en
+    # bataille : dix-huit demandees, six confiees, et la difference passee sous
+    # silence pendant toute la session.
     print(f"{len(confiees)} unite(s) confiees a l'IA du jeu.")
+    if len(confiees) < len(demandees):
+        manquantes = sorted(set(demandees) - set(confiees))
+        print(
+            f"  {len(manquantes)} unite(s) refusees par le jeu et laissees de cote : "
+            + ", ".join(manquantes)
+        )
     print(f"Supervision pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.")
     if recorder.path is not None:
         print(f"Enregistrement : {recorder.path}")
@@ -419,11 +438,13 @@ def _supervise(bridge: FileBridge, duration: float, *, record: bool = True) -> i
         while time.monotonic() < fin:
             etape = session.step()
             recorder.observe(etape)
-            if etape.interventions or etape.returned or etape.skipped:
+            if etape.interventions or etape.returned or etape.skipped or etape.refused:
                 print(f"  {etape.summary()}")
                 for intervention in etape.interventions:
                     lignes = intervention.explain().splitlines()
                     print(f"      ! {lignes[0]} — {lignes[-1]}")
+                for unit_id, motif in etape.refused:
+                    print(f"      x {unit_id} hors de portee du jeu : {motif}")
             time.sleep(1.0)
     except KeyboardInterrupt:
         print("\nInterruption : liberation de toutes les unites.")
@@ -723,6 +744,29 @@ def _revision_du_journal(lignes: Sequence[str]) -> int | None:
 def _est_routinier(ligne: str) -> bool:
     """Ligne d'etat periodique, sans valeur pour le diagnostic."""
     return "] STATE " in ligne or "] BATTLE " in ligne
+
+
+def _stop_sentinel_blocks(bridge: FileBridge) -> bool:
+    """Signale une sentinelle d'arret laissee par une session precedente.
+
+    Elle est definitive du cote du jeu : le Lua libere tout et **cesse de lire**
+    jusqu'a la bataille suivante. Constate en bataille, deux sessions lancees
+    apres un Ctrl+C ont tourne cinq minutes sans recevoir un seul etat, en
+    annoncant pourtant dix-huit unites confiees.
+
+    Elle n'est pas retiree ici : lever un arret d'urgence est une decision du
+    joueur, pas un effet de bord d'une commande de pilotage.
+    """
+    if not bridge.stop_requested:
+        return False
+    print(
+        "Arret d'urgence encore actif : la sonde a tout libere et ne lit plus de "
+        "commandes.\n"
+        "  Relancer une bataille, puis `totalwar-ai probe --reset` pour lever la "
+        "sentinelle.",
+        file=sys.stderr,
+    )
+    return True
 
 
 def _print_probe_status(bridge: FileBridge) -> None:

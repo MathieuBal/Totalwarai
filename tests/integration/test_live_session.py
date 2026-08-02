@@ -449,7 +449,9 @@ def test_la_supervision_confie_l_armee_puis_la_surveille(tmp_path: Path) -> None
     probe.enter_phase("Deployed")
     probe.advance(2000)
 
-    session = SupervisedSession(bridge=FileBridge.open(tmp_path))
+    # La delegation attend l'accuse du jeu : la fausse sonde doit donc tourner
+    # pendant l'attente, comme le vrai jeu le ferait.
+    session = SupervisedSession(bridge=FileBridge.open(tmp_path), wait=lambda _: probe.advance(600))
     etat = session.bridge.latest_battle_state()
     assert etat is not None
 
@@ -473,7 +475,7 @@ def test_l_arret_d_urgence_rend_tout_meme_en_supervision(tmp_path: Path) -> None
     probe.enter_phase("Deployed")
     probe.advance(2000)
 
-    session = SupervisedSession(bridge=FileBridge.open(tmp_path))
+    session = SupervisedSession(bridge=FileBridge.open(tmp_path), wait=lambda _: probe.advance(600))
     etat = session.bridge.latest_battle_state()
     assert etat is not None
     session.delegate_all(etat)
@@ -485,3 +487,79 @@ def test_l_arret_d_urgence_rend_tout_meme_en_supervision(tmp_path: Path) -> None
     assert [order for order in probe.orders() if order["kind"] == "reclaim"]
     assert probe.grep("SONDE ARRETEE")
     assert not session.delegated
+
+
+# --- la boucle fermee : ce que le jeu refuse ne compte pas comme fait -----------
+
+
+def test_une_reprise_refusee_par_le_jeu_n_est_pas_comptee(tmp_path: Path) -> None:
+    """Sans lecture de l'accuse, la supervision croit avoir agi et recommence.
+
+    Constate en bataille : vingt-trois interventions, aucune appliquee, la meme
+    unite reprise quatre fois. L'unite refusee doit sortir du perimetre — la
+    reprendre ne la ramenera pas, et insister produit un ordre refuse par
+    seconde jusqu'a la fin de la bataille.
+    """
+    from totalwar_ai.bridge.live import SupervisedSession
+
+    (tmp_path / "totalwar_ai").mkdir()
+    probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
+    probe.advance(2000)
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+
+    # Le seigneur a l'agonie : la regle du seigneur en danger va se declencher.
+    probe.runtime.execute(
+        "local units = bm:alliances():item(1):armies():item(1):units()\n"
+        "for i = 1, units:count() do\n"
+        "  local u = units:item(i)\n"
+        "  if tostring(u:unique_ui_id()) == '1001' then u.men_alive = 10 end\n"
+        "end\n"
+    )
+    probe.advance(2000)
+
+    session = SupervisedSession(bridge=FileBridge.open(tmp_path), wait=lambda _: probe.advance(600))
+
+    # Le perimetre annonce le seigneur, mais rien n'a jamais ete confie au jeu :
+    # c'est exactement l'ecart observe en bataille entre ce que Python croyait
+    # tenir et ce que le Lua tenait reellement.
+    session.delegated = {"1001"}
+
+    premier = session.step()
+    assert premier.state is not None, "aucun etat lu"
+    probe.advance(1000)
+    assert [item for item in premier.refused if item[0] == "1001"], (
+        "le refus du jeu n'a pas ete remonte"
+    )
+    assert "1001" in session.unreachable, "l'unite refusee reste dans le perimetre"
+    assert "1001" not in session.delegated
+
+    # Le tour suivant ne doit plus rien tenter sur elle.
+    probe.advance(1000)
+    second = session.step()
+    assert not second.refused
+    assert not second.interventions
+
+
+def test_le_pont_ignore_les_etats_de_la_session_precedente(tmp_path: Path) -> None:
+    """Piloter sur une archive fait annoncer une armee que l'on ne tient plus.
+
+    Constate en bataille : apres un Ctrl+C, deux sessions ont annonce dix-huit
+    unites confiees alors que la sonde etait arretee depuis plusieurs minutes,
+    et n'ont recu aucun etat pendant cinq minutes.
+    """
+    (tmp_path / "totalwar_ai").mkdir()
+    probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
+    probe.advance(2000)
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+
+    # Une session qui relit l'archive y trouve bien un etat.
+    assert FileBridge.open(tmp_path).latest_battle_state() is not None
+
+    # Une session de pilotage, elle, n'accepte que ce qui vient apres son ouverture.
+    pilote = FileBridge.open(tmp_path).tail()
+    assert pilote.latest_battle_state() is None, "un etat perime a ete pris pour l'etat courant"
+
+    probe.advance(2000)
+    assert pilote.latest_battle_state() is not None, "les etats suivants doivent arriver"

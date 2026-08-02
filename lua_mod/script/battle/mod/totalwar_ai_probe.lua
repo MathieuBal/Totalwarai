@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 8
+TOTALWAR_AI_PROBE_REVISION = 9
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -526,7 +526,13 @@ function PROBE:emit_battle_state()
     return self.sequence
 end
 
-function PROBE:emit_ack(sequence, status, error_message, detail)
+--- `refused` : identifiants que la commande n'a pas pu appliquer.
+---
+--- Un accuse qui ne dit que « accepte » et un compte global laisse Python
+--- croire que tout est passe. Constate en bataille : dix-huit unites
+--- demandees, six confiees, un accuse `accepted` — et l'agent a supervise
+--- douze unites qu'il ne tenait pas. La liste permet de les ecarter.
+function PROBE:emit_ack(sequence, status, error_message, detail, refused)
     local line = "{"
         .. '"protocol_version":' .. json_string(self.protocol_version) .. ","
         .. '"type":"action_result",'
@@ -534,8 +540,19 @@ function PROBE:emit_ack(sequence, status, error_message, detail)
         .. '"status":' .. json_string(status) .. ","
         .. '"error":' .. (error_message and json_string(error_message) or "null")
 
+    local fields = {}
     if detail then
-        line = line .. ',"detail":{"note":' .. json_string(detail) .. "}"
+        fields[#fields + 1] = '"note":' .. json_string(detail)
+    end
+    if refused and #refused > 0 then
+        local ids = {}
+        for index = 1, #refused do
+            ids[index] = json_string(tostring(refused[index]))
+        end
+        fields[#fields + 1] = '"refused":[' .. table.concat(ids, ",") .. "]"
+    end
+    if #fields > 0 then
+        line = line .. ',"detail":{' .. table.concat(fields, ",") .. "}"
     end
     line = line .. "}"
 
@@ -769,18 +786,34 @@ function PROBE:find_any_unit_by_id(wanted_id)
     return nil
 end
 
+--- Retrouve une unite de notre camp, dans **n'importe laquelle** de nos armees.
+---
+--- Cette recherche portait autrefois sur la seule `bm:local_army()`, alors que
+--- `alliance_snapshot` publie toutes les armees de l'alliance. L'agent voyait
+--- donc des unites qu'aucun ordre ne pouvait atteindre : constate en bataille,
+--- 18 allies observes, 6 seulement trouves, et tout ordre aux 12 autres refuse
+--- par « unite introuvable ». Observer et commander doivent parcourir le meme
+--- ensemble, sans quoi l'agent raisonne sur une armee qu'il ne commande pas.
+---
+--- L'armee est renvoyee avec l'unite : c'est d'elle que vient le
+--- `unitcontroller`, et ce n'est pas forcement la notre.
 function PROBE:find_unit_by_id(wanted_id)
     local alliance = bm:alliances():item(bm:local_alliance())
-    local army = alliance:armies():item(bm:local_army())
-    local units = army:units()
+    local armies = alliance:armies()
 
-    for index = 1, units:count() do
-        local unit = units:item(index)
-        if unit and tostring(unit:unique_ui_id()) == tostring(wanted_id) then
-            return unit, army
+    for army_index = 1, armies:count() do
+        local army = armies:item(army_index)
+        local units = army:units()
+        for index = 1, units:count() do
+            local unit = units:item(index)
+            if unit and tostring(unit:unique_ui_id()) == tostring(wanted_id) then
+                return unit, army
+            end
         end
     end
-    return nil, army
+    -- Introuvable : on rend tout de meme notre armee, pour que l'appelant qui
+    -- ne teste que l'unite ne travaille jamais sur un `nil`.
+    return nil, armies:item(bm:local_army())
 end
 
 --[[--------------------------------------------------------------------------
@@ -972,18 +1005,20 @@ end
 
 --- Confie des unites a l'IA du jeu.
 ---
---- Renvoie le nombre d'unites effectivement confiees, et le motif du premier
---- refus. Une unite en echec n'empeche pas les autres.
+--- Renvoie le nombre d'unites effectivement confiees, le motif du premier
+--- refus, et **la liste des identifiants refuses**. Une unite en echec
+--- n'empeche pas les autres, mais Python doit savoir lesquelles pour cesser de
+--- les compter comme siennes.
 function PROBE:delegate_units(unit_ids)
-    local sunits, refuses, premier_refus = {}, 0, nil
+    local sunits, refuses, premier_refus = {}, {}, nil
     for index = 1, #unit_ids do
         local unit_id = unit_ids[index]
         local unit = self:find_unit_by_id(unit_id)
         if not unit then
-            refuses = refuses + 1
+            refuses[#refuses + 1] = unit_id
             premier_refus = premier_refus or (tostring(unit_id) .. " : unite introuvable")
         elseif not unit:is_controllable() then
-            refuses = refuses + 1
+            refuses[#refuses + 1] = unit_id
             premier_refus = premier_refus or (tostring(unit_id) .. " : unite non controlable")
         else
             -- Une unite sous notre controle direct ne peut pas etre confiee :
@@ -994,31 +1029,31 @@ function PROBE:delegate_units(unit_ids)
                 sunits[#sunits + 1] = sunit
                 self.delegated[tostring(unit_id)] = true
             else
-                refuses = refuses + 1
+                refuses[#refuses + 1] = unit_id
                 premier_refus = premier_refus or (tostring(unit_id) .. " : script_unit indisponible")
             end
         end
     end
 
     if #sunits == 0 then
-        return 0, premier_refus or "aucune unite confiable"
+        return 0, premier_refus or "aucune unite confiable", refuses
     end
 
     if self.ai_planner then
         local ok, err = pcall(function() self.ai_planner:add_sunits(sunits) end)
         if not ok then
-            return 0, "add_sunits a echoue : " .. tostring(err)
+            return 0, "add_sunits a echoue : " .. tostring(err), unit_ids
         end
     else
         local ok, planner = pcall(function()
             return script_ai_planner:new("totalwar_ai", sunits, false)
         end)
         if not ok or not planner then
-            return 0, "creation du script_ai_planner impossible : " .. tostring(planner)
+            return 0, "creation du script_ai_planner impossible : " .. tostring(planner), unit_ids
         end
         self.ai_planner = planner
     end
-    return #sunits, premier_refus
+    return #sunits, premier_refus, refuses
 end
 
 --- Reprend des unites confiees a l'IA du jeu.
@@ -1034,11 +1069,11 @@ end
 --- demandee a tout moment, y compris par precaution.
 function PROBE:reclaim_units(unit_ids)
     if not self.ai_planner then
-        return 0
+        return 0, unit_ids
     end
 
     if unit_ids and #unit_ids > 0 then
-        local sunits, rendues = {}, 0
+        local sunits, rendues, refuses = {}, 0, {}
         for index = 1, #unit_ids do
             local unit_id = tostring(unit_ids[index])
             if self.delegated[unit_id] then
@@ -1048,11 +1083,17 @@ function PROBE:reclaim_units(unit_ids)
                     sunits[#sunits + 1] = sunit
                     self.delegated[unit_id] = nil
                     rendues = rendues + 1
+                else
+                    refuses[#refuses + 1] = unit_id
                 end
+            else
+                -- Jamais confiee, ou deja rendue : la reprendre n'a pas de sens,
+                -- et le taire ferait recommencer l'appelant indefiniment.
+                refuses[#refuses + 1] = unit_id
             end
         end
         if rendues == 0 then
-            return 0
+            return 0, refuses
         end
         pcall(function() self.ai_planner:remove_sunits(sunits) end)
         self:log("reprise partielle : " .. tostring(rendues) .. " unite(s) retirees a l'IA du jeu")
@@ -1063,7 +1104,7 @@ function PROBE:reclaim_units(unit_ids)
             pcall(function() self.ai_planner:release() end)
             self.ai_planner = nil
         end
-        return rendues
+        return rendues, refuses
     end
 
     local rendues = 0
@@ -1262,28 +1303,40 @@ function PROBE:process_command_file()
             self:emit_ack(sequence, "rejected", "aucune unite a confier")
             return
         end
-        local ok, confiees, motif = pcall(function() return self:delegate_units(ids) end)
+        -- Trois valeurs de retour : les capturer d'abord, jamais dans l'appel
+        -- de `emit_ack`, ou Lua les tronquerait a la premiere.
+        local ok, confiees, motif, refuses = pcall(function()
+            return self:delegate_units(ids)
+        end)
         if not ok then
-            self:emit_ack(sequence, "rejected", "erreur d'execution : " .. tostring(confiees))
+            self:emit_ack(
+                sequence, "rejected", "erreur d'execution : " .. tostring(confiees), nil, ids
+            )
             return
         end
         if confiees == 0 then
-            self:emit_ack(sequence, "rejected", motif)
+            self:emit_ack(sequence, "rejected", motif, nil, refuses or ids)
             return
         end
-        self:emit_ack(sequence, "accepted", motif, tostring(confiees) .. " unite(s) confiee(s)")
+        self:emit_ack(
+            sequence, "accepted", motif, tostring(confiees) .. " unite(s) confiee(s)", refuses
+        )
         self:log(tostring(confiees) .. " unite(s) confiee(s) a l'IA du jeu")
         return
     end
 
     if command_type == "reclaim" then
         local ids = read_id_list(content, "unit_ids")
-        local ok, rendues = pcall(function() return self:reclaim_units(ids) end)
+        local ok, rendues, refuses = pcall(function() return self:reclaim_units(ids) end)
         if not ok then
-            self:emit_ack(sequence, "rejected", "erreur d'execution : " .. tostring(rendues))
+            self:emit_ack(
+                sequence, "rejected", "erreur d'execution : " .. tostring(rendues), nil, ids
+            )
             return
         end
-        self:emit_ack(sequence, "released", nil, tostring(rendues) .. " unite(s) reprises")
+        self:emit_ack(
+            sequence, "released", nil, tostring(rendues) .. " unite(s) reprises", refuses
+        )
         return
     end
 
