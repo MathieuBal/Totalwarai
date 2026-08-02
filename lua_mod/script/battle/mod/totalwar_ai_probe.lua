@@ -288,10 +288,141 @@ function PROBE:emit_state(unit_id, unit_type, position, controllable)
         .. '"controllable":' .. tostring(controllable and true or false)
         .. "}}"
 
-    -- Le log recoit systematiquement le message : c'est le canal de repli.
-    self:log("STATE " .. line)
+    -- Le journal reste le canal de repli, mais seulement quand il en est un.
+    --
+    -- Tant que l'ecriture de fichier fonctionne, Python lit le flux et n'a nul
+    -- besoin du journal : un etat par seconde y devient du bruit qui noie le
+    -- diagnostic — 297 Ko en dix-sept minutes de bataille, ou `probe --log`
+    -- n'affichait plus que des lignes identiques. On n'en garde donc qu'un
+    -- echantillon. Si l'ecriture devient impossible, le journal redevient le
+    -- seul canal : on y remet alors chaque etat, integralement.
     if self:check_write_access() then
+        self:log_occasionally("state_count", "STATE " .. line)
         self:write_or_complain(self.state_file, line, "state")
+    else
+        self:log("STATE " .. line)
+    end
+    return self.sequence
+end
+
+--- Compte les objets d'un tableau JSON produit ici, sans l'analyser.
+---
+--- Chaque unite commence par `{"id":`, motif qui n'apparait nulle part ailleurs
+--- dans ce que nous ecrivons. Suffisant pour un resume de journal.
+local function count_entries(array)
+    local total = 0
+    for _ in string.gmatch(array, '{"id":') do
+        total = total + 1
+    end
+    return total
+end
+
+--- Fragment JSON decrivant une unite, limite a ce que le jeu expose vraiment.
+---
+--- Chaque champ optionnel n'est ecrit que si le recensement a valide son
+--- accesseur. Le moral et la fatigue, absents du bac a sable, n'y figurent donc
+--- jamais : Python les verra manquants au lieu de les lire a zero.
+function PROBE:unit_snapshot(unit)
+    local position = self:unit_position(unit)
+    local parts = {
+        '"id":' .. json_string(self:unit_identifier(unit)),
+        '"type":' .. json_string(tostring(unit:type())),
+        '"position":{"x":' .. json_number(position.x)
+            .. ',"y":' .. json_number(position.y)
+            .. ',"z":' .. json_number(position.z) .. "}",
+    }
+
+    local function add_bool(field, name)
+        local value = self:read_field(unit, name)
+        if value ~= nil then
+            parts[#parts + 1] = '"' .. field .. '":' .. tostring(value and true or false)
+        end
+    end
+
+    local function add_number(field, name)
+        local value = self:read_field(unit, name)
+        if type(value) == "number" then
+            parts[#parts + 1] = '"' .. field .. '":' .. json_number(value)
+        end
+    end
+
+    add_bool("controllable", "is_controllable")
+    add_bool("alive", "is_valid_target")
+    add_bool("routing", "is_routing")
+    add_bool("shattered", "is_shattered")
+    add_bool("in_melee", "is_in_melee")
+    add_bool("hidden", "is_hidden")
+    add_bool("can_fly", "can_fly")
+    add_number("hitpoints", "unary_hitpoints")
+    add_number("men_alive", "number_of_men_alive")
+    add_number("bearing", "bearing")
+    add_number("ammo", "ammo_left")
+    add_number("missile_range", "missile_range")
+
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
+--- Toutes les unites d'une alliance, sous forme de tableau JSON.
+function PROBE:alliance_snapshot(alliance)
+    local fragments = {}
+    local armies = alliance:armies()
+    for army_index = 1, armies:count() do
+        local units = armies:item(army_index):units()
+        for index = 1, units:count() do
+            local unit = units:item(index)
+            if unit then
+                local ok, fragment = pcall(function() return self:unit_snapshot(unit) end)
+                if ok then
+                    fragments[#fragments + 1] = fragment
+                end
+                -- Une unite illisible est omise, jamais publiee a moitie : un
+                -- etat partiel ferait decider l'agent sur des champs faux.
+            end
+        end
+    end
+    return "[" .. table.concat(fragments, ",") .. "]"
+end
+
+--- Publie la bataille entiere : notre camp, et tout ce qui n'est pas a nous.
+function PROBE:emit_battle_state()
+    self.sequence = self.sequence + 1
+    local alliances = bm:alliances()
+    local locale = bm:local_alliance()
+
+    local allies = "[]"
+    local enemies = {}
+    for index = 1, alliances:count() do
+        local snapshot = self:alliance_snapshot(alliances:item(index))
+        if index == locale then
+            allies = snapshot
+        elseif snapshot ~= "[]" then
+            -- Plusieurs alliances adverses sont possibles : on les fusionne,
+            -- l'agent ne distingue que « nous » et « eux ».
+            enemies[#enemies + 1] = string.sub(snapshot, 2, #snapshot - 1)
+        end
+    end
+
+    local line = "{"
+        .. '"protocol_version":' .. json_string(self.protocol_version) .. ","
+        .. '"type":"battle_state",'
+        .. '"sequence":' .. json_number(self.sequence) .. ","
+        .. '"game_time_ms":' .. json_number(bm:time_elapsed_ms()) .. ","
+        .. '"phase":' .. json_string(self.phase) .. ","
+        .. '"allies":' .. allies .. ","
+        .. '"enemies":[' .. table.concat(enemies, ",") .. "]"
+        .. "}"
+
+    -- Le journal du jeu reste le canal de repli, mais on n'y deverse pas vingt
+    -- unites par seconde : un resume suffit a savoir que le flux vit.
+    self:log_occasionally(
+        "battle_state_count",
+        "BATTLE phase " .. self.phase
+            .. " : " .. tostring(count_entries(allies)) .. " allies, "
+            .. tostring(count_entries("[" .. table.concat(enemies, ",") .. "]")) .. " ennemis"
+    )
+
+    if self:check_write_access() then
+        self:write_or_complain(self.state_file, line, "battle_state")
     end
     return self.sequence
 end
@@ -420,7 +551,30 @@ function PROBE:census_unit_accessors(unit)
     end
     self:log("accesseurs utilisables : " .. table.concat(disponibles, ", "))
     self:log("--- fin du recensement ---")
+
+    -- Le recensement ne sert pas qu'au diagnostic : il decide de ce qui est
+    -- publie. Un champ dont l'accesseur est absent n'apparait pas dans l'etat,
+    -- plutot que d'y figurer a zero — un zero se confond avec une vraie valeur.
+    self.available = {}
+    for index = 1, #disponibles do
+        self.available[disponibles[index]] = true
+    end
     return disponibles
+end
+
+--- Appelle un accesseur si le recensement l'a declare utilisable.
+---
+--- Renvoie `nil` quand il est absent : l'appelant omet alors le champ. C'est
+--- deliberement different de renvoyer zero, qui se confondrait avec une mesure.
+function PROBE:read_field(unit, name)
+    if not self.available or not self.available[name] then
+        return nil
+    end
+    local ok, value = pcall(unit[name], unit)
+    if not ok then
+        return nil
+    end
+    return value
 end
 
 --- Journalise ce que l'on peut savoir des alliances en presence.
@@ -697,6 +851,13 @@ function PROBE:publish_state()
         self:unit_position(unit),
         true
     )
+
+    -- La bataille entiere, dans le meme flux. L'etat mono-unite ci-dessus reste
+    -- publie : il est petit, et c'est lui que la commande `probe` consomme.
+    local ok, err = pcall(function() self:emit_battle_state() end)
+    if not ok then
+        self:log_occasionally("battle_state_error", "ERREUR dans emit_battle_state : " .. tostring(err))
+    end
 end
 
 --[[--------------------------------------------------------------------------

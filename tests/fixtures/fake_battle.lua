@@ -130,19 +130,38 @@ end
 
 -- --- battle_manager ---------------------------------------------------------
 
-function FAKE:setup(units)
-    local army = {
+local function make_army(units)
+    return {
         units_collection = make_collection(units),
         units = function(self) return self.units_collection end,
         create_unit_controller = function(self) return make_unit_controller() end,
     }
+end
+
+local function make_alliance(units)
+    local alliance = {
+        armies_collection = make_collection({ make_army(units) }),
+        armies = function(self) return self.armies_collection end,
+    }
+    return alliance
+end
+
+--- Met en place la bataille. `enemies` est facultatif : sans lui, un seul camp,
+--- ce qui reste utile pour les tests qui n'observent que le notre.
+function FAKE:setup(units, enemies)
+    local army = make_army(units)
     local alliance = {
         armies_collection = make_collection({ army }),
         armies = function(self) return self.armies_collection end,
     }
 
+    local alliances = { alliance }
+    if enemies then
+        alliances[#alliances + 1] = make_alliance(enemies)
+    end
+
     bm = {
-        alliances_collection = make_collection({ alliance }),
+        alliances_collection = make_collection(alliances),
         alliances = function(self) return self.alliances_collection end,
         local_alliance = function(self) return 1 end,
         local_army = function(self) return 1 end,
