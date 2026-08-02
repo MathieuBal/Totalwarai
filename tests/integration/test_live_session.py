@@ -314,3 +314,26 @@ def test_tenir_la_ligne_arrete_reellement_les_unites(tmp_path: Path) -> None:
 
     arrets = [order for order in probe.orders() if order["kind"] == "halt"]
     assert arrets, "aucun ordre d'arret n'est arrive jusqu'au jeu"
+
+
+def test_les_refus_de_securite_ne_passent_pas_pour_des_ordres(session: LiveSession) -> None:
+    """Constate en bataille : neuf lignes affichees, deux ordres partis.
+
+    `explanations()` reunit les decisions retenues et celles que les regles de
+    securite ont refusees. Les imprimer ensemble laissait croire que l'agent
+    avait agi neuf fois, alors que sept de ses intentions avaient ete bloquees.
+    """
+    etape = session.step()
+
+    # Les deux listes sont disjointes, et seules les retenues sont traduites.
+    assert not (set(etape.decisions) & set(etape.blocked))
+    assert etape.sent <= len(etape.decisions)
+
+
+def test_un_refus_de_securite_apparait_dans_le_resume(session: LiveSession) -> None:
+    """Un refus est une decision, pas un silence : il doit se voir."""
+    etape = LiveStep(
+        state=session.bridge.latest_battle_state(),
+        blocked=("Action : charger (1002) | Cause : ...",),
+    )
+    assert "1 refusee(s) par la securite" in etape.summary()

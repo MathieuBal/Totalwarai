@@ -356,8 +356,10 @@ def _play(bridge: FileBridge, duration: float) -> int:
             tours += 1
             ordres += etape.sent
             print(f"  {etape.summary()}")
-            for explication in etape.decisions if etape.acted else ():
-                print(f"      {explication.splitlines()[0]}")
+            for explication in etape.decisions:
+                print(f"      + {explication.splitlines()[0]}")
+            for refus in etape.blocked:
+                print(f"      - {refus.splitlines()[0]}")
             time.sleep(1.0)
     except KeyboardInterrupt:
         print("\nInterruption : liberation de toutes les unites.")

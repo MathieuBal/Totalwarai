@@ -41,7 +41,14 @@ class LiveStep:
     state: ProbeBattleState | None = None
     #: Raison pour laquelle rien n'a ete emis, le cas echeant.
     skipped: str | None = None
+    #: Decisions **retenues** par l'agent, expliquees.
     decisions: tuple[str, ...] = ()
+    #: Decisions **refusees** par les regles de securite, avec leur motif.
+    #:
+    #: Distinguees des precedentes : les afficher ensemble laissait croire que
+    #: neuf actions avaient ete prises la ou deux ordres seulement etaient
+    #: partis, les sept autres ayant ete bloquees.
+    blocked: tuple[str, ...] = ()
     translation: Translation = field(default_factory=Translation)
     sent: int = 0
 
@@ -75,6 +82,11 @@ class LiveStep:
         if self.translation.untranslated:
             noms = ", ".join(sorted({item[0].value for item in self.translation.untranslated}))
             detail.append(f"{len(self.translation.untranslated)} action(s) perdue(s) : {noms}")
+
+        # Un refus de securite est une decision, pas un silence : il doit se
+        # voir au meme titre qu'un ordre emis.
+        if self.blocked:
+            detail.append(f"{len(self.blocked)} refusee(s) par la securite")
 
         return f"{entete} — " + (", ".join(detail) if detail else "rien a faire")
 
@@ -130,10 +142,14 @@ class LiveSession:
         for action_type, motif in translation.untranslated:
             LOGGER.debug("action non traduite : %s (%s)", action_type.value, motif)
 
+        prises = tuple(decision.explain() for decision in tour.decisions)
+        refusees = tuple(decision.explain() for decision in tour.blocked)
+
         if translation.is_empty:
             return LiveStep(
                 state=state,
-                decisions=tuple(tour.explanations()),
+                decisions=prises,
+                blocked=refusees,
                 translation=translation,
             )
 
@@ -147,7 +163,8 @@ class LiveSession:
         )
         return LiveStep(
             state=state,
-            decisions=tuple(tour.explanations()),
+            decisions=prises,
+            blocked=refusees,
             translation=translation,
             sent=translation.order_count,
         )
