@@ -152,6 +152,17 @@ class Planner:
     """Doctrine deterministe du MVP."""
 
     settings: PlannerSettings = field(default_factory=PlannerSettings)
+    #: Posture imposee de l'exterieur, qui court-circuite le choix de l'agent.
+    #:
+    #: Sert a l'operateur, pas a l'agent : en escarmouche, l'adversaire attend
+    #: et l'agent tient — les deux armees ne s'affrontent jamais, et il n'y a
+    #: rien a observer. Deux tentatives pour faire *decider* a l'agent de rompre
+    #: l'impasse ont ete mesurees nuisibles (voir `docs/decisions/0005`) ; celle
+    #: -ci n'est pas une decision de l'agent mais un ordre qu'on lui donne.
+    #:
+    #: La raison affichee le dit explicitement, pour qu'aucun compte rendu ne
+    #: laisse croire que l'agent a choisi cette posture.
+    forced_posture: Posture | None = None
 
     # --- plan general --------------------------------------------------------
 
@@ -169,7 +180,12 @@ class Planner:
         missile_edge = _missile_edge(state)
         cavalry = [unit for unit in allies if unit.role in MOBILE_ROLES]
 
-        if not enemies:
+        if self.forced_posture is not None:
+            posture, rationale = (
+                self.forced_posture,
+                f"posture {self.forced_posture.value} imposee par l'operateur",
+            )
+        elif not enemies:
             posture, rationale = Posture.ADVANCE, "aucun ennemi visible : progression prudente"
         elif ratio >= 1.35 and cavalry:
             posture, rationale = (

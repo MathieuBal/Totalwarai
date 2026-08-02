@@ -964,3 +964,111 @@ def test_une_armee_sans_troupe_le_signale(workdir: Path) -> None:
     probe.advance(1500)
 
     assert probe.grep("aucune unite de plus d'une entite trouvee")
+
+
+# --- delegation a l'IA du jeu -------------------------------------------------
+
+
+def test_des_unites_sont_confiees_a_l_ia_du_jeu(probe: Probe, workdir: Path) -> None:
+    """L'IA du moteur connait le terrain et les formations ; nous non.
+
+    C'est ce qui rend la delegation utile — et ce qui la distingue de notre
+    agent, qui explique ses decisions et peut etre regle.
+    """
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+
+    commande = bridge.delegate(["1006", "1005"])
+    probe.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None and accuse.accepted
+    assert probe.grep("confiee(s) a l'IA du jeu")
+    assert [order for order in probe.orders() if order["kind"] == "delegate"]
+
+
+def test_les_unites_confiees_sont_reprises_sur_demande(probe: Probe, workdir: Path) -> None:
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+    bridge.delegate(["1006"])
+    probe.advance(1000)
+
+    commande = bridge.reclaim()
+    probe.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None
+    assert [order for order in probe.orders() if order["kind"] == "reclaim"]
+    assert probe.grep("reprises a l'IA du jeu")
+
+
+def test_la_sentinelle_d_arret_reprend_les_unites_confiees(probe: Probe, workdir: Path) -> None:
+    """Le joueur doit pouvoir tout reprendre sans passer par Python.
+
+    Une voie d'arret incapable de defaire la delegation laisserait les unites
+    confiees a une IA que plus rien ne pilote.
+    """
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+    bridge.delegate(["1006", "1005"])
+    probe.advance(1000)
+
+    bridge.paths.stop.write_text("stop\n", encoding="utf-8")
+    probe.advance(1000)
+
+    assert [order for order in probe.orders() if order["kind"] == "reclaim"]
+    assert probe.grep("SONDE ARRETEE")
+
+
+def test_la_fin_de_bataille_reprend_les_unites_confiees(probe: Probe, workdir: Path) -> None:
+    probe.advance(2000)
+    FileBridge.open(workdir).delegate(["1006"])
+    probe.advance(1000)
+
+    probe.enter_phase("Complete")
+
+    assert [order for order in probe.orders() if order["kind"] == "reclaim"]
+
+
+def test_une_unite_sous_notre_controle_est_rendue_avant_d_etre_confiee(
+    probe: Probe, workdir: Path
+) -> None:
+    """Deux pilotes sur une meme unite se disputeraient les ordres."""
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+    bridge.move_unit("1006", Vector3(50.0, 0.0, -300.0))
+    probe.advance(500)
+
+    bridge.delegate(["1006"])
+    probe.advance(1000)
+
+    ordres = [order["kind"] for order in probe.orders()]
+    assert "release" in ordres[: ordres.index("delegate")], (
+        "l'unite n'a pas ete rendue avant d'etre confiee"
+    )
+
+
+def test_une_delegation_vide_est_refusee(probe: Probe, workdir: Path) -> None:
+    """Confier une unite inexistante ne doit pas creer de planificateur."""
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+
+    commande = bridge.delegate(["9999"])
+    probe.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None and not accuse.accepted
+    assert not [order for order in probe.orders() if order["kind"] == "delegate"]
+
+
+def test_reprendre_sans_rien_avoir_confie_est_sans_effet(probe: Probe, workdir: Path) -> None:
+    """La reprise doit pouvoir etre demandee par simple precaution."""
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+
+    commande = bridge.reclaim()
+    probe.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None
+    assert not probe.grep("ERREUR dans")

@@ -19,9 +19,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from totalwar_ai import __version__
+from totalwar_ai.agent.planner import Posture
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
 from totalwar_ai.bridge.file_bridge import FileBridge, summarise
 from totalwar_ai.bridge.paths import EXPECTED_PROBE_REVISION, BridgeDirectoryNotFoundError
+from totalwar_ai.bridge.recording import BattleRecorder
 from totalwar_ai.config import AppConfig, ConfigError, load_config
 from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.learning.checkpoints import CheckpointStore
@@ -110,6 +112,29 @@ def build_parser() -> argparse.ArgumentParser:
         const=120.0,
         metavar="SECONDES",
         help="laisser l'agent piloter la bataille pendant N secondes (defaut 120)",
+    )
+    probe.add_argument(
+        "--delegate",
+        action="store_true",
+        help="confier toute l'armee a l'IA de bataille du jeu "
+        "(elle connait le terrain et les formations ; notre agent, non)",
+    )
+    probe.add_argument(
+        "--reclaim",
+        action="store_true",
+        help="reprendre les unites confiees a l'IA du jeu",
+    )
+    probe.add_argument(
+        "--posture",
+        choices=[item.value for item in Posture],
+        help="imposer une posture a l'agent pendant le pilotage "
+        "(en escarmouche, l'adversaire attend : sans cela les deux armees "
+        "ne s'affrontent jamais)",
+    )
+    probe.add_argument(
+        "--no-record",
+        action="store_true",
+        help="ne pas enregistrer la bataille pilotee en memoire",
     )
     probe.add_argument("--abort", action="store_true", help="arret d'urgence : tout liberer")
     probe.add_argument("--reset", action="store_true", help="vider les flux avant de commencer")
@@ -283,8 +308,18 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         print("Arret d'urgence publie : le script Lua doit tout liberer.")
         return 0
 
+    if args.delegate:
+        return _delegate(bridge)
+    if args.reclaim:
+        return _reclaim(bridge)
+
     if args.play:
-        return _play(bridge, args.play)
+        return _play(
+            bridge,
+            args.play,
+            record=not args.no_record,
+            posture=Posture(args.posture) if args.posture else None,
+        )
 
     if args.status or not (args.watch or args.move):
         _print_probe_status(bridge)
@@ -330,48 +365,143 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
-def _play(bridge: FileBridge, duration: float) -> int:
+def _delegate(bridge: FileBridge) -> int:
+    """Confie toute l'armee observee a l'IA de bataille du jeu.
+
+    **Plus engageant qu'un ordre de deplacement** : les unites restent a l'IA du
+    jeu jusqu'a `--reclaim`, sans restitution automatique. Le fichier d'arret et
+    la fin de bataille les reprennent aussi.
+    """
+    print("Attente d'un etat du jeu (30 s)...")
+    state = bridge.latest_battle_state()
+    for _ in range(60):
+        if state is not None:
+            break
+        time.sleep(0.5)
+        state = bridge.latest_battle_state()
+    if state is None:
+        print("Aucun etat recu : la bataille est-elle lancee ?", file=sys.stderr)
+        return 1
+
+    unit_ids = [unite.unit_id for unite in state.allies if unite.controllable and unite.alive]
+    if not unit_ids:
+        print("Aucune unite controlable a confier.", file=sys.stderr)
+        return 1
+
+    commande = bridge.delegate(unit_ids)
+    print(f"{len(unit_ids)} unite(s) confiees a l'IA du jeu (ordre {commande.sequence}).")
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=15.0)
+    if accuse is None:
+        print("Aucun accuse recu.", file=sys.stderr)
+        return 1
+    print(f"Accuse : {accuse.status.value}" + (f" ({accuse.error})" if accuse.error else ""))
+    if accuse.accepted:
+        print("`totalwar-ai probe --reclaim` pour reprendre la main.")
+    return 0 if accuse.accepted else 1
+
+
+def _reclaim(bridge: FileBridge) -> int:
+    """Reprend les unites confiees a l'IA du jeu."""
+    commande = bridge.reclaim()
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=15.0)
+    if accuse is None:
+        print(
+            "Aucun accuse recu. En cas de doute, `probe --abort` libere tout "
+            "par une voie independante.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Reprise : {accuse.status.value} — {accuse.detail or ''}")
+    return 0
+
+
+def _play(
+    bridge: FileBridge,
+    duration: float,
+    *,
+    record: bool = True,
+    posture: Posture | None = None,
+) -> int:
     """Laisse l'agent piloter la bataille, en rendant compte a chaque tour.
 
     **Ce que l'operateur doit savoir avant de lancer.** L'agent ne prend que les
     unites qu'il decide de deplacer, et le jeu les rend au bout de cinq
     secondes : reprendre la main a la souris est toujours possible, sans rien
     arreter. `Ctrl+C` coupe la boucle et libere tout.
+
+    La bataille est **enregistree** dans le meme format que les batailles
+    simulees. C'est la condition pour departager un jour le simulateur et le
+    jeu, dont les verdicts divergent (voir `docs/decisions/0005`).
     """
-    from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
     from totalwar_ai.bridge.live import LiveSession
 
-    session = LiveSession(
-        bridge=bridge,
-        agent=DeterministicTacticalAgent.from_config(load_config()),
-    )
-    print(f"Pilotage pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.\n")
+    config = load_config()
+    agent = DeterministicTacticalAgent.from_config(config)
+    if posture is not None:
+        agent.planner.forced_posture = posture
+    session = LiveSession(bridge=bridge, agent=agent)
+    recorder = BattleRecorder(directory=config.path("telemetry", "battles_dir") if record else None)
+
+    print(f"Pilotage pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.")
+    if posture is not None:
+        print(f"Posture imposee : {posture.value} — ce n'est pas un choix de l'agent.")
+    if recorder.path is not None:
+        print(f"Enregistrement : {recorder.path}")
+    print()
 
     fin = time.monotonic() + duration
-    tours = 0
-    ordres = 0
+    interrompu = False
     try:
         while time.monotonic() < fin:
             etape = session.step()
-            tours += 1
-            ordres += etape.sent
+            recorder.observe(etape)
             print(f"  {etape.summary()}")
-            for explication in etape.decisions if etape.acted else ():
-                print(f"      {explication.splitlines()[0]}")
+            for explication in etape.decisions:
+                print(f"      + {explication.splitlines()[0]}")
+            for refus in etape.blocked:
+                print(f"      - {refus.splitlines()[0]}")
             time.sleep(1.0)
     except KeyboardInterrupt:
         print("\nInterruption : liberation de toutes les unites.")
         session.stop()
-        return 130
+        interrompu = True
+    finally:
+        recorder.close()
 
-    print(f"\n{tours} tour(s), {ordres} ordre(s) de deplacement emis.")
-    if ordres == 0:
+    _print_play_summary(recorder, config, record=record)
+    return 130 if interrompu else 0
+
+
+def _print_play_summary(recorder: BattleRecorder, config: AppConfig, *, record: bool) -> None:
+    """Bilan d'une session de pilotage, et enregistrement en memoire."""
+    resume = recorder.summary()
+    print(
+        f"\n{recorder.turns} tour(s), {resume.actions_sent} ordre(s) emis, "
+        f"{resume.actions_blocked} refuse(s) par la securite, "
+        f"{recorder.actions_lost} action(s) perdue(s)."
+    )
+    if recorder.turns == 0:
         print(
-            "Aucun ordre : verifier que la bataille est engagee (phase Deployed) "
-            "et que les armees sont a portee l'une de l'autre.",
+            "Aucun etat recu : verifier que la bataille est lancee et que le mod est actif.",
             file=sys.stderr,
         )
-    return 0
+        return
+    print(
+        f"Forces restantes : {resume.ally_remaining:.0%} contre "
+        f"{resume.enemy_remaining:.0%} — issue {resume.outcome.value}."
+    )
+    if resume.outcome.value == "unknown":
+        print(
+            "L'issue reste inconnue : le jeu ne l'annonce qu'en phase `Complete`. "
+            "La deviner depuis les forces restantes fausserait la memoire."
+        )
+    if not record:
+        return
+
+    repository = MemoryRepository(config.path("memory", "database_path"))
+    repository.save_episode(recorder.episode())
+    print(f"Bataille enregistree : {resume.battle_id}")
+    print("  `totalwar-ai history --scenario live` pour la retrouver.")
 
 
 def _confirm_movement(

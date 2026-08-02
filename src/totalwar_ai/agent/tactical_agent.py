@@ -125,7 +125,12 @@ class DeterministicTacticalAgent:
         """
         if profile.is_empty:
             return
-        self.planner = Planner(settings=apply_to_planner(self.planner.settings, profile))
+        # `forced_posture` doit survivre au rechargement de doctrine : la
+        # perdre ici rendrait l'ordre de l'operateur silencieusement caduc.
+        self.planner = Planner(
+            settings=apply_to_planner(self.planner.settings, profile),
+            forced_posture=self.planner.forced_posture,
+        )
         self.safety = SafetyEngine.from_settings(apply_to_safety(self.safety.settings, profile))
         self.doctrine = profile
 

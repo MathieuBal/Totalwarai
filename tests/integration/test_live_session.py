@@ -314,3 +314,123 @@ def test_tenir_la_ligne_arrete_reellement_les_unites(tmp_path: Path) -> None:
 
     arrets = [order for order in probe.orders() if order["kind"] == "halt"]
     assert arrets, "aucun ordre d'arret n'est arrive jusqu'au jeu"
+
+
+def test_les_refus_de_securite_ne_passent_pas_pour_des_ordres(session: LiveSession) -> None:
+    """Constate en bataille : neuf lignes affichees, deux ordres partis.
+
+    `explanations()` reunit les decisions retenues et celles que les regles de
+    securite ont refusees. Les imprimer ensemble laissait croire que l'agent
+    avait agi neuf fois, alors que sept de ses intentions avaient ete bloquees.
+    """
+    etape = session.step()
+
+    # Les deux listes sont disjointes, et seules les retenues sont traduites.
+    assert not (set(etape.decisions) & set(etape.blocked))
+    assert etape.sent <= len(etape.decisions)
+
+
+def test_un_refus_de_securite_apparait_dans_le_resume(session: LiveSession) -> None:
+    """Un refus est une decision, pas un silence : il doit se voir."""
+    etape = LiveStep(
+        state=session.bridge.latest_battle_state(),
+        blocked=("Action : charger (1002) | Cause : ...",),
+    )
+    assert "1 refusee(s) par la securite" in etape.summary()
+
+
+# --- enregistrement -----------------------------------------------------------
+
+
+def test_une_bataille_pilotee_est_enregistree(
+    session: LiveSession, bataille: Probe, tmp_path: Path
+) -> None:
+    """Le but : comparer un jour le simulateur au jeu sur les memes mesures.
+
+    Deux corrections mesurees comme benefiques en jeu se sont revelees nuisibles
+    au banc, sans qu'on puisse dire lequel des deux juges dit vrai. Departager
+    demande des batailles reelles enregistrees dans le meme format.
+    """
+    from totalwar_ai.bridge.recording import LIVE_SCENARIO, BattleRecorder
+    from totalwar_ai.memory.repository import MemoryRepository
+
+    enregistrement = tmp_path / "enregistrement"
+    recorder = BattleRecorder(directory=enregistrement)
+    for _ in range(3):
+        recorder.observe(session.step())
+        bataille.advance(2000)  # le jeu publie un nouvel etat
+    recorder.close()
+
+    assert recorder.turns == 3
+    assert recorder.path is not None
+    lignes = recorder.path.read_text(encoding="utf-8").splitlines()
+    assert len(lignes) == 3
+
+    premier = json.loads(lignes[0])
+    assert premier["allies"] == len(ARMEE)
+    assert premier["enemies"] == len(ENNEMIS)
+    assert premier["phase"] == "Deployed"
+    assert premier["decisions"], "les decisions de l'agent ne sont pas conservees"
+
+    repository = MemoryRepository(tmp_path / "memoire.sqlite3")
+    repository.save_episode(recorder.episode())
+    assert repository.list_battles(scenario=LIVE_SCENARIO)
+
+
+def test_les_ordres_reellement_emis_sont_traces(session: LiveSession, tmp_path: Path) -> None:
+    """Un enregistrement qui perdrait les ordres ne servirait a rien."""
+    from totalwar_ai.bridge.recording import BattleRecorder
+
+    recorder = BattleRecorder(directory=tmp_path)
+    etape = session.step()
+    recorder.observe(etape)
+    recorder.close()
+
+    entree = recorder.entries[0]
+    ordres = entree["orders"]
+    total = len(ordres["moves"]) + len(ordres["attacks"]) + len(ordres["halts"])
+    assert total == etape.sent
+
+
+# --- posture imposee par l'operateur ------------------------------------------
+
+
+def test_une_posture_imposee_fait_avancer_l_armee(tmp_path: Path) -> None:
+    """En escarmouche l'adversaire attend : sans ordre, rien ne se passe.
+
+    Deux tentatives pour faire *decider* a l'agent de rompre l'impasse ont ete
+    mesurees nuisibles au banc (ADR 0005). Celle-ci n'est pas une decision de
+    l'agent : c'est un ordre que l'operateur lui donne, pour qu'une bataille ait
+    lieu et puisse etre observee.
+    """
+    from totalwar_ai.agent.planner import Posture
+
+    (tmp_path / "totalwar_ai").mkdir()
+    probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
+    probe.advance(2000)
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+
+    agent = DeterministicTacticalAgent.from_config(load_config())
+    agent.planner.forced_posture = Posture.ADVANCE
+    session = LiveSession(bridge=FileBridge.open(tmp_path), agent=agent)
+
+    etape = session.step()
+    assert agent.plan is not None
+    assert agent.plan.posture is Posture.ADVANCE
+    assert "imposee par l'operateur" in agent.plan.rationale
+    assert etape.acted, etape.summary()
+
+
+def test_la_posture_imposee_survit_au_rechargement_de_doctrine() -> None:
+    """La perdre rendrait l'ordre de l'operateur silencieusement caduc."""
+    from totalwar_ai.agent.planner import Posture
+    from totalwar_ai.learning.adaptation import DoctrineProfile
+
+    agent = DeterministicTacticalAgent.from_config(load_config())
+    agent.planner.forced_posture = Posture.ENVELOP
+    agent.apply_doctrine(
+        DoctrineProfile(fingerprint="t", adjustments={"line_spacing": 50.0}, rationale="essai")
+    )
+
+    assert agent.planner.forced_posture is Posture.ENVELOP

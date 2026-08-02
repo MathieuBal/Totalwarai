@@ -41,10 +41,12 @@ from totalwar_ai.bridge.command_models import (
     ProbeAttack,
     ProbeBattleState,
     ProbeCommand,
+    ProbeDelegateCommand,
     ProbeMessageType,
     ProbeMoveCommand,
     ProbeMoveGroupCommand,
     ProbeOrdersCommand,
+    ProbeReclaimCommand,
     ProbeUnitState,
 )
 from totalwar_ai.bridge.paths import BridgePaths
@@ -190,6 +192,29 @@ class FileBridge:
             halts=tuple(halts),
             sequence=sequence if sequence is not None else self._next_sequence,
             release_after_ms=release_after_ms,
+        )
+        self.send_command(command)
+        return command
+
+    def delegate(
+        self, unit_ids: Sequence[str], *, sequence: int | None = None
+    ) -> ProbeDelegateCommand:
+        """Confie des unites a l'IA de bataille du jeu.
+
+        Le joueur en perd le controle jusqu'a `reclaim` : il n'y a pas de
+        restitution automatique comme pour un ordre de deplacement.
+        """
+        command = ProbeDelegateCommand(
+            unit_ids=tuple(unit_ids),
+            sequence=sequence if sequence is not None else self._next_sequence,
+        )
+        self.send_command(command)
+        return command
+
+    def reclaim(self, *, sequence: int | None = None) -> ProbeReclaimCommand:
+        """Reprend toutes les unites confiees a l'IA du jeu."""
+        command = ProbeReclaimCommand(
+            sequence=sequence if sequence is not None else self._next_sequence
         )
         self.send_command(command)
         return command

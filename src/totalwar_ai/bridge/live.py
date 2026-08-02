@@ -29,8 +29,20 @@ from totalwar_ai.bridge.file_bridge import FileBridge
 from totalwar_ai.bridge.orders import OrderTranslator, Translation
 from totalwar_ai.bridge.roster import RosterMemory
 from totalwar_ai.domain.actions import ActionType
+from totalwar_ai.domain.geometry import Vector3
 
 LOGGER = logging.getLogger("totalwar_ai.bridge.live")
+
+#: Distance en deca de laquelle un nouvel ordre de deplacement est superflu.
+#:
+#: Constate en bataille : le seigneur faisait des allers-retours. Sa position de
+#: soutien se calcule par rapport au barycentre de l'armee, dont il fait partie
+#: — il bouge, le barycentre bouge, sa cible bouge, il rebouge. La deduplication
+#: de l'agent ne l'attrape pas : la destination change de quelques metres a
+#: chaque fois, donc l'ordre n'est jamais tout a fait le meme.
+#:
+#: Vingt metres : en deca, le deplacement ne vaut ni l'ordre ni la saccade.
+MIN_REORDER_DISTANCE = 20.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +53,14 @@ class LiveStep:
     state: ProbeBattleState | None = None
     #: Raison pour laquelle rien n'a ete emis, le cas echeant.
     skipped: str | None = None
+    #: Decisions **retenues** par l'agent, expliquees.
     decisions: tuple[str, ...] = ()
+    #: Decisions **refusees** par les regles de securite, avec leur motif.
+    #:
+    #: Distinguees des precedentes : les afficher ensemble laissait croire que
+    #: neuf actions avaient ete prises la ou deux ordres seulement etaient
+    #: partis, les sept autres ayant ete bloquees.
+    blocked: tuple[str, ...] = ()
     translation: Translation = field(default_factory=Translation)
     sent: int = 0
 
@@ -76,6 +95,11 @@ class LiveStep:
             noms = ", ".join(sorted({item[0].value for item in self.translation.untranslated}))
             detail.append(f"{len(self.translation.untranslated)} action(s) perdue(s) : {noms}")
 
+        # Un refus de securite est une decision, pas un silence : il doit se
+        # voir au meme titre qu'un ordre emis.
+        if self.blocked:
+            detail.append(f"{len(self.blocked)} refusee(s) par la securite")
+
         return f"{entete} — " + (", ".join(detail) if detail else "rien a faire")
 
 
@@ -98,6 +122,8 @@ class LiveSession:
     #: Volontairement courte : le joueur doit pouvoir reprendre une unite sans
     #: attendre, et un ordre perime vaut mieux qu'une unite confisquee.
     release_after_ms: int = 5000
+    #: Derniere destination envoyee a chaque unite, pour ne pas la faire osciller.
+    _last_destination: dict[str, Vector3] = field(default_factory=dict)
 
     def step(self) -> LiveStep:
         """Un tour complet. Ne leve pas : un tour rate ne doit pas tout arreter."""
@@ -129,11 +155,16 @@ class LiveSession:
         translation = self.translator.translate(tour.actions, domaine)
         for action_type, motif in translation.untranslated:
             LOGGER.debug("action non traduite : %s (%s)", action_type.value, motif)
+        translation = self._drop_micro_moves(translation)
+
+        prises = tuple(decision.explain() for decision in tour.decisions)
+        refusees = tuple(decision.explain() for decision in tour.blocked)
 
         if translation.is_empty:
             return LiveStep(
                 state=state,
-                decisions=tuple(tour.explanations()),
+                decisions=prises,
+                blocked=refusees,
                 translation=translation,
             )
 
@@ -147,9 +178,42 @@ class LiveSession:
         )
         return LiveStep(
             state=state,
-            decisions=tuple(tour.explanations()),
+            decisions=prises,
+            blocked=refusees,
             translation=translation,
             sent=translation.order_count,
+        )
+
+    def _drop_micro_moves(self, translation: Translation) -> Translation:
+        """Ecarte les deplacements trop courts pour valoir un ordre.
+
+        Sans cela une unite dont la destination se recalcule a chaque tour
+        oscille sur place — constate en jeu sur le seigneur, qui faisait des
+        allers-retours. Une destination reellement nouvelle passe ; une
+        correction de quelques metres est ignoree, et la memoire n'est pas
+        mise a jour, pour que la derive lente finisse par franchir le seuil.
+        """
+        gardes: list[tuple[str, Vector3]] = []
+        for unit_id, point in translation.moves:
+            precedente = self._last_destination.get(unit_id)
+            if precedente is not None and precedente.distance_2d(point) < MIN_REORDER_DISTANCE:
+                LOGGER.debug("deplacement ignore pour %s : trop proche du precedent", unit_id)
+                continue
+            self._last_destination[unit_id] = point
+            gardes.append((unit_id, point))
+
+        # Une unite qu'on arrete ou qu'on lance a l'attaque n'a plus de
+        # destination en cours : son prochain deplacement doit repartir libre.
+        for unit_id in (*translation.halts, *(item.unit_id for item in translation.attacks)):
+            self._last_destination.pop(unit_id, None)
+
+        if len(gardes) == len(translation.moves):
+            return translation
+        return Translation(
+            moves=tuple(gardes),
+            attacks=translation.attacks,
+            halts=translation.halts,
+            untranslated=translation.untranslated,
         )
 
     def stop(self) -> None:

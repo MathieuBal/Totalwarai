@@ -61,6 +61,10 @@ class ProbeMessageType(StrEnum):
     MOVE_UNITS = "move_units"
     #: Manoeuvre complete : deplacements et attaques dans un seul message.
     ORDERS = "orders"
+    #: Confier des unites a l'IA de bataille du jeu.
+    DELEGATE = "delegate"
+    #: Les reprendre.
+    RECLAIM = "reclaim"
     ACTION_RESULT = "action_result"
     #: Ordre d'arret : le Lua libere toutes ses unites et cesse de lire.
     ABORT = "abort"
@@ -583,6 +587,80 @@ class ProbeOrdersCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ProbeDelegateCommand:
+    """Confie des unites a l'IA de bataille du jeu.
+
+    **Bien plus engageant qu'un ordre de deplacement.** Le joueur perd le
+    controle des unites confiees jusqu'a ce qu'on les reprenne : il n'y a pas de
+    restitution automatique au bout de cinq secondes. Toutes les voies d'arret
+    de la sonde defont cette delegation — sentinelle de fichier, commande
+    d'arret, fin de bataille.
+
+    L'IA du jeu connait le terrain, le pathfinding, les statistiques d'unites et
+    les formations : tout ce que le recensement a montre inaccessible a un
+    script Lua. C'est ce qui rend la delegation utile, et c'est aussi pourquoi
+    elle ne remplace pas notre agent — elle n'explique rien et n'apprend rien.
+    """
+
+    unit_ids: tuple[str, ...]
+    sequence: int = 1
+    protocol_version: str = PROTOCOL_VERSION
+
+    def __post_init__(self) -> None:
+        if not self.unit_ids:
+            raise SchemaError("Une delegation doit designer au moins une unite")
+        if self.sequence < 1:
+            raise SchemaError("Le numero de sequence doit etre superieur ou egal a 1")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "protocol_version": self.protocol_version,
+            "type": ProbeMessageType.DELEGATE.value,
+            "sequence": self.sequence,
+            "unit_ids": list(self.unit_ids),
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> ProbeDelegateCommand:
+        data = require_mapping(raw, "ProbeDelegateCommand")
+        version = as_str(data, "protocol_version")
+        check_version(version)
+        _require_type(data, ProbeMessageType.DELEGATE)
+        return cls(
+            unit_ids=tuple(str(item) for item in _as_list(data, "unit_ids")),
+            sequence=as_int(data, "sequence", default=1),
+            protocol_version=version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeReclaimCommand:
+    """Reprend toutes les unites confiees a l'IA du jeu.
+
+    Sans effet s'il n'y en a aucune : la reprise doit pouvoir etre demandee a
+    tout moment, y compris par simple precaution.
+    """
+
+    sequence: int = 1
+    protocol_version: str = PROTOCOL_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "protocol_version": self.protocol_version,
+            "type": ProbeMessageType.RECLAIM.value,
+            "sequence": self.sequence,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> ProbeReclaimCommand:
+        data = require_mapping(raw, "ProbeReclaimCommand")
+        version = as_str(data, "protocol_version")
+        check_version(version)
+        _require_type(data, ProbeMessageType.RECLAIM)
+        return cls(sequence=as_int(data, "sequence", default=1), protocol_version=version)
+
+
+@dataclass(frozen=True, slots=True)
 class ProbeAbortCommand:
     """Arret d'urgence : le Lua libere tout et cesse de lire les commandes."""
 
@@ -652,7 +730,14 @@ class ProbeAck:
         )
 
 
-ProbeCommand = ProbeMoveCommand | ProbeMoveGroupCommand | ProbeOrdersCommand | ProbeAbortCommand
+ProbeCommand = (
+    ProbeMoveCommand
+    | ProbeMoveGroupCommand
+    | ProbeOrdersCommand
+    | ProbeDelegateCommand
+    | ProbeReclaimCommand
+    | ProbeAbortCommand
+)
 
 
 def decode_command(raw: Any) -> ProbeCommand:
@@ -665,6 +750,10 @@ def decode_command(raw: Any) -> ProbeCommand:
         return ProbeMoveGroupCommand.from_dict(data)
     if message_type == ProbeMessageType.ORDERS.value:
         return ProbeOrdersCommand.from_dict(data)
+    if message_type == ProbeMessageType.DELEGATE.value:
+        return ProbeDelegateCommand.from_dict(data)
+    if message_type == ProbeMessageType.RECLAIM.value:
+        return ProbeReclaimCommand.from_dict(data)
     if message_type == ProbeMessageType.ABORT.value:
         return ProbeAbortCommand.from_dict(data)
     raise SchemaError(f"Type de commande inconnu : {message_type!r}")

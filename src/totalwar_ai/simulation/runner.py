@@ -114,6 +114,7 @@ def run_battle(
             scenario.max_battle_seconds,
         ),
         field_radius=float(simulation_cfg.get("field_width", 400.0)),
+        enemy_waits=scenario.enemy_waits,
     )
 
     logger = BattleLogger(

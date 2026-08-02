@@ -72,17 +72,41 @@ def test_les_types_de_messages_concordent(lua_source: str) -> None:
 
 
 def test_le_script_ne_contient_pas_de_code_tiers(lua_source: str) -> None:
-    """Garde-fou de licence : aucune trace du mod etudie ne doit subsister."""
+    """Garde-fou de licence : aucune trace du mod etudie ne doit subsister.
+
+    **Ce qui est interdit** : les identifiants propres a AI General 3. Les
+    employer signifierait avoir repris son code ou dependre de son
+    installation.
+
+    **Ce qui ne l'est pas** : les API du jeu, meme decouvertes en lisant ce mod.
+    `script_ai_planner` appartient a la bibliotheque de script de bataille de
+    Creative Assembly, au meme titre que `script_unit`, `unitcontroller` ou
+    `battle_manager` — le mod l'utilise, il ne le fournit pas. Il figurait dans
+    cette liste par prudence, a une epoque ou nous ne le connaissions que par
+    lui ; l'y laisser reviendrait a s'interdire une API du moteur.
+
+    C'est exactement la distinction posee au depart : le code tiers sert a
+    comprendre les mecanismes disponibles, pas a etre recopie.
+    """
     interdits = (
         "aigeneral",
         "pancake",
         "modder_API_uc_manager",
         "pan_util",
-        "script_ai_planner",
     )
     minuscules = lua_source.lower()
     for terme in interdits:
         assert terme.lower() not in minuscules, terme
+
+
+def test_les_api_du_jeu_sont_appelees_directement(lua_source: str) -> None:
+    """Aucune dependance a l'installation d'un autre mod.
+
+    La sonde s'adresse au moteur, jamais a un intermediaire tiers : ces appels
+    doivent fonctionner sur une installation ou seul notre pack est actif.
+    """
+    for api in ("script_ai_planner:new", "bm:get_scriptunit_for_unit", "script_unit:new"):
+        assert api in lua_source, api
 
 
 def test_le_depot_ne_contient_aucun_fichier_tiers() -> None:

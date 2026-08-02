@@ -19,6 +19,7 @@ FAKE = {
     multiplayer = false,
     controllers = {},      -- unitcontrollers crees, pour inspection
     orders = {},           -- ordres recus : { kind, unit_id, x, z }
+    planners = {},         -- script_ai_planner crees, pour inspection
 }
 
 function out(msg)
@@ -158,6 +159,44 @@ local function make_unit_controller()
     return uc
 end
 
+-- --- IA du jeu ---------------------------------------------------------------
+--
+-- `script_ai_planner` est l'IA de bataille du moteur. Le faux jeu ne la simule
+-- pas : il note seulement quelles unites lui sont confiees et quand elles sont
+-- rendues, ce qui suffit a verifier que toutes les voies d'arret la defont.
+
+script_unit = {
+    new = function(self, unit)
+        return { unit = unit, id = unit.id }
+    end,
+}
+
+script_ai_planner = {
+    new = function(self, name, sunits, debug)
+        local planner = {
+            name = name,
+            sunits = sunits,
+            released = false,
+            add_sunits = function(self, more)
+                for index = 1, #more do
+                    self.sunits[#self.sunits + 1] = more[index]
+                end
+                FAKE.orders[#FAKE.orders + 1] = { kind = "delegate", unit_id = tostring(#more) }
+                return true
+            end,
+            release = function(self)
+                self.released = true
+                FAKE.orders[#FAKE.orders + 1] = { kind = "reclaim" }
+                return true
+            end,
+            ensure_units_are_released = function(self) return true end,
+        }
+        FAKE.planners[#FAKE.planners + 1] = planner
+        FAKE.orders[#FAKE.orders + 1] = { kind = "delegate", unit_id = tostring(#sunits) }
+        return planner
+    end,
+}
+
 -- --- battle_manager ---------------------------------------------------------
 
 local function make_army(units)
@@ -213,6 +252,10 @@ function FAKE:setup(units, enemies)
                     table.remove(FAKE.repeats, index)
                 end
             end
+        end,
+        get_scriptunit_for_unit = function(self, unit)
+            -- Le vrai jeu en tient un pour la plupart des unites.
+            return { unit = unit, id = unit.id }
         end,
         register_phase_change_callback = function(self, phase, fn)
             FAKE.phase_callbacks[phase] = fn
