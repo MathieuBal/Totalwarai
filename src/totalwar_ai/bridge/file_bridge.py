@@ -38,11 +38,13 @@ from typing import Any
 from totalwar_ai.bridge.command_models import (
     ProbeAbortCommand,
     ProbeAck,
+    ProbeAttack,
     ProbeBattleState,
     ProbeCommand,
     ProbeMessageType,
     ProbeMoveCommand,
     ProbeMoveGroupCommand,
+    ProbeOrdersCommand,
     ProbeUnitState,
 )
 from totalwar_ai.bridge.paths import BridgePaths
@@ -162,6 +164,28 @@ class FileBridge:
         """
         command = ProbeMoveGroupCommand(
             moves=tuple(moves),
+            sequence=sequence if sequence is not None else self._next_sequence,
+            release_after_ms=release_after_ms,
+        )
+        self.send_command(command)
+        return command
+
+    def send_orders(
+        self,
+        moves: Sequence[tuple[str, Vector3]] = (),
+        attacks: Sequence[ProbeAttack] = (),
+        *,
+        sequence: int | None = None,
+        release_after_ms: int = 5000,
+    ) -> ProbeOrdersCommand:
+        """Publie une manoeuvre complete : deplacements et attaques ensemble.
+
+        Les separer en deux commandes ferait perdre la premiere — le fichier est
+        un objet unique, remplace, que le Lua ne relit que toutes les 500 ms.
+        """
+        command = ProbeOrdersCommand(
+            moves=tuple(moves),
+            attacks=tuple(attacks),
             sequence=sequence if sequence is not None else self._next_sequence,
             release_after_ms=release_after_ms,
         )

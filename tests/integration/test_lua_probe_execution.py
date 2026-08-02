@@ -159,7 +159,11 @@ class Probe:
         for index in range(1, len(raw) + 1):
             entry = raw[index]
             result.append(
-                {key: entry[key] for key in ("kind", "unit_id", "x", "z") if entry[key] is not None}
+                {
+                    key: entry[key]
+                    for key in ("kind", "unit_id", "x", "z", "target_id", "forced")
+                    if entry[key] is not None
+                }
             )
         return result
 
@@ -893,7 +897,7 @@ def test_une_unite_en_echec_n_annule_pas_les_autres(bataille: Probe, workdir: Pa
     assert accuse.accepted
     # Un accuse « accepte » qui tairait l'echec serait un mensonge.
     assert accuse.detail is not None
-    assert "2 unite(s) lancee(s), 1 refusee(s)" in str(accuse.detail)
+    assert "2 ordre(s) lance(s), 1 refuse(s)" in str(accuse.detail)
     assert accuse.error is not None and "9999" in accuse.error
 
     bouges = {order["unit_id"] for order in probe.orders() if order["kind"] == "goto"}

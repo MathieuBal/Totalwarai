@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from totalwar_ai.bridge.command_models import ProbeAttack
 from totalwar_ai.domain.actions import ActionType, AgentAction
 from totalwar_ai.domain.battle_state import BattleState
 from totalwar_ai.domain.geometry import Vector3, heading_vector
@@ -31,14 +32,20 @@ DEFAULT_SPACING = 30.0
 class Translation:
     """Ce qu'une decision de l'agent devient, cote jeu."""
 
-    #: `(identifiant, destination)` prets pour `FileBridge.move_units`.
+    #: `(identifiant, destination)` prets pour `FileBridge.send_orders`.
     moves: tuple[tuple[str, Vector3], ...] = ()
+    #: Attaques pretes pour `FileBridge.send_orders`.
+    attacks: tuple[ProbeAttack, ...] = ()
     #: Actions qu'aucun ordre disponible ne sait rendre, avec leur motif.
     untranslated: tuple[tuple[ActionType, str], ...] = ()
 
     @property
     def is_empty(self) -> bool:
-        return not self.moves
+        return not self.moves and not self.attacks
+
+    @property
+    def order_count(self) -> int:
+        return len(self.moves) + len(self.attacks)
 
 
 @dataclass
@@ -60,10 +67,17 @@ class OrderTranslator:
     def translate(self, actions: tuple[AgentAction, ...], state: BattleState) -> Translation:
         """Traduit un tour de l'agent, sans jamais inventer d'equivalence."""
         moves: list[tuple[str, Vector3]] = []
+        attacks: list[ProbeAttack] = []
         untranslated: list[tuple[ActionType, str]] = []
         deja_ordonnees: set[str] = set()
 
         for action in actions:
+            if action.type in ATTACK_ACTIONS:
+                refus = self._as_attacks(action, state, deja_ordonnees, attacks)
+                if refus is not None:
+                    untranslated.append((action.type, refus))
+                continue
+
             key = self.destination_keys.get(action.type)
             if key is None:
                 if action.type is not ActionType.HOLD_POSITION:
@@ -84,7 +98,40 @@ class OrderTranslator:
                     deja_ordonnees.add(unit_id)
                     moves.append((unit_id, point))
 
-        return Translation(moves=tuple(moves), untranslated=tuple(untranslated))
+        return Translation(
+            moves=tuple(moves),
+            attacks=tuple(attacks),
+            untranslated=tuple(untranslated),
+        )
+
+    def _as_attacks(
+        self,
+        action: AgentAction,
+        state: BattleState,
+        deja_ordonnees: set[str],
+        sortie: list[ProbeAttack],
+    ) -> str | None:
+        """Traduit une action d'engagement. Renvoie le motif d'un refus.
+
+        Le corps a corps n'est force que pour les actions qui le demandent
+        explicitement : `FOCUS_FIRE` designe un tir concentre, et imposer la
+        melee a un tireur lui ferait perdre son avantage.
+        """
+        target_id = action.parameters.get("target_id")
+        if not isinstance(target_id, str) or not target_id:
+            return "parametre 'target_id' absent ou invalide"
+        if state.unit(target_id) is None:
+            return f"cible {target_id} absente de l'etat"
+
+        melee = action.type is not ActionType.FOCUS_FIRE
+        vues = 0
+        for unit_id in action.actor_ids:
+            if state.unit(unit_id) is None or unit_id in deja_ordonnees:
+                continue
+            deja_ordonnees.add(unit_id)
+            sortie.append(ProbeAttack(unit_id=unit_id, target_id=target_id, melee=melee))
+            vues += 1
+        return None if vues else "aucune unite disponible"
 
     def _spread(
         self,
@@ -120,11 +167,21 @@ class OrderTranslator:
     def _why(action_type: ActionType) -> str:
         """Pourquoi cette action n'a pas d'equivalent aujourd'hui."""
         besoins = {
-            ActionType.ATTACK_TARGET: "necessite uc:attack_unit",
-            ActionType.FOCUS_FIRE: "necessite uc:attack_unit",
-            ActionType.CHASE_ROUTING: "necessite uc:attack_unit",
             ActionType.PROTECT: "necessite une position d'interception calculee",
             ActionType.FLANK: "necessite une position de contournement calculee",
             ActionType.REORIENT_FRONT: "necessite un ordre d'orientation",
         }
         return besoins.get(action_type, "aucun ordre equivalent disponible")
+
+
+#: Actions rendues par un ordre d'attaque.
+#:
+#: Toutes designent une cible via `target_id`. Elles different par le mode :
+#: `FOCUS_FIRE` veut un tir concentre, les autres un engagement au contact.
+ATTACK_ACTIONS: frozenset[ActionType] = frozenset(
+    {
+        ActionType.ATTACK_TARGET,
+        ActionType.FOCUS_FIRE,
+        ActionType.CHASE_ROUTING,
+    }
+)

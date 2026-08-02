@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 4
+TOTALWAR_AI_PROBE_REVISION = 5
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -194,6 +194,35 @@ local function read_moves_field(text)
         end
     end
     return moves
+end
+
+--- Extrait la liste `attacks` d'une commande.
+---
+---   "attacks":[{"unit_id":"1008","target_id":"1016","melee":true}, ...]
+---
+--- Meme parti pris que `read_moves_field` : ce format est le notre, une entree
+--- incomplete est omise plutot que devinee.
+local function read_attacks_field(text)
+    local block = string.match(text, '"attacks"%s*:%s*(%b[])')
+    if not block then
+        return {}
+    end
+    local attacks = {}
+    for entry in string.gmatch(block, "%b{}") do
+        local unit_id = read_string_field(entry, "unit_id")
+        local target_id = read_string_field(entry, "target_id")
+        if unit_id and target_id then
+            attacks[#attacks + 1] = {
+                unit_id = unit_id,
+                target_id = target_id,
+                -- `melee` absent vaut faux : forcer le corps a corps est une
+                -- decision, pas un defaut. Une unite de tir a qui on l'impose
+                -- perdrait son avantage.
+                melee = string.match(entry, '"melee"%s*:%s*true') ~= nil,
+            }
+        end
+    end
+    return attacks
 end
 
 --[[--------------------------------------------------------------------------
@@ -688,6 +717,27 @@ function PROBE:unit_identifier(unit)
 end
 
 --- Retrouve une unite alliee par son identifiant d'interface.
+--- Retrouve une unite dans n'importe quelle alliance.
+---
+--- Une cible d'attaque est adverse : la recherche limitee a notre armee, qui
+--- suffit pour donner un ordre, ne suffit pas pour designer un ennemi.
+function PROBE:find_any_unit_by_id(wanted_id)
+    local alliances = bm:alliances()
+    for a = 1, alliances:count() do
+        local armies = alliances:item(a):armies()
+        for b = 1, armies:count() do
+            local units = armies:item(b):units()
+            for index = 1, units:count() do
+                local unit = units:item(index)
+                if unit and tostring(unit:unique_ui_id()) == tostring(wanted_id) then
+                    return unit
+                end
+            end
+        end
+    end
+    return nil
+end
+
 function PROBE:find_unit_by_id(wanted_id)
     local alliance = bm:alliances():item(bm:local_alliance())
     local army = alliance:armies():item(bm:local_army())
@@ -771,6 +821,52 @@ function PROBE:start_move(unit_id, destination, release_after_ms)
     return true, nil
 end
 
+--- Lance une unite a l'attaque d'une autre. Ne journalise aucun accuse.
+---
+--- `uc:melee(true)` force le corps a corps : sans lui, une unite de tir tire
+--- sur sa cible au lieu de la charger, ce qui est le plus souvent souhaitable.
+--- C'est donc a l'appelant de decider, jamais un defaut.
+function PROBE:start_attack(unit_id, target_id, force_melee, release_after_ms)
+    local unit, army = self:find_unit_by_id(unit_id)
+    if not unit then
+        return false, "unite introuvable"
+    end
+    if not unit:is_controllable() then
+        return false, "unite non controlable"
+    end
+
+    local target = self:find_any_unit_by_id(target_id)
+    if not target then
+        return false, "cible introuvable : " .. tostring(target_id)
+    end
+    local ok_valid, valid = pcall(function() return target:is_valid_target() end)
+    if ok_valid and not valid then
+        return false, "cible deja hors de combat"
+    end
+
+    local uc = army:create_unit_controller()
+    if not uc then
+        return false, "creation du unitcontroller impossible"
+    end
+    if not pcall(function() uc:add_units(unit) end) then
+        return false, "uc:add_units a echoue (groupe verrouille ?)"
+    end
+
+    if force_melee then
+        -- Facultatif : son absence ne doit pas faire echouer l'attaque.
+        pcall(function() uc:melee(true) end)
+    end
+
+    local ordered = pcall(function() uc:attack_unit(target, true, true) end)
+    if not ordered then
+        uc:release_control()
+        return false, "uc:attack_unit a echoue"
+    end
+
+    self.controlled[unit_id] = { uc = uc, release_at_ms = bm:time_elapsed_ms() + release_after_ms }
+    return true, nil
+end
+
 --- Programme la restitution du controle, quoi qu'il arrive ensuite.
 function PROBE:schedule_release(sequence, unit_id, release_after_ms)
     bm:callback(function()
@@ -798,45 +894,63 @@ end
     Boucle de lecture des commandes
 ----------------------------------------------------------------------------]]
 
---- Deplace plusieurs unites en une seule commande.
+--- Execute une commande portant deplacements et attaques.
 ---
 --- Un ordre par unite obligerait a autant d'allers-retours par fichier, chacun
---- avec son numero de sequence et son accuse : deplacer vingt unites prendrait
---- vingt secondes. Une armee se deploie d'un bloc ou pas du tout.
+--- avec son numero de sequence et son accuse : commander vingt unites prendrait
+--- vingt secondes. Une armee manoeuvre d'un bloc ou pas du tout.
 ---
 --- Chaque unite recoit son propre `unitcontroller` : c'est ce qui permet des
---- destinations differentes, donc une formation, et non un troupeau.
+--- destinations et des cibles differentes, donc une manoeuvre et non un troupeau.
 ---
---- Une unite en echec n'annule pas les autres. L'accuse recapitule combien ont
---- ete prises et combien ont ete refusees, avec le motif du premier refus —
+--- Une unite en echec n'annule pas les autres. L'accuse recapitule combien
+--- d'ordres ont ete lances et combien refuses, avec le motif du premier refus —
 --- un accuse « accepte » qui tairait dix-neuf echecs serait un mensonge.
-function PROBE:execute_group_move(sequence, content, release_after_ms)
+function PROBE:execute_orders(sequence, content, release_after_ms)
     local moves = read_moves_field(content)
-    if #moves == 0 then
-        self:emit_ack(sequence, "rejected", "aucun deplacement dans la commande")
+    local attacks = read_attacks_field(content)
+    if #moves == 0 and #attacks == 0 then
+        self:emit_ack(sequence, "rejected", "aucun ordre dans la commande")
         return
     end
 
     local lances, refuses, premier_refus = 0, 0, nil
-    for index = 1, #moves do
-        local move = moves[index]
-        local ok, motif = self:start_move(move.unit_id, move.destination, release_after_ms)
+
+    -- `ok, motif` sont recueillis dans des variables avant l'appel : un appel
+    -- multi-valeurs place ailleurs qu'en dernier argument serait tronque a sa
+    -- premiere valeur, et le motif du refus deviendrait l'identifiant.
+    local function compter(unit_id, ok, motif)
         if ok then
             lances = lances + 1
-            self:schedule_release(sequence, move.unit_id, release_after_ms)
+            self:schedule_release(sequence, unit_id, release_after_ms)
         else
             refuses = refuses + 1
-            premier_refus = premier_refus or (tostring(move.unit_id) .. " : " .. tostring(motif))
+            premier_refus = premier_refus or (tostring(unit_id) .. " : " .. tostring(motif))
         end
     end
 
-    local resume = tostring(lances) .. " unite(s) lancee(s), " .. tostring(refuses) .. " refusee(s)"
+    for index = 1, #moves do
+        local move = moves[index]
+        local ok, motif = self:start_move(move.unit_id, move.destination, release_after_ms)
+        compter(move.unit_id, ok, motif)
+    end
+    for index = 1, #attacks do
+        local attack = attacks[index]
+        local ok, motif =
+            self:start_attack(attack.unit_id, attack.target_id, attack.melee, release_after_ms)
+        compter(attack.unit_id, ok, motif)
+    end
+
+    local resume = tostring(lances) .. " ordre(s) lance(s), " .. tostring(refuses) .. " refuse(s)"
     if lances == 0 then
         self:emit_ack(sequence, "rejected", premier_refus, resume)
         return
     end
     self:emit_ack(sequence, "accepted", premier_refus, resume)
-    self:log("deplacement de groupe : " .. resume)
+    self:log(
+        "manoeuvre : " .. tostring(#moves) .. " deplacement(s), "
+            .. tostring(#attacks) .. " attaque(s) — " .. resume
+    )
 end
 
 --- Neutralise une commande laissee par une partie precedente.
@@ -914,9 +1028,13 @@ function PROBE:process_command_file()
         return
     end
 
-    if command_type == "move_units" then
+    -- `orders` porte deplacements et attaques dans un seul message. Deux
+    -- commandes successives se perdraient : le fichier est un objet unique,
+    -- remplace a chaque ecriture, et le Lua ne le relit que toutes les 500 ms.
+    -- `move_units` reste accepte : un pack plus recent que Python doit marcher.
+    if command_type == "orders" or command_type == "move_units" then
         local ok_group, err_group = pcall(function()
-            self:execute_group_move(
+            self:execute_orders(
                 sequence,
                 content,
                 read_number_field(content, "release_after_ms") or 5000

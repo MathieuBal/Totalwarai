@@ -121,6 +121,20 @@ local function make_unit_controller()
             end
             return true
         end,
+        melee = function(self, forced)
+            FAKE.orders[#FAKE.orders + 1] = { kind = "melee", forced = forced }
+            return true
+        end,
+        attack_unit = function(self, target, primary, run)
+            for index = 1, #self.units do
+                FAKE.orders[#FAKE.orders + 1] = {
+                    kind = "attack",
+                    unit_id = self.units[index].id,
+                    target_id = target.id,
+                }
+            end
+            return true
+        end,
         release_control = function(self)
             self.released = true
             FAKE.orders[#FAKE.orders + 1] = { kind = "release" }

@@ -59,6 +59,8 @@ class ProbeMessageType(StrEnum):
     MOVE_UNIT = "move_unit"
     #: Deplacement groupe : une armee se deploie d'un bloc ou pas du tout.
     MOVE_UNITS = "move_units"
+    #: Manoeuvre complete : deplacements et attaques dans un seul message.
+    ORDERS = "orders"
     ACTION_RESULT = "action_result"
     #: Ordre d'arret : le Lua libere toutes ses unites et cesse de lire.
     ABORT = "abort"
@@ -481,6 +483,98 @@ class ProbeMoveGroupCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ProbeAttack:
+    """Une unite lancee sur une autre."""
+
+    unit_id: str
+    target_id: str
+    #: Forcer le corps a corps. Sans cela une unite de tir tire sur sa cible au
+    #: lieu de la charger, ce qui est le plus souvent souhaitable : imposer la
+    #: melee a un tireur lui ferait perdre son avantage.
+    melee: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"unit_id": self.unit_id, "target_id": self.target_id, "melee": self.melee}
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeOrdersCommand:
+    """Une manoeuvre complete : deplacements et attaques, en un seul message.
+
+    **Pourquoi un seul message.** Le fichier de commande est un objet unique,
+    remplace a chaque ecriture, et le Lua ne le relit que toutes les 500 ms.
+    Publier les deplacements puis les attaques ferait perdre les premiers, sans
+    que rien ne le signale.
+    """
+
+    moves: tuple[tuple[str, Vector3], ...] = ()
+    attacks: tuple[ProbeAttack, ...] = ()
+    sequence: int = 1
+    release_after_ms: int = 5000
+    protocol_version: str = PROTOCOL_VERSION
+
+    def __post_init__(self) -> None:
+        if not self.moves and not self.attacks:
+            raise SchemaError("Une manoeuvre doit porter au moins un ordre")
+        if self.sequence < 1:
+            raise SchemaError("Le numero de sequence doit etre superieur ou egal a 1")
+        if any(not unit_id for unit_id, _ in self.moves):
+            raise SchemaError("Chaque deplacement doit designer une unite")
+        if any(not item.unit_id or not item.target_id for item in self.attacks):
+            raise SchemaError("Chaque attaque doit designer une unite et une cible")
+
+    @property
+    def order_count(self) -> int:
+        return len(self.moves) + len(self.attacks)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "protocol_version": self.protocol_version,
+            "type": ProbeMessageType.ORDERS.value,
+            "sequence": self.sequence,
+            "release_after_ms": self.release_after_ms,
+            "moves": [
+                {"unit_id": unit_id, "destination": jsonable_vector(destination)}
+                for unit_id, destination in self.moves
+            ],
+            "attacks": [attack.to_dict() for attack in self.attacks],
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> ProbeOrdersCommand:
+        data = require_mapping(raw, "ProbeOrdersCommand")
+        version = as_str(data, "protocol_version")
+        check_version(version)
+        _require_type(data, ProbeMessageType.ORDERS)
+        moves = []
+        for item in _as_list(data, "moves"):
+            entry = require_mapping(item, "move")
+            moves.append(
+                (
+                    as_str(entry, "unit_id"),
+                    Vector3.from_dict(require_mapping(entry.get("destination"), "destination")),
+                )
+            )
+        attacks = []
+        for item in _as_list(data, "attacks"):
+            entry = require_mapping(item, "attack")
+            attacks.append(
+                ProbeAttack(
+                    unit_id=as_str(entry, "unit_id"),
+                    target_id=as_str(entry, "target_id"),
+                    melee=as_bool(entry, "melee", default=False),
+                )
+            )
+        return cls(
+            moves=tuple(moves),
+            attacks=tuple(attacks),
+            sequence=as_int(data, "sequence", default=1),
+            release_after_ms=as_int(data, "release_after_ms", default=5000),
+            protocol_version=version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ProbeAbortCommand:
     """Arret d'urgence : le Lua libere tout et cesse de lire les commandes."""
 
@@ -550,7 +644,7 @@ class ProbeAck:
         )
 
 
-ProbeCommand = ProbeMoveCommand | ProbeMoveGroupCommand | ProbeAbortCommand
+ProbeCommand = ProbeMoveCommand | ProbeMoveGroupCommand | ProbeOrdersCommand | ProbeAbortCommand
 
 
 def decode_command(raw: Any) -> ProbeCommand:
@@ -561,6 +655,8 @@ def decode_command(raw: Any) -> ProbeCommand:
         return ProbeMoveCommand.from_dict(data)
     if message_type == ProbeMessageType.MOVE_UNITS.value:
         return ProbeMoveGroupCommand.from_dict(data)
+    if message_type == ProbeMessageType.ORDERS.value:
+        return ProbeOrdersCommand.from_dict(data)
     if message_type == ProbeMessageType.ABORT.value:
         return ProbeAbortCommand.from_dict(data)
     raise SchemaError(f"Type de commande inconnu : {message_type!r}")

@@ -99,21 +99,23 @@ def test_une_unite_absente_de_l_etat_est_ignoree() -> None:
 # --- actions sans equivalent -------------------------------------------------
 
 
-def test_une_attaque_n_est_pas_traduite_en_deplacement() -> None:
-    """Avancer « vers » une cible n'est pas l'attaquer.
+def test_une_protection_n_est_pas_traduite_en_deplacement() -> None:
+    """Avancer « vers » un protege n'est pas l'escorter.
 
-    L'unite avancerait sans engager, et le compte rendu affirmerait qu'elle
-    attaque. Mieux vaut declarer l'action non rendue.
+    L'unite se rendrait a sa position au lieu d'intercepter la menace, et le
+    compte rendu affirmerait qu'elle protege. Mieux vaut declarer l'action non
+    rendue tant que la position d'interception n'est pas calculee.
     """
-    attaque = AgentAction(
-        type=ActionType.ATTACK_TARGET,
+    protection = AgentAction(
+        type=ActionType.PROTECT,
         actor_ids=("a",),
-        parameters={"target_id": "e1"},
+        parameters={"protected_ids": ["b"]},
     )
-    resultat = OrderTranslator().translate((attaque,), _etat("a"))
+    resultat = OrderTranslator().translate((protection,), _etat("a", "b"))
 
     assert not resultat.moves
-    assert resultat.untranslated == ((ActionType.ATTACK_TARGET, "necessite uc:attack_unit"),)
+    assert resultat.untranslated[0][0] is ActionType.PROTECT
+    assert "interception" in resultat.untranslated[0][1]
 
 
 def test_tenir_la_position_ne_produit_aucun_ordre_et_n_est_pas_un_manque() -> None:
@@ -171,3 +173,92 @@ def test_la_premiere_action_gagne_pour_une_unite_donnee() -> None:
     resultat = OrderTranslator().translate((prioritaire, ensuite), _etat("a"))
 
     assert resultat.moves == (("a", Vector3(1.0, 0.0, 1.0)),)
+
+
+# --- engagement --------------------------------------------------------------
+
+
+def _cible(state_ids: tuple[str, ...], target: str) -> BattleState:
+    return BattleState(
+        battle_id="t",
+        units=(
+            *(
+                UnitState(id=unit_id, side=Side.ALLY, position=Vector3(0.0, 0.0, 0.0))
+                for unit_id in state_ids
+            ),
+            UnitState(id=target, side=Side.ENEMY, position=Vector3(0.0, 0.0, 100.0)),
+        ),
+    )
+
+
+def test_une_attaque_devient_un_ordre_d_engagement() -> None:
+    """Le manque constate en bataille : l'agent decidait sans pouvoir agir."""
+    action = AgentAction(
+        type=ActionType.ATTACK_TARGET,
+        actor_ids=("a", "b"),
+        parameters={"target_id": "e1"},
+    )
+    resultat = OrderTranslator().translate((action,), _cible(("a", "b"), "e1"))
+
+    assert not resultat.untranslated
+    assert [(item.unit_id, item.target_id) for item in resultat.attacks] == [
+        ("a", "e1"),
+        ("b", "e1"),
+    ]
+
+
+def test_le_tir_concentre_ne_force_pas_la_melee() -> None:
+    """Imposer le corps a corps a un tireur lui ferait perdre son avantage."""
+    tir = AgentAction(type=ActionType.FOCUS_FIRE, actor_ids=("a",), parameters={"target_id": "e1"})
+    charge = AgentAction(
+        type=ActionType.ATTACK_TARGET, actor_ids=("b",), parameters={"target_id": "e1"}
+    )
+    resultat = OrderTranslator().translate((tir, charge), _cible(("a", "b"), "e1"))
+
+    par_unite = {item.unit_id: item.melee for item in resultat.attacks}
+    assert par_unite == {"a": False, "b": True}
+
+
+def test_une_cible_disparue_est_signalee() -> None:
+    """Attaquer une unite morte gaspillerait l'ordre, sans que rien ne le dise."""
+    action = AgentAction(
+        type=ActionType.ATTACK_TARGET, actor_ids=("a",), parameters={"target_id": "fantome"}
+    )
+    resultat = OrderTranslator().translate((action,), _cible(("a",), "e1"))
+
+    assert not resultat.attacks
+    assert resultat.untranslated[0][0] is ActionType.ATTACK_TARGET
+    assert "fantome" in resultat.untranslated[0][1]
+
+
+def test_une_unite_ne_recoit_pas_a_la_fois_un_deplacement_et_une_attaque() -> None:
+    """Les deux ordres se contrediraient : le premier emis gagne."""
+    attaque = AgentAction(
+        type=ActionType.ATTACK_TARGET, actor_ids=("a",), parameters={"target_id": "e1"}
+    )
+    repli = AgentAction(
+        type=ActionType.RETREAT,
+        actor_ids=("a",),
+        parameters={"destination": Vector3(0.0, 0.0, -50.0)},
+    )
+    resultat = OrderTranslator().translate((attaque, repli), _cible(("a",), "e1"))
+
+    assert len(resultat.attacks) == 1
+    assert not resultat.moves
+
+
+def test_deplacements_et_attaques_coexistent_dans_un_meme_tour() -> None:
+    """Une manoeuvre reelle melange les deux : les separer perdrait la moitie."""
+    attaque = AgentAction(
+        type=ActionType.ATTACK_TARGET, actor_ids=("a",), parameters={"target_id": "e1"}
+    )
+    repli = AgentAction(
+        type=ActionType.RETREAT,
+        actor_ids=("b",),
+        parameters={"destination": Vector3(0.0, 0.0, -50.0)},
+    )
+    resultat = OrderTranslator().translate((attaque, repli), _cible(("a", "b"), "e1"))
+
+    assert resultat.order_count == 2
+    assert [item.unit_id for item in resultat.attacks] == ["a"]
+    assert [unit_id for unit_id, _ in resultat.moves] == ["b"]
