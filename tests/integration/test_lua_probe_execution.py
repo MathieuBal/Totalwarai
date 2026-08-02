@@ -92,6 +92,22 @@ class Probe:
             table[index] = self.fake.make_unit(self.fake, unit_id, unit_type, x, z, controllable)
         return table
 
+    def set_men(self, unit_id: str, men: int) -> None:
+        """Fixe l'effectif d'une unite du faux jeu.
+
+        Le seigneur n'a qu'une entite, la troupe en a plusieurs : c'est ce qui
+        permet de verifier que le recensement observe bien les deux.
+        """
+        self.runtime.execute(
+            "local units = bm:alliances():item(1):armies():item(1):units()\n"
+            "for i = 1, units:count() do\n"
+            "  local u = units:item(i)\n"
+            f"  if tostring(u:unique_ui_id()) == {json.dumps(unit_id)} then\n"
+            f"    u.men = {men}\n    u.men_alive = {men}\n"
+            "  end\n"
+            "end\n"
+        )
+
     def kill_unit(self, unit_id: str) -> None:
         """Rend une unite invalide, comme le jeu le fait pour une unite detruite."""
         self.runtime.execute(
@@ -608,7 +624,7 @@ def test_le_recensement_distingue_present_absent_et_en_erreur(probe: Probe) -> N
     """
     probe.advance(1500)
 
-    assert probe.grep("recensement des accesseurs d'unite")
+    assert probe.grep("recensement des accesseurs")
     # Present et fonctionnel.
     assert probe.grep("number_of_men_alive : number 64")
     assert probe.grep("unary_hitpoints : number 0.800")
@@ -828,3 +844,119 @@ def test_sans_ecriture_le_journal_recoit_tout(tmp_path: Path) -> None:
     probe = Probe(tmp_path, units=[("1001", "unite", 0.0, 0.0, True)])
     probe.advance(30_000)
     assert len(probe.grep("STATE ")) > 20
+
+
+# --- deplacement de groupe ---------------------------------------------------
+
+
+def test_toute_l_armee_bouge_en_une_commande(bataille: Probe, workdir: Path) -> None:
+    """Une armee se deploie d'un bloc, pas une unite par seconde."""
+    probe, bridge = bataille, FileBridge.open(workdir)
+    probe.advance(2000)
+
+    commande = bridge.move_units(
+        [
+            ("1001", Vector3(0.0, 0.0, -300.0)),
+            ("1002", Vector3(20.0, 0.0, -300.0)),
+        ]
+    )
+    probe.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None and accuse.accepted
+
+    deplacements = [order for order in probe.orders() if order["kind"] == "goto"]
+    assert {order["unit_id"] for order in deplacements} == {"1001", "1002"}
+    # Chaque unite garde sa destination : c'est une formation, pas un troupeau.
+    par_unite = {order["unit_id"]: order for order in deplacements}
+    assert par_unite["1001"]["x"] == pytest.approx(0.0)
+    assert par_unite["1002"]["x"] == pytest.approx(20.0)
+    assert par_unite["1001"]["z"] == pytest.approx(-300.0)
+
+
+def test_une_unite_en_echec_n_annule_pas_les_autres(bataille: Probe, workdir: Path) -> None:
+    """Dix-neuf unites ne doivent pas rester immobiles a cause d'une vingtieme."""
+    probe, bridge = bataille, FileBridge.open(workdir)
+    probe.advance(2000)
+
+    commande = bridge.move_units(
+        [
+            ("1001", Vector3(0.0, 0.0, -300.0)),
+            ("9999", Vector3(0.0, 0.0, -300.0)),  # n'existe pas
+            ("1002", Vector3(20.0, 0.0, -300.0)),
+        ]
+    )
+    probe.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None
+    assert accuse.accepted
+    # Un accuse « accepte » qui tairait l'echec serait un mensonge.
+    assert accuse.detail is not None
+    assert "2 unite(s) lancee(s), 1 refusee(s)" in str(accuse.detail)
+    assert accuse.error is not None and "9999" in accuse.error
+
+    bouges = {order["unit_id"] for order in probe.orders() if order["kind"] == "goto"}
+    assert bouges == {"1001", "1002"}
+
+
+def test_un_groupe_entierement_en_echec_est_refuse(bataille: Probe, workdir: Path) -> None:
+    probe, bridge = bataille, FileBridge.open(workdir)
+    probe.advance(2000)
+
+    commande = bridge.move_units([("9998", Vector3(0.0, 0.0, 0.0))])
+    probe.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None
+    assert not accuse.accepted
+
+
+def test_le_groupe_rend_le_controle_de_chaque_unite(bataille: Probe, workdir: Path) -> None:
+    """La restitution vaut pour toutes les unites prises, pas seulement la premiere."""
+    probe, bridge = bataille, FileBridge.open(workdir)
+    probe.advance(2000)
+
+    bridge.move_units(
+        [("1001", Vector3(0.0, 0.0, -300.0)), ("1002", Vector3(20.0, 0.0, -300.0))],
+        release_after_ms=1000,
+    )
+    probe.advance(3000)
+
+    liberations = [order for order in probe.orders() if order["kind"] == "release"]
+    assert len(liberations) >= 2
+    assert len(probe.grep("controle rendu")) >= 2
+
+
+def test_le_recensement_observe_aussi_une_unite_de_troupe(workdir: Path) -> None:
+    """Recenser sur le seigneur seul ne dit rien des vraies unites.
+
+    La premiere unite d'une armee est le seigneur : une figurine unique, ou
+    `number_of_men_alive` vaut 1 et `unary_hitpoints` ne permet pas de savoir si
+    ce nombre designe une fraction d'unite ou une sante individuelle. Il faut
+    donc recenser aussi une unite de plusieurs hommes.
+    """
+    probe = Probe(
+        workdir,
+        units=[
+            ("1001", "wh3_dlc20_chs_cha_daemon_prince_mnur", 0.0, 0.0, True),
+            ("1002", "wh3_main_nur_inf_plaguebearers_1", 20.0, 0.0, True),
+        ],
+    )
+    probe.set_men("1001", 1)
+    probe.set_men("1002", 80)
+    probe.advance(1500)
+
+    assert probe.grep("premiere unite : wh3_dlc20_chs_cha_daemon_prince_mnur")
+    assert probe.grep("unite de troupe : wh3_main_nur_inf_plaguebearers_1")
+    assert probe.grep("number_of_men_alive : number 1")
+    assert probe.grep("number_of_men_alive : number 80")
+
+
+def test_une_armee_sans_troupe_le_signale(workdir: Path) -> None:
+    """Ne pas taire un recensement partiel : il expliquerait un chiffre bizarre."""
+    probe = Probe(workdir, units=[("1001", "seigneur", 0.0, 0.0, True)])
+    probe.set_men("1001", 1)
+    probe.advance(1500)
+
+    assert probe.grep("aucune unite de plus d'une entite trouvee")

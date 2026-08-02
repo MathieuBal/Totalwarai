@@ -42,6 +42,7 @@ from totalwar_ai.bridge.command_models import (
     ProbeCommand,
     ProbeMessageType,
     ProbeMoveCommand,
+    ProbeMoveGroupCommand,
     ProbeUnitState,
 )
 from totalwar_ai.bridge.paths import BridgePaths
@@ -141,6 +142,26 @@ class FileBridge:
         command = ProbeMoveCommand(
             unit_id=unit_id,
             destination=destination,
+            sequence=sequence if sequence is not None else self._next_sequence,
+            release_after_ms=release_after_ms,
+        )
+        self.send_command(command)
+        return command
+
+    def move_units(
+        self,
+        moves: Sequence[tuple[str, Vector3]],
+        *,
+        sequence: int | None = None,
+        release_after_ms: int = 5000,
+    ) -> ProbeMoveGroupCommand:
+        """Deplace plusieurs unites en une seule commande.
+
+        Une armee se deploie d'un bloc : vingt ordres separes prendraient vingt
+        allers-retours, et les unites arriveraient en file indienne.
+        """
+        command = ProbeMoveGroupCommand(
+            moves=tuple(moves),
             sequence=sequence if sequence is not None else self._next_sequence,
             release_after_ms=release_after_ms,
         )

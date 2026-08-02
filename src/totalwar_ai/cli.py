@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from collections.abc import Sequence
@@ -20,7 +21,7 @@ from pathlib import Path
 from totalwar_ai import __version__
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
 from totalwar_ai.bridge.file_bridge import FileBridge, summarise
-from totalwar_ai.bridge.paths import BridgeDirectoryNotFoundError
+from totalwar_ai.bridge.paths import EXPECTED_PROBE_REVISION, BridgeDirectoryNotFoundError
 from totalwar_ai.config import AppConfig, ConfigError, load_config
 from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.learning.checkpoints import CheckpointStore
@@ -412,36 +413,46 @@ def _print_game_log(bridge: FileBridge, limit: int) -> int:
         print(f"\n  ... et {len(routine)} ligne(s) d'etat, masquees ici.")
         print(f"  Derniere : {routine[-1].strip()}")
 
-    # Ce que le journal ne contient PAS est souvent l'information utile.
-    for marqueur, message in _MARQUEURS_DE_VERSION:
-        if not any(marqueur in ligne for ligne in lignes):
-            print(f"\n{message}")
-            break
+    _signaler_version(lignes)
     return 0
 
 
-#: Marqueurs attendus dans un journal, du plus ancien au plus recent.
-#:
-#: Leur absence date le script embarque dans le pack. C'est le diagnostic le
-#: plus frequent de ce projet : un pack non reconstruit apres modification.
-_MARQUEURS_DE_VERSION: tuple[tuple[str, str], ...] = (
-    (
-        "diagnostic des entrees-sorties",
-        "Ce journal ne contient pas le diagnostic des entrees-sorties : le pack "
-        "embarque une version anterieure du script. Le reconstruire.",
-    ),
-    (
-        "recensement des accesseurs",
-        "Ce journal ne contient pas le recensement des accesseurs : le pack "
-        "embarque une version anterieure du script. Le reconstruire.",
-    ),
-    (
-        "BATTLE phase",
-        "Ce journal ne contient aucune ligne `BATTLE` : le pack embarque une "
-        "version anterieure a l'observation de la bataille entiere. "
-        "Le reconstruire.",
-    ),
-)
+def _signaler_version(lignes: Sequence[str]) -> None:
+    """Dit si le pack embarque bien la derniere version du script.
+
+    C'est le diagnostic le plus frequent de ce projet — quatre essais en
+    bataille perdus faute d'un pack reconstruit — et rien ne le disait.
+    """
+    revision = _revision_du_journal(lignes)
+    if revision is None:
+        print(
+            "\nCe journal n'annonce aucune revision de script : le pack embarque "
+            f"une version anterieure. Reconstruire avec la revision {EXPECTED_PROBE_REVISION}."
+        )
+        return
+    if revision < EXPECTED_PROBE_REVISION:
+        print(
+            f"\nPack en revision {revision}, alors que le depot est en "
+            f"{EXPECTED_PROBE_REVISION} : reconstruire le pack."
+        )
+        return
+    if revision > EXPECTED_PROBE_REVISION:
+        print(
+            f"\nPack en revision {revision}, plus recente que ce Python "
+            f"({EXPECTED_PROBE_REVISION}) : mettre a jour le paquet Python."
+        )
+        return
+    print(f"\nPack a jour (revision {revision}).")
+
+
+def _revision_du_journal(lignes: Sequence[str]) -> int | None:
+    """Revision annoncee par la sonde, en ne gardant que la plus recente."""
+    trouvees = [
+        int(found.group(1))
+        for ligne in lignes
+        if (found := re.search(r"revision (\d+)\)", ligne)) is not None
+    ]
+    return trouvees[-1] if trouvees else None
 
 
 def _est_routinier(ligne: str) -> bool:

@@ -27,11 +27,25 @@
         - une commande deja traitee n'est jamais rejouee.
 ------------------------------------------------------------------------------]]
 
+-- Numero de revision du script, incremente a chaque modification de ce fichier.
+--
+-- Le pack doit etre reconstruit apres toute modification, et l'oubli est le
+-- diagnostic le plus frequent de ce projet : quatre essais en bataille y sont
+-- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
+-- celui du depot — la question « mon pack est-il a jour ? » se repond alors
+-- sans avoir a la poser.
+TOTALWAR_AI_PROBE_REVISION = 3
+
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
 -- bataille) et quoi qu'il advienne ensuite. Son absence signifie que le jeu
 -- n'a pas trouve le fichier — pas que la sonde a echoue.
-out("[totalwar_ai] === fichier charge (sonde v0.1.0) ===")
+
+out(
+    "[totalwar_ai] === fichier charge (sonde v0.1.0, revision "
+        .. TOTALWAR_AI_PROBE_REVISION
+        .. ") ==="
+)
 
 -- Le meme fichier peut etre place a deux emplacements dans le pack, par
 -- prudence. Sans cette garde, il tournerait en double.
@@ -156,6 +170,30 @@ local function read_vector_field(text, key)
         return nil -- l'altitude peut manquer, pas le plan du terrain
     end
     return { x = x, y = y or 0, z = z }
+end
+
+--- Extrait la liste `moves` d'une commande de groupe.
+---
+--- Forme attendue, produite par Python :
+---   "moves":[{"unit_id":"1001","destination":{"x":1,"y":2,"z":3}}, ...]
+---
+--- On decoupe sur les objets equilibres plutot que d'ecrire un analyseur JSON :
+--- ce format est le notre, il ne varie pas, et un analyseur complet serait plus
+--- de code a se tromper. Une entree incomplete est **omise**, jamais devinee.
+local function read_moves_field(text)
+    local block = string.match(text, '"moves"%s*:%s*(%b[])')
+    if not block then
+        return {}
+    end
+    local moves = {}
+    for entry in string.gmatch(block, "%b{}") do
+        local unit_id = read_string_field(entry, "unit_id")
+        local destination = read_vector_field(entry, "destination")
+        if unit_id and destination then
+            moves[#moves + 1] = { unit_id = unit_id, destination = destination }
+        end
+    end
+    return moves
 end
 
 --[[--------------------------------------------------------------------------
@@ -531,8 +569,11 @@ local function describe(value)
 end
 
 --- Journalise, pour une unite, les accesseurs disponibles et leur valeur.
-function PROBE:census_unit_accessors(unit)
-    self:log("--- recensement des accesseurs d'unite ---")
+function PROBE:census_unit_accessors(unit, label)
+    self:log(
+        "--- recensement des accesseurs (" .. tostring(label or "?") .. " : "
+            .. tostring(unit:type()) .. ") ---"
+    )
     local disponibles = {}
     for index = 1, #UNIT_ACCESSORS do
         local name = UNIT_ACCESSORS[index]
@@ -610,6 +651,26 @@ function PROBE:census_alliances()
     self:log("--- fin du recensement ---")
 end
 
+--- Premiere unite alliee comptant plus d'une entite.
+---
+--- Sert au recensement : le seigneur, figurine unique, ne dit rien de ce que
+--- valent `number_of_men_alive` et `unary_hitpoints` sur une vraie unite.
+function PROBE:find_multi_entity_unit()
+    local alliance = bm:alliances():item(bm:local_alliance())
+    local army = alliance:armies():item(bm:local_army())
+    local units = army:units()
+    for index = 1, units:count() do
+        local unit = units:item(index)
+        if unit then
+            local ok, men = pcall(function() return unit:number_of_men_alive() end)
+            if ok and type(men) == "number" and men > 1 then
+                return unit
+            end
+        end
+    end
+    return nil
+end
+
 function PROBE:unit_position(unit)
     local position = unit:position()
     return {
@@ -672,27 +733,27 @@ end
     Execution d'une commande
 ----------------------------------------------------------------------------]]
 
-function PROBE:execute_move(sequence, unit_id, destination, release_after_ms)
+--- Prend une unite et lui donne sa destination. Ne journalise aucun accuse :
+--- l'appelant sait s'il traite une unite seule ou tout un groupe.
+---
+--- Renvoie `true`, ou `false` et le motif du refus.
+function PROBE:start_move(unit_id, destination, release_after_ms)
     local unit, army = self:find_unit_by_id(unit_id)
     if not unit then
-        self:emit_ack(sequence, "rejected", "unite introuvable : " .. tostring(unit_id))
-        return
+        return false, "unite introuvable"
     end
     if not unit:is_controllable() then
-        self:emit_ack(sequence, "rejected", "unite non controlable : " .. tostring(unit_id))
-        return
+        return false, "unite non controlable"
     end
 
     local uc = army:create_unit_controller()
     if not uc then
-        self:emit_ack(sequence, "rejected", "creation du unitcontroller impossible")
-        return
+        return false, "creation du unitcontroller impossible"
     end
 
     local added = pcall(function() uc:add_units(unit) end)
     if not added then
-        self:emit_ack(sequence, "rejected", "uc:add_units a echoue (groupe verrouille ?)")
-        return
+        return false, "uc:add_units a echoue (groupe verrouille ?)"
     end
 
     local moved = pcall(function()
@@ -700,27 +761,80 @@ function PROBE:execute_move(sequence, unit_id, destination, release_after_ms)
     end)
     if not moved then
         uc:release_control()
-        self:emit_ack(sequence, "rejected", "uc:goto_location a echoue")
-        return
+        return false, "uc:goto_location a echoue"
     end
 
     self.controlled[unit_id] = { uc = uc, release_at_ms = bm:time_elapsed_ms() + release_after_ms }
-    self:emit_ack(sequence, "accepted", nil, "deplacement lance")
-    self:log("unite " .. tostring(unit_id) .. " envoyee vers "
-        .. json_number(destination.x) .. ", " .. json_number(destination.z))
+    return true, nil
+end
 
-    -- Restitution garantie : meme si l'unite marche encore, on rend la main.
+--- Programme la restitution du controle, quoi qu'il arrive ensuite.
+function PROBE:schedule_release(sequence, unit_id, release_after_ms)
     bm:callback(function()
         if self.controlled[unit_id] then
             self:release_unit(unit_id)
             self:emit_ack(sequence, "released", nil, "controle rendu apres delai")
         end
-    end, release_after_ms, "totalwar_ai_release_" .. tostring(sequence))
+    end, release_after_ms, "totalwar_ai_release_" .. tostring(sequence) .. "_" .. tostring(unit_id))
+end
+
+function PROBE:execute_move(sequence, unit_id, destination, release_after_ms)
+    local ok, motif = self:start_move(unit_id, destination, release_after_ms)
+    if not ok then
+        self:emit_ack(sequence, "rejected", motif .. " : " .. tostring(unit_id))
+        return
+    end
+
+    self:emit_ack(sequence, "accepted", nil, "deplacement lance")
+    self:log("unite " .. tostring(unit_id) .. " envoyee vers "
+        .. json_number(destination.x) .. ", " .. json_number(destination.z))
+    self:schedule_release(sequence, unit_id, release_after_ms)
 end
 
 --[[--------------------------------------------------------------------------
     Boucle de lecture des commandes
 ----------------------------------------------------------------------------]]
+
+--- Deplace plusieurs unites en une seule commande.
+---
+--- Un ordre par unite obligerait a autant d'allers-retours par fichier, chacun
+--- avec son numero de sequence et son accuse : deplacer vingt unites prendrait
+--- vingt secondes. Une armee se deploie d'un bloc ou pas du tout.
+---
+--- Chaque unite recoit son propre `unitcontroller` : c'est ce qui permet des
+--- destinations differentes, donc une formation, et non un troupeau.
+---
+--- Une unite en echec n'annule pas les autres. L'accuse recapitule combien ont
+--- ete prises et combien ont ete refusees, avec le motif du premier refus —
+--- un accuse « accepte » qui tairait dix-neuf echecs serait un mensonge.
+function PROBE:execute_group_move(sequence, content, release_after_ms)
+    local moves = read_moves_field(content)
+    if #moves == 0 then
+        self:emit_ack(sequence, "rejected", "aucun deplacement dans la commande")
+        return
+    end
+
+    local lances, refuses, premier_refus = 0, 0, nil
+    for index = 1, #moves do
+        local move = moves[index]
+        local ok, motif = self:start_move(move.unit_id, move.destination, release_after_ms)
+        if ok then
+            lances = lances + 1
+            self:schedule_release(sequence, move.unit_id, release_after_ms)
+        else
+            refuses = refuses + 1
+            premier_refus = premier_refus or (tostring(move.unit_id) .. " : " .. tostring(motif))
+        end
+    end
+
+    local resume = tostring(lances) .. " unite(s) lancee(s), " .. tostring(refuses) .. " refusee(s)"
+    if lances == 0 then
+        self:emit_ack(sequence, "rejected", premier_refus, resume)
+        return
+    end
+    self:emit_ack(sequence, "accepted", premier_refus, resume)
+    self:log("deplacement de groupe : " .. resume)
+end
 
 --- Neutralise une commande laissee par une partie precedente.
 ---
@@ -794,6 +908,20 @@ function PROBE:process_command_file()
     if command_type == "abort" then
         self:abort("commande abort recue")
         self:emit_ack(sequence, "released", nil, "arret demande")
+        return
+    end
+
+    if command_type == "move_units" then
+        local ok_group, err_group = pcall(function()
+            self:execute_group_move(
+                sequence,
+                content,
+                read_number_field(content, "release_after_ms") or 5000
+            )
+        end)
+        if not ok_group then
+            self:emit_ack(sequence, "rejected", "erreur d'execution : " .. tostring(err_group))
+        end
         return
     end
 
@@ -928,9 +1056,26 @@ function PROBE:start()
     -- les lignes « inconnue » de la fiche de faisabilite par des faits.
     self:census_alliances()
     if unit then
-        local ok, err = pcall(function() self:census_unit_accessors(unit) end)
+        local ok, err = pcall(function() self:census_unit_accessors(unit, "premiere unite") end)
         if not ok then
             self:log("ERREUR pendant le recensement des accesseurs : " .. tostring(err))
+        end
+
+        -- La premiere unite d'une armee est le seigneur : une figurine seule.
+        -- Recenser sur elle seule a donne `number_of_men_alive = 1` et
+        -- `unary_hitpoints = 1`, d'ou l'on ne peut rien conclure sur ce que ces
+        -- nombres signifient pour une unite de quatre-vingts hommes. On recense
+        -- donc aussi une unite de troupe, la seule representative.
+        local troop = self:find_multi_entity_unit()
+        if troop then
+            local ok_troop, err_troop = pcall(function()
+                self:census_unit_accessors(troop, "unite de troupe")
+            end)
+            if not ok_troop then
+                self:log("ERREUR pendant le recensement de la troupe : " .. tostring(err_troop))
+            end
+        else
+            self:log("aucune unite de plus d'une entite trouvee : recensement partiel")
         end
     end
 
