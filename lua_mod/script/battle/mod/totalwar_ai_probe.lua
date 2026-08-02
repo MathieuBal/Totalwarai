@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 2
+TOTALWAR_AI_PROBE_REVISION = 3
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -569,8 +569,11 @@ local function describe(value)
 end
 
 --- Journalise, pour une unite, les accesseurs disponibles et leur valeur.
-function PROBE:census_unit_accessors(unit)
-    self:log("--- recensement des accesseurs d'unite ---")
+function PROBE:census_unit_accessors(unit, label)
+    self:log(
+        "--- recensement des accesseurs (" .. tostring(label or "?") .. " : "
+            .. tostring(unit:type()) .. ") ---"
+    )
     local disponibles = {}
     for index = 1, #UNIT_ACCESSORS do
         local name = UNIT_ACCESSORS[index]
@@ -646,6 +649,26 @@ function PROBE:census_alliances()
         self:log("  ERREUR pendant le recensement des alliances : " .. tostring(err))
     end
     self:log("--- fin du recensement ---")
+end
+
+--- Premiere unite alliee comptant plus d'une entite.
+---
+--- Sert au recensement : le seigneur, figurine unique, ne dit rien de ce que
+--- valent `number_of_men_alive` et `unary_hitpoints` sur une vraie unite.
+function PROBE:find_multi_entity_unit()
+    local alliance = bm:alliances():item(bm:local_alliance())
+    local army = alliance:armies():item(bm:local_army())
+    local units = army:units()
+    for index = 1, units:count() do
+        local unit = units:item(index)
+        if unit then
+            local ok, men = pcall(function() return unit:number_of_men_alive() end)
+            if ok and type(men) == "number" and men > 1 then
+                return unit
+            end
+        end
+    end
+    return nil
 end
 
 function PROBE:unit_position(unit)
@@ -1033,9 +1056,26 @@ function PROBE:start()
     -- les lignes « inconnue » de la fiche de faisabilite par des faits.
     self:census_alliances()
     if unit then
-        local ok, err = pcall(function() self:census_unit_accessors(unit) end)
+        local ok, err = pcall(function() self:census_unit_accessors(unit, "premiere unite") end)
         if not ok then
             self:log("ERREUR pendant le recensement des accesseurs : " .. tostring(err))
+        end
+
+        -- La premiere unite d'une armee est le seigneur : une figurine seule.
+        -- Recenser sur elle seule a donne `number_of_men_alive = 1` et
+        -- `unary_hitpoints = 1`, d'ou l'on ne peut rien conclure sur ce que ces
+        -- nombres signifient pour une unite de quatre-vingts hommes. On recense
+        -- donc aussi une unite de troupe, la seule representative.
+        local troop = self:find_multi_entity_unit()
+        if troop then
+            local ok_troop, err_troop = pcall(function()
+                self:census_unit_accessors(troop, "unite de troupe")
+            end)
+            if not ok_troop then
+                self:log("ERREUR pendant le recensement de la troupe : " .. tostring(err_troop))
+            end
+        else
+            self:log("aucune unite de plus d'une entite trouvee : recensement partiel")
         end
     end
 

@@ -13,6 +13,7 @@ montre le raccord vers le domaine complet, une fois cette reponse obtenue.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -184,6 +185,26 @@ class ProbeUnitObservation:
         """
         return self.missile_range is not None and self.missile_range > 0.0
 
+    def _entity_ratio(self, measured: float | None) -> float:
+        """Fraction d'unite debout, du signal le plus fiable au moins fiable.
+
+        1. le compte d'hommes rapporte a l'effectif initial observe, fourni par
+           l'appelant — sans ambiguite ;
+        2. a defaut `unary_hitpoints`, dont la signification exacte sur une unite
+           de plusieurs dizaines d'hommes n'est pas etablie ;
+        3. a defaut 1, faute de mieux : supposer une unite intacte, plutot
+           qu'inventer une perte.
+
+        `effective_strength` multiplie ce facteur par la sante ; le laisser a 1
+        ferait valoir 0,5 a une unite a l'agonie, faussant tous les rapports de
+        puissance, donc le choix de posture et le ciblage.
+        """
+        if measured is not None:
+            return measured
+        if self.hitpoints is not None:
+            return self.hitpoints
+        return 1.0
+
     @classmethod
     def from_dict(cls, raw: Any) -> ProbeUnitObservation:
         data = require_mapping(raw, "ProbeUnitObservation")
@@ -205,7 +226,7 @@ class ProbeUnitObservation:
             missile_range=_optional_float(data, "missile_range"),
         )
 
-    def to_unit_state(self, side: Side) -> UnitState:
+    def to_unit_state(self, side: Side, *, entity_ratio: float | None = None) -> UnitState:
         """Traduction vers le domaine de l'agent.
 
         Le role reste `UNKNOWN` : c'est au classifieur de le deduire de la cle
@@ -234,12 +255,7 @@ class ProbeUnitObservation:
             heading=self.bearing if self.bearing is not None else 0.0,
             unit_key=self.unit_type,
             health_ratio=self.hitpoints if self.hitpoints is not None else 1.0,
-            # `number_of_men` est absent du bac a sable : impossible de calculer
-            # un vrai rapport d'effectifs. Laisser `entity_ratio` a 1 fausserait
-            # `effective_strength`, qui multiplie les deux — une unite exsangue
-            # y vaudrait encore 0,5. `unary_hitpoints` agrege la sante de toutes
-            # les entites d'une unite : c'est l'approximation la plus proche.
-            entity_ratio=self.hitpoints if self.hitpoints is not None else 1.0,
+            entity_ratio=self._entity_ratio(entity_ratio),
             is_routing=self.routing or self.shattered,
             is_engaged=self.in_melee,
             is_hidden=self.hidden,
@@ -280,14 +296,20 @@ class ProbeBattleState:
             protocol_version=version,
         )
 
-    def to_battle_state(self, battle_id: str = "live") -> BattleState:
+    def to_battle_state(
+        self,
+        battle_id: str = "live",
+        *,
+        entity_ratios: Mapping[str, float] | None = None,
+    ) -> BattleState:
         """Etat de bataille consommable par l'agent existant.
 
         Les unites mortes sont ecartees : l'agent n'a rien a decider a leur
         sujet, et les garder fausserait les barycentres et rapports de force.
         """
+        ratios = entity_ratios or {}
         units = [
-            observation.to_unit_state(side)
+            observation.to_unit_state(side, entity_ratio=ratios.get(observation.unit_id))
             for side, group in ((Side.ALLY, self.allies), (Side.ENEMY, self.enemies))
             for observation in group
             if observation.alive

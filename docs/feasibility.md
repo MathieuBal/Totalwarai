@@ -77,7 +77,7 @@ données existent et sont lisibles par un script de bataille** :
 | capacité de vol | `unit:can_fly()` | probable | **accessible** — `true` sur un prince démon, correct |
 | **moral** | `unit:unary_morale()` | inconnu | **inaccessible** — la méthode n'existe pas |
 | **fatigue** | quatre noms tentés | inconnu | **inaccessible** — `fatigue`, `unary_fatigue`, `fatigue_level` absents |
-| effectifs restants | `unit:number_of_men_alive()` | inconnu | **accessible** — `number_of_men` absent, mais `unary_hitpoints` donne 0–1 |
+| effectifs restants | `unit:number_of_men_alive()` | inconnu | **accessible** — mais `number_of_men`, l'effectif nominal, est absent : pas de denominateur (voir ci-dessous) |
 | unité en déroute | `unit:is_routing()` | inconnu | **accessible** — `false` |
 | unité brisée | `unit:is_shattered()` | inconnu | **accessible** — `false` |
 | unité au contact | `unit:is_in_melee()` | inconnu | **accessible** — `false` |
@@ -88,6 +88,35 @@ données existent et sont lisibles par un script de bataille** :
 
 Relevé par le recensement automatique de l'essai n° 6, qui appelle chaque
 accesseur candidat une fois sous `pcall` et journalise le résultat.
+
+### Le recensement de l'essai n° 6 portait sur le seigneur
+
+**Piège dont il faut se souvenir.** La première unité d'une armée est le
+seigneur — dans WARHAMMER III, une figurine unique. Les valeurs relevées
+(`number_of_men_alive = 1`, `unary_hitpoints = 1`) sont donc celles de la seule
+unité de l'armée qui ne ressemble à aucune autre. Une unité de troupe compte
+plusieurs dizaines d'hommes, et rien dans ce relevé ne dit ce que ces deux
+nombres y valent.
+
+La sonde recense désormais **deux** unités : la première rencontrée, et la
+première comptant plus d'une entité. Il faut donc lire les résultats de l'essai
+n° 6 comme portant sur un cas particulier.
+
+**Ce que cela change pour la puissance de combat.** `effective_strength`
+multiplie effectifs et santé. `number_of_men` — l'effectif nominal — étant
+absent, il n'y a pas de dénominateur pour transformer un nombre de survivants en
+fraction. Deux voies :
+
+* `unary_hitpoints`, dont la signification sur une unité de quatre-vingts hommes
+  n'est **pas établie** : fraction d'unité restante, ou santé moyenne des
+  survivants ? Une unité réduite à dix hommes en pleine forme vaut 0,12 dans le
+  premier cas et 1,0 dans le second ;
+* le **maximum observé** de `number_of_men_alive` depuis le début de la
+  bataille. Au déploiement l'unité est au complet, et une unité ne regagne pas
+  d'hommes : ce maximum est donc son effectif initial, sans ambiguïté.
+
+La seconde voie est retenue (`bridge/roster.py`), la première ne servant que de
+repli pour les unités à entité unique.
 
 ### Deux manques qui pèsent sur la conception
 
