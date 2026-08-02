@@ -83,42 +83,53 @@ La première ambition jouable est la suivante :
 
 ## État du projet
 
-**Statut actuel : MVP fonctionnel hors du jeu.**
+**Statut : l'agent pilote une vraie bataille de *WARHAMMER III*.**
 
-Le cœur Python est implémenté et testable sans lancer *WARHAMMER III* :
+Huit essais en bataille ont établi, pas supposé :
 
-- modèles typés du domaine, sérialisation JSON et validation stricte ;
-- protocole de pont versionné et `MockBridge` ;
-- agent tactique déterministe : classification, groupes, plan, ciblage ;
-- règles de sécurité et arrêt d’urgence ;
-- simulateur tactique déterministe et dix scénarios reproductibles ;
-- journal d’événements, rapport post-bataille, mémoire SQLite persistante ;
-- adaptation bornée de la doctrine d’après l’historique, avec checkpoints ;
-- banc des dix scénarios de référence et détection automatique de régressions ;
-- interface en ligne de commande (`totalwar-ai`) ;
-- prototype d’intégration au jeu — **écrit, pas encore essayé en bataille**.
+- un script Lua de bataille peut **écrire et lire des fichiers** — c'était le
+  risque principal du projet, il est levé ;
+- l'armée entière est observée : identifiants, types, positions, effectifs,
+  santé, munitions, portée, déroute, contact, seigneur ;
+- les ordres passent — déplacement de groupe, attaque, arrêt ;
+- l'agent a mené une bataille de bout en bout, et chaque décision est
+  enregistrée.
 
-Voir [Démarrage rapide](#démarrage-rapide) pour l’essayer, et
-[`docs/architecture.md`](docs/architecture.md) pour ce que le dépôt contient
-réellement, par opposition à la cible décrite ici.
+Ce que le jeu **ne** donne pas, vérifié accesseur par accesseur : ni moral, ni
+fatigue, ni vitesse, ni largeur de front, ni la moindre donnée de terrain. Le
+détail est dans [`docs/feasibility.md`](docs/feasibility.md).
 
-**Ce qui touche au jeu lui-même reste à vérifier.** Un prototype d’intégration
-existe désormais — une sonde Lua (`lua_mod/`) et un pont par fichiers
-(`src/totalwar_ai/bridge/file_bridge.py`) — mais **il n’a jamais été exécuté dans
-*WARHAMMER III***. Les deux moitiés sont testées l’une contre l’autre, ce qui ne
-prouve rien sur le jeu. L’état exact des vérifications, ligne par ligne, se tient
-dans [`docs/feasibility.md`](docs/feasibility.md).
+### Quatre façons de jouer une bataille
 
-Aucun modèle appris non plus : l’adaptation reste à base de règles bornées.
+| Commande | Qui décide |
+| --- | --- |
+| `probe --delegate` | **l'IA du jeu** joue toute l'armée |
+| `probe --supervise` | l'IA du jeu joue, **nos règles corrigent** ses angles morts |
+| `probe --play` | **notre agent** joue seul |
+| `probe --reclaim` / `--abort` | **vous** reprenez la main |
 
-La priorité suivante n’est pas l’apprentissage automatique. C’est de vérifier ce que *WARHAMMER III* permet réellement d’observer et de commander depuis :
+Les trois premiers enregistrent la bataille dans le même format, ce qui permet
+de les comparer.
 
-- les scripts Lua de bataille ;
-- les bibliothèques de modding disponibles ;
-- un éventuel pont local entre Lua et Python ;
-- à défaut, une couche d’automatisation externe limitée.
+**Sur la délégation.** *WARHAMMER III* embarque sa propre IA de bataille,
+accessible par `script_ai_planner`. Elle connaît le terrain, le pathfinding et
+les formations — tout ce que le recensement a montré inaccessible à un script.
+Lui confier l'armée donne donc immédiatement un mod qui joue bien, et fournit la
+**référence** à laquelle mesurer notre agent. C'est aussi ce que fait le mod
+étudié, découverte tardive consignée dans
+[`docs/research/ai-general-3-findings.md`](docs/research/ai-general-3-findings.md).
 
-Aucune promesse de compatibilité ne doit être faite avant la fin du **spike de faisabilité** décrit dans la feuille de route.
+### Ce qui reste ouvert
+
+- **Le simulateur et le jeu se contredisent**, et rien ne permet encore de les
+  départager : deux corrections mesurées comme bonnes dans l'un se sont révélées
+  nuisibles dans l'autre ([`docs/decisions/0005`](docs/decisions/0005-derive-de-l-ancre-defensive.md)).
+  Les batailles réelles sont maintenant enregistrées pour trancher.
+- **Une dérive de l'ancre défensive** fait reculer l'armée sans combattre en
+  escarmouche. Diagnostiquée, reproduite au banc (`skirmish_standoff`), non
+  corrigée — les deux tentatives ont empiré les choses.
+- Aucun modèle appris : l'adaptation reste à base de règles bornées.
+- Pas d'interface graphique ; tout passe par la ligne de commande.
 
 ---
 
@@ -173,6 +184,37 @@ Chaque bataille produit :
 - une entrée dans `data/totalwar_ai.sqlite3` — mémoire persistante.
 
 Ces répertoires ne sont pas versionnés.
+
+### Jouer une bataille dans le jeu
+
+Il faut empaqueter `lua_mod/script/battle/mod/totalwar_ai_probe.lua` dans un
+`.pack` de type *mod* (RPFM), à l'emplacement `script/_lib/mod/`, le déposer
+dans `<installation>/data/` et l'activer. Le protocole d'essai complet est dans
+[`docs/feasibility.md`](docs/feasibility.md).
+
+```powershell
+$env:TOTALWAR_AI_BRIDGE_DIR = "<installation de WARHAMMER III>"
+
+totalwar-ai probe --log 40        # doit afficher : Pack a jour (revision N)
+totalwar-ai probe --delegate      # l'IA du jeu prend l'armee
+totalwar-ai probe --supervise 300 # elle joue, nos regles corrigent
+totalwar-ai probe --play 120      # notre agent joue seul
+totalwar-ai probe --reclaim       # vous reprenez la main
+totalwar-ai probe --abort         # arret d'urgence, tout est libere
+```
+
+**Le script Lua porte un numéro de révision**, affiché dès son chargement et
+comparé par `probe --log` à celui attendu par le paquet Python. Oublier de
+reconstruire le `.pack` après une modification est le défaut le plus fréquent de
+ce projet — quatre essais en bataille y sont passés avant que ce contrôle
+n'existe.
+
+**Trois garde-fous, indépendants les uns des autres.** Le jeu rend
+automatiquement toute unité prise au bout de cinq secondes ; `probe --abort`
+libère tout par une commande ; et la seule présence du fichier
+`<installation>/totalwar_ai/totalwar_ai_stop` suffit à tout arrêter, même si
+plus rien d'autre ne répond. La sonde refuse par ailleurs de démarrer en
+multijoueur, et en cas de doute sur le type de partie.
 
 Options utiles : `--seed` pour rejouer exactement une bataille, `--all` pour
 enchaîner tous les scénarios, `--no-memory` pour ne rien enregistrer,

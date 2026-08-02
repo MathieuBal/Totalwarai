@@ -12,6 +12,14 @@
 > [Résultats](#résultats-de-lessai-en-bataille), elles ne doivent pas être
 > présentées comme fonctionnelles.
 
+## Ce que le jeu permet, en une phrase
+
+Un script de bataille peut **observer toute la bataille et donner des ordres**,
+mais il ne voit ni le moral, ni la fatigue, ni le terrain. Le moteur, lui, voit
+tout : son IA de bataille est accessible par `script_ai_planner`, et lui confier
+des unités contourne d'un coup toutes ces limites — au prix de toute
+explicabilité.
+
 ## Légende
 
 | Marque | Sens |
