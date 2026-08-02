@@ -1207,3 +1207,49 @@ def test_un_arret_demande_pendant_la_bataille_coupe_bien_la_sonde(workdir: Path)
     probe.advance(2000)
 
     assert probe.grep("SONDE ARRETEE"), "l'arret d'urgence n'a plus d'effet"
+
+
+# --- recenser l'API du moteur avant de batir dessus -----------------------------
+#
+# Un plan entier de « profils d'agressivite » repose sur `rush_force`,
+# `attack_force` et `set_should_reorder`, dont nous n'avons jamais constate
+# l'existence. Le projet a deja paye trois fois le prix d'une API plausible mais
+# fausse : `math.huge`, `unary_morale`, `number_of_men`.
+
+
+def test_l_api_du_planificateur_est_recensee(probe: Probe) -> None:
+    """Presente ou absente, chaque methode candidate doit etre nommee."""
+    probe.advance(2000)
+
+    recensement = probe.grep("recensement de script_ai_planner")
+    assert recensement, "le planificateur n'a pas ete recense"
+    assert probe.grep("  new : presente"), "la seule methode connue n'est pas vue"
+    # Les methodes que le faux jeu ne definit pas doivent etre dites absentes,
+    # jamais passees sous silence.
+    assert probe.grep("  rush_force : ABSENT")
+    assert probe.grep("  attack_force : ABSENT")
+
+
+def test_le_recensement_ne_confie_aucune_unite(probe: Probe) -> None:
+    """Un recensement qui delegue changerait la bataille qu'il observe."""
+    probe.advance(2000)
+
+    assert not [order for order in probe.orders() if order["kind"] == "delegate"]
+
+
+def test_la_difficulte_de_bataille_est_relevee_des_deux_cotes(workdir: Path) -> None:
+    """`army_handicap` decide si la difficulte change le planificateur.
+
+    Absente du faux jeu : le recensement doit le dire au lieu de se taire, sans
+    quoi son silence se lirait comme une reponse.
+    """
+    probe = Probe(
+        workdir,
+        units=[("1001", "wh_main_grn_inf_orc_boyz", 0.0, -100.0, True)],
+        enemies=[("2001", "wh_main_emp_inf_swordsmen", 0.0, -40.0, False)],
+    )
+    probe.advance(2000)
+
+    assert probe.grep("recensement de l'armee"), "l'armee n'a pas ete recensee"
+    assert probe.grep("army_handicap"), "la difficulte de bataille n'est pas mentionnee"
+    assert not probe.grep("ERREUR dans census_army_api")
