@@ -27,7 +27,7 @@ from pathlib import Path
 #: Doit valoir `TOTALWAR_AI_PROBE_REVISION` dans
 #: `lua_mod/script/battle/mod/totalwar_ai_probe.lua`. Un test verifie l'egalite,
 #: pour que les deux ne puissent pas diverger en silence.
-EXPECTED_PROBE_REVISION = 9
+EXPECTED_PROBE_REVISION = 10
 
 #: Variable d'environnement qui court-circuite toute la detection.
 BRIDGE_DIR_ENV_VAR = "TOTALWAR_AI_BRIDGE_DIR"
