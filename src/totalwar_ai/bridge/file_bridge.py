@@ -211,10 +211,17 @@ class FileBridge:
         self.send_command(command)
         return command
 
-    def reclaim(self, *, sequence: int | None = None) -> ProbeReclaimCommand:
-        """Reprend toutes les unites confiees a l'IA du jeu."""
+    def reclaim(
+        self, unit_ids: Sequence[str] = (), *, sequence: int | None = None
+    ) -> ProbeReclaimCommand:
+        """Reprend des unites confiees a l'IA du jeu.
+
+        Sans liste, tout revient. Avec une liste, seules ces unites reviennent
+        et l'IA du jeu continue de jouer les autres.
+        """
         command = ProbeReclaimCommand(
-            sequence=sequence if sequence is not None else self._next_sequence
+            unit_ids=tuple(unit_ids),
+            sequence=sequence if sequence is not None else self._next_sequence,
         )
         self.send_command(command)
         return command

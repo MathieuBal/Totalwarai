@@ -635,12 +635,21 @@ class ProbeDelegateCommand:
 
 @dataclass(frozen=True, slots=True)
 class ProbeReclaimCommand:
-    """Reprend toutes les unites confiees a l'IA du jeu.
+    """Reprend des unites confiees a l'IA du jeu.
 
-    Sans effet s'il n'y en a aucune : la reprise doit pouvoir etre demandee a
-    tout moment, y compris par simple precaution.
+    **Liste vide : tout est repris**, et le planificateur dissous. C'est la voie
+    des arrets d'urgence, qui ne doit rien laisser derriere elle.
+
+    **Liste renseignee : reprise partielle.** Le reste de l'armee continue
+    d'etre joue par l'IA du jeu. C'est ce qui permet de la superviser — lui
+    laisser la bataille, et ne reprendre que l'unite dont elle fait mauvais
+    usage.
+
+    Sans effet s'il n'y a rien a reprendre : la reprise doit pouvoir etre
+    demandee a tout moment, y compris par simple precaution.
     """
 
+    unit_ids: tuple[str, ...] = ()
     sequence: int = 1
     protocol_version: str = PROTOCOL_VERSION
 
@@ -649,6 +658,7 @@ class ProbeReclaimCommand:
             "protocol_version": self.protocol_version,
             "type": ProbeMessageType.RECLAIM.value,
             "sequence": self.sequence,
+            "unit_ids": list(self.unit_ids),
         }
 
     @classmethod
@@ -657,7 +667,11 @@ class ProbeReclaimCommand:
         version = as_str(data, "protocol_version")
         check_version(version)
         _require_type(data, ProbeMessageType.RECLAIM)
-        return cls(sequence=as_int(data, "sequence", default=1), protocol_version=version)
+        return cls(
+            unit_ids=tuple(str(item) for item in _as_list(data, "unit_ids")),
+            sequence=as_int(data, "sequence", default=1),
+            protocol_version=version,
+        )
 
 
 @dataclass(frozen=True, slots=True)

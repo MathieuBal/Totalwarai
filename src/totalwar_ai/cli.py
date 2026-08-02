@@ -114,6 +114,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="laisser l'agent piloter la bataille pendant N secondes (defaut 120)",
     )
     probe.add_argument(
+        "--supervise",
+        type=float,
+        nargs="?",
+        const=300.0,
+        metavar="SECONDES",
+        help="l'IA du jeu mene la bataille, nos regles corrigent ses angles morts (defaut 300 s)",
+    )
+    probe.add_argument(
         "--delegate",
         action="store_true",
         help="confier toute l'armee a l'IA de bataille du jeu "
@@ -308,6 +316,8 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         print("Arret d'urgence publie : le script Lua doit tout liberer.")
         return 0
 
+    if args.supervise:
+        return _supervise(bridge, args.supervise, record=not args.no_record)
     if args.delegate:
         return _delegate(bridge)
     if args.reclaim:
@@ -363,6 +373,76 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         return _confirm_movement(bridge, state.unit_id, state.position)
 
     return 0
+
+
+def _supervise(bridge: FileBridge, duration: float, *, record: bool = True) -> int:
+    """L'IA du jeu mene la bataille ; nos regles corrigent ses angles morts.
+
+    Elle connait le terrain, le pathfinding et les formations, que nous n'avons
+    pas. Nos regles, elles, savent qu'une piece d'artillerie prise au corps a
+    corps est perdue, qu'un tireur au contact ne sert plus a rien, et qu'un
+    seigneur mourant coute la bataille.
+
+    Chaque reprise est journalisee avec son motif : une session sans
+    intervention doit se lire aussi clairement qu'une session mouvementee.
+    """
+    from totalwar_ai.bridge.live import SupervisedSession
+
+    config = load_config()
+    session = SupervisedSession(bridge=bridge)
+    recorder = BattleRecorder(directory=config.path("telemetry", "battles_dir") if record else None)
+
+    print("Attente d'un etat du jeu (30 s)...")
+    state = None
+    for _ in range(60):
+        state = bridge.latest_battle_state()
+        if state is not None:
+            break
+        time.sleep(0.5)
+    if state is None:
+        print("Aucun etat recu : la bataille est-elle lancee ?", file=sys.stderr)
+        return 1
+
+    confiees = session.delegate_all(state)
+    if not confiees:
+        print("Aucune unite controlable a confier.", file=sys.stderr)
+        return 1
+    print(f"{len(confiees)} unite(s) confiees a l'IA du jeu.")
+    print(f"Supervision pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.")
+    if recorder.path is not None:
+        print(f"Enregistrement : {recorder.path}")
+    print()
+
+    fin = time.monotonic() + duration
+    interrompu = False
+    try:
+        while time.monotonic() < fin:
+            etape = session.step()
+            recorder.observe(etape)
+            if etape.interventions or etape.returned or etape.skipped:
+                print(f"  {etape.summary()}")
+                for intervention in etape.interventions:
+                    lignes = intervention.explain().splitlines()
+                    print(f"      ! {lignes[0]} — {lignes[-1]}")
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print("\nInterruption : liberation de toutes les unites.")
+        session.stop()
+        interrompu = True
+    finally:
+        recorder.close()
+
+    print(
+        f"\n{recorder.turns} tour(s), {recorder.orders_sent} intervention(s) sur "
+        f"{len(confiees)} unite(s) confiees."
+    )
+    if not interrompu:
+        print("Les unites restent confiees a l'IA du jeu.")
+        print("  `totalwar-ai probe --reclaim` pour reprendre la main.")
+    if record and recorder.turns:
+        MemoryRepository(config.path("memory", "database_path")).save_episode(recorder.episode())
+        print(f"Bataille enregistree : {recorder.battle_id}")
+    return 130 if interrompu else 0
 
 
 def _delegate(bridge: FileBridge) -> int:

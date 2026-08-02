@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 7
+TOTALWAR_AI_PROBE_REVISION = 8
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -1021,14 +1021,51 @@ function PROBE:delegate_units(unit_ids)
     return #sunits, premier_refus
 end
 
---- Reprend toutes les unites confiees a l'IA du jeu.
+--- Reprend des unites confiees a l'IA du jeu.
 ---
---- Sans effet s'il n'y en a aucune : la reprise doit pouvoir etre demandee a
---- tout moment, y compris par precaution.
-function PROBE:reclaim_units()
+--- Sans `unit_ids`, tout est repris et le planificateur dissous : c'est la voie
+--- des arrets d'urgence, qui ne doit rien laisser derriere elle.
+---
+--- Avec `unit_ids`, seules ces unites reviennent — le reste continue d'etre
+--- joue par l'IA du jeu. C'est ce qui permet de **superviser** : lui laisser la
+--- bataille, et ne reprendre que l'unite dont elle fait mauvais usage.
+---
+--- Sans effet s'il n'y a rien a reprendre : la reprise doit pouvoir etre
+--- demandee a tout moment, y compris par precaution.
+function PROBE:reclaim_units(unit_ids)
     if not self.ai_planner then
         return 0
     end
+
+    if unit_ids and #unit_ids > 0 then
+        local sunits, rendues = {}, 0
+        for index = 1, #unit_ids do
+            local unit_id = tostring(unit_ids[index])
+            if self.delegated[unit_id] then
+                local unit = self:find_unit_by_id(unit_id)
+                local sunit = unit and self:script_unit_for(unit)
+                if sunit then
+                    sunits[#sunits + 1] = sunit
+                    self.delegated[unit_id] = nil
+                    rendues = rendues + 1
+                end
+            end
+        end
+        if rendues == 0 then
+            return 0
+        end
+        pcall(function() self.ai_planner:remove_sunits(sunits) end)
+        self:log("reprise partielle : " .. tostring(rendues) .. " unite(s) retirees a l'IA du jeu")
+
+        -- Un planificateur vide n'a plus lieu d'etre : le garder ferait croire
+        -- qu'une delegation est en cours, et le prochain arret la chercherait.
+        if next(self.delegated) == nil then
+            pcall(function() self.ai_planner:release() end)
+            self.ai_planner = nil
+        end
+        return rendues
+    end
+
     local rendues = 0
     for _ in pairs(self.delegated) do
         rendues = rendues + 1
@@ -1240,7 +1277,8 @@ function PROBE:process_command_file()
     end
 
     if command_type == "reclaim" then
-        local ok, rendues = pcall(function() return self:reclaim_units() end)
+        local ids = read_id_list(content, "unit_ids")
+        local ok, rendues = pcall(function() return self:reclaim_units(ids) end)
         if not ok then
             self:emit_ack(sequence, "rejected", "erreur d'execution : " .. tostring(rendues))
             return

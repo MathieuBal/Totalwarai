@@ -28,7 +28,9 @@ from totalwar_ai.bridge.command_models import ProbeBattleState, ProbeUnitObserva
 from totalwar_ai.bridge.file_bridge import FileBridge
 from totalwar_ai.bridge.orders import OrderTranslator, Translation
 from totalwar_ai.bridge.roster import RosterMemory
+from totalwar_ai.bridge.supervision import Intervention, Supervisor
 from totalwar_ai.domain.actions import ActionType
+from totalwar_ai.domain.battle_state import BattleState
 from totalwar_ai.domain.geometry import Vector3
 
 LOGGER = logging.getLogger("totalwar_ai.bridge.live")
@@ -62,6 +64,10 @@ class LiveStep:
     #: partis, les sept autres ayant ete bloquees.
     blocked: tuple[str, ...] = ()
     translation: Translation = field(default_factory=Translation)
+    #: Unites reprises a l'IA du jeu ce tour-ci, avec leur motif.
+    interventions: tuple[Intervention, ...] = ()
+    #: Unites rendues a l'IA du jeu ce tour-ci.
+    returned: tuple[str, ...] = ()
     sent: int = 0
 
     @property
@@ -99,6 +105,10 @@ class LiveStep:
         # voir au meme titre qu'un ordre emis.
         if self.blocked:
             detail.append(f"{len(self.blocked)} refusee(s) par la securite")
+        if self.interventions:
+            detail.append(f"{len(self.interventions)} reprise(s) a l'IA du jeu")
+        if self.returned:
+            detail.append(f"{len(self.returned)} rendue(s) a l'IA du jeu")
 
         return f"{entete} — " + (", ".join(detail) if detail else "rien a faire")
 
@@ -259,3 +269,113 @@ TRANSLATABLE_ACTIONS: frozenset[ActionType] = frozenset(
         ActionType.PROTECT,
     }
 )
+
+
+@dataclass
+class SupervisedSession:
+    """L'IA du jeu mene la bataille ; nos regles corrigent ses angles morts.
+
+    Elle connait le terrain, le pathfinding et les formations — nous non. Lui
+    confier l'armee est donc le chemin le plus court vers un mod qui joue bien.
+    Mais elle a des angles morts etablis : AI General 3 consacre l'essentiel de
+    son code a les contourner.
+
+    Le cycle de chaque tour :
+
+        observer -> reprendre les unites mal employees -> les corriger
+        -> rendre celles dont la situation est retablie
+
+    **Rien n'est repris sans motif**, et le motif est journalise dans la meme
+    forme que les decisions de l'agent. Une session qui n'interviendrait jamais
+    doit se lire aussi clairement qu'une session qui intervient souvent.
+    """
+
+    bridge: FileBridge
+    roster: RosterMemory = field(default_factory=RosterMemory)
+    supervisor: Supervisor = field(default_factory=Supervisor)
+    battle_id: str = "live"
+    #: Unites actuellement confiees a l'IA du jeu.
+    delegated: set[str] = field(default_factory=set)
+    #: Duree de prise en main d'une unite reprise, en millisecondes.
+    #:
+    #: Nettement plus long que pour un ordre ordinaire : une unite reprise doit
+    #: avoir le temps de se degager avant que le jeu ne la rende au joueur.
+    release_after_ms: int = 20_000
+
+    def delegate_all(self, state: ProbeBattleState) -> list[str]:
+        """Confie a l'IA du jeu toutes les unites controlables."""
+        unit_ids = [unite.unit_id for unite in state.allies if unite.controllable and unite.alive]
+        if not unit_ids:
+            return []
+        self.bridge.delegate(unit_ids)
+        self.delegated = set(unit_ids)
+        return unit_ids
+
+    def step(self) -> LiveStep:
+        """Un tour de surveillance. Ne leve pas."""
+        state = self.bridge.latest_battle_state()
+        if state is None:
+            return LiveStep()
+
+        self.roster.observe(state)
+        if self.bridge.stop_requested:
+            return LiveStep(state=state, skipped="arret d'urgence demande")
+
+        domaine = state.to_battle_state(
+            self.battle_id,
+            entity_ratios=self._ratios(state, self.roster.entity_ratio),
+            ammo_ratios=self._ratios(state, self.roster.ammo_ratio),
+        )
+        domaine = _classified(domaine)
+
+        interventions = self.supervisor.review(domaine, self.delegated)
+        rendues = self.supervisor.ready_to_return(domaine)
+
+        for intervention in interventions:
+            self.delegated.discard(intervention.unit_id)
+        if interventions:
+            # Reprise partielle : l'IA du jeu continue de mener le reste.
+            self.bridge.reclaim([item.unit_id for item in interventions])
+            moves = [
+                (item.unit_id, item.destination)
+                for item in interventions
+                if item.destination is not None
+            ]
+            if moves:
+                self.bridge.send_orders(moves, release_after_ms=self.release_after_ms)
+
+        if rendues:
+            self.bridge.delegate(rendues)
+            self.delegated.update(rendues)
+            self.supervisor.forget(rendues)
+
+        return LiveStep(
+            state=state,
+            decisions=tuple(item.explain() for item in interventions),
+            interventions=tuple(interventions),
+            returned=tuple(rendues),
+            sent=len(interventions) + len(rendues),
+        )
+
+    def stop(self) -> None:
+        """Arret d'urgence : le jeu libere tout et le joueur reprend la main."""
+        self.bridge.abort("arret demande par la supervision")
+        self.delegated.clear()
+
+    @staticmethod
+    def _ratios(
+        state: ProbeBattleState,
+        mesure: Callable[[ProbeUnitObservation], float | None],
+    ) -> dict[str, float]:
+        return LiveSession._ratios(state, mesure)
+
+
+def _classified(state: BattleState) -> BattleState:
+    """Etat dont les roles sont deduits, sans quoi aucune regle ne s'applique.
+
+    La supervision raisonne par role — artillerie, tireurs, seigneur — et
+    l'observation brute du jeu n'en fournit aucun.
+    """
+    from totalwar_ai.agent.unit_classifier import UnitClassifier
+
+    return UnitClassifier.from_config().classify_state(state)
