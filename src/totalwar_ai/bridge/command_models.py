@@ -167,6 +167,8 @@ class ProbeUnitObservation:
     controllable: bool = False
     #: L'unite commande l'armee — le seigneur. `unit:is_commanding_unit()`.
     commanding: bool = False
+    #: L'unite n'execute aucun ordre. `unit:is_idle()`.
+    idle: bool = True
     alive: bool = True
     routing: bool = False
     shattered: bool = False
@@ -256,6 +258,7 @@ class ProbeUnitObservation:
             unit_type=as_str(data, "type", default=""),
             controllable=as_bool(data, "controllable", default=False),
             commanding=as_bool(data, "commanding", default=False),
+            idle=as_bool(data, "idle", default=True),
             alive=as_bool(data, "alive", default=True),
             routing=as_bool(data, "routing", default=False),
             shattered=as_bool(data, "shattered", default=False),
@@ -285,6 +288,7 @@ class ProbeUnitObservation:
             "source": "probe",
             "controllable": self.controllable,
             "shattered": self.shattered,
+            "idle": self.idle,
             # Le jeu n'expose ni le moral ni la fatigue : `UnitState` les laisse
             # a 50 et 0, valeurs qui ressemblent a des mesures. On marque donc
             # explicitement qu'elles n'en sont pas — toute regle de l'agent qui
@@ -509,12 +513,14 @@ class ProbeOrdersCommand:
 
     moves: tuple[tuple[str, Vector3], ...] = ()
     attacks: tuple[ProbeAttack, ...] = ()
+    #: Unites a immobiliser sur place.
+    halts: tuple[str, ...] = ()
     sequence: int = 1
     release_after_ms: int = 5000
     protocol_version: str = PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
-        if not self.moves and not self.attacks:
+        if not self.moves and not self.attacks and not self.halts:
             raise SchemaError("Une manoeuvre doit porter au moins un ordre")
         if self.sequence < 1:
             raise SchemaError("Le numero de sequence doit etre superieur ou egal a 1")
@@ -525,7 +531,7 @@ class ProbeOrdersCommand:
 
     @property
     def order_count(self) -> int:
-        return len(self.moves) + len(self.attacks)
+        return len(self.moves) + len(self.attacks) + len(self.halts)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -538,6 +544,7 @@ class ProbeOrdersCommand:
                 for unit_id, destination in self.moves
             ],
             "attacks": [attack.to_dict() for attack in self.attacks],
+            "halts": list(self.halts),
         }
 
     @classmethod
@@ -568,6 +575,7 @@ class ProbeOrdersCommand:
         return cls(
             moves=tuple(moves),
             attacks=tuple(attacks),
+            halts=tuple(str(item) for item in _as_list(data, "halts")),
             sequence=as_int(data, "sequence", default=1),
             release_after_ms=as_int(data, "release_after_ms", default=5000),
             protocol_version=version,

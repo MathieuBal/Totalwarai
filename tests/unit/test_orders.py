@@ -357,3 +357,58 @@ def test_une_protection_sans_ennemi_visible_est_signalee() -> None:
 
     assert not resultat.moves
     assert resultat.untranslated[0][0] is ActionType.PROTECT
+
+
+# --- tenir la position ---------------------------------------------------------
+
+
+def _avec_mouvement(*unit_ids: str, idle: bool) -> BattleState:
+    return BattleState(
+        battle_id="t",
+        units=tuple(
+            UnitState(
+                id=unit_id,
+                side=Side.ALLY,
+                position=Vector3(0.0, 0.0, 0.0),
+                metadata={"idle": idle},
+            )
+            for unit_id in unit_ids
+        ),
+    )
+
+
+def test_tenir_la_position_arrete_une_unite_en_mouvement() -> None:
+    """Constate en bataille : cinq « tenir la position » ne produisaient rien.
+
+    N'envoyer aucun ordre laisse l'unite poursuivre ce qu'elle faisait. L'agent
+    croyait tenir sa ligne pendant que l'armee continuait d'avancer.
+    """
+    tenir = AgentAction(type=ActionType.HOLD_POSITION, actor_ids=("a",))
+    resultat = OrderTranslator().translate((tenir,), _avec_mouvement("a", idle=False))
+
+    assert resultat.halts == ("a",)
+    assert not resultat.untranslated
+
+
+def test_une_unite_deja_immobile_n_est_pas_arretee() -> None:
+    """Arreter ce qui ne bouge pas gaspillerait un ordre et prendrait l'unite."""
+    tenir = AgentAction(type=ActionType.HOLD_POSITION, actor_ids=("a",))
+    resultat = OrderTranslator().translate((tenir,), _avec_mouvement("a", idle=True))
+
+    assert not resultat.halts
+    assert resultat.is_empty
+    assert not resultat.untranslated
+
+
+def test_un_arret_n_empeche_pas_un_ordre_prioritaire() -> None:
+    """L'agent classe par priorite : le premier ordre emis pour une unite gagne."""
+    repli = AgentAction(
+        type=ActionType.RETREAT,
+        actor_ids=("a",),
+        parameters={"destination": Vector3(0.0, 0.0, -50.0)},
+    )
+    tenir = AgentAction(type=ActionType.HOLD_POSITION, actor_ids=("a",))
+    resultat = OrderTranslator().translate((repli, tenir), _avec_mouvement("a", idle=False))
+
+    assert not resultat.halts
+    assert len(resultat.moves) == 1

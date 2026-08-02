@@ -50,16 +50,18 @@ class Translation:
     moves: tuple[tuple[str, Vector3], ...] = ()
     #: Attaques pretes pour `FileBridge.send_orders`.
     attacks: tuple[ProbeAttack, ...] = ()
+    #: Unites a immobiliser.
+    halts: tuple[str, ...] = ()
     #: Actions qu'aucun ordre disponible ne sait rendre, avec leur motif.
     untranslated: tuple[tuple[ActionType, str], ...] = ()
 
     @property
     def is_empty(self) -> bool:
-        return not self.moves and not self.attacks
+        return not self.moves and not self.attacks and not self.halts
 
     @property
     def order_count(self) -> int:
-        return len(self.moves) + len(self.attacks)
+        return len(self.moves) + len(self.attacks) + len(self.halts)
 
 
 @dataclass
@@ -82,6 +84,7 @@ class OrderTranslator:
         """Traduit un tour de l'agent, sans jamais inventer d'equivalence."""
         moves: list[tuple[str, Vector3]] = []
         attacks: list[ProbeAttack] = []
+        halts: list[str] = []
         untranslated: list[tuple[ActionType, str]] = []
         deja_ordonnees: set[str] = set()
 
@@ -96,13 +99,24 @@ class OrderTranslator:
                 destination = self._flank_position(action, state)
             elif action.type is ActionType.PROTECT:
                 destination = self._intercept_position(action, state)
+            elif action.type is ActionType.HOLD_POSITION:
+                # Ne rien envoyer laissait l'unite poursuivre ce qu'elle
+                # faisait : l'agent croyait tenir sa ligne pendant que l'armee
+                # continuait d'avancer. Une unite deja immobile n'a en revanche
+                # pas besoin qu'on l'arrete — d'ou la lecture de `is_idle`.
+                for unit_id in action.actor_ids:
+                    unite = state.unit(unit_id)
+                    if unite is None or unit_id in deja_ordonnees:
+                        continue
+                    if unite.metadata.get("idle", True):
+                        continue
+                    deja_ordonnees.add(unit_id)
+                    halts.append(unit_id)
+                continue
             else:
                 key = self.destination_keys.get(action.type)
                 if key is None:
-                    if action.type is not ActionType.HOLD_POSITION:
-                        untranslated.append((action.type, self._why(action.type)))
-                    # `HOLD_POSITION` se traduit par l'absence d'ordre : ne rien
-                    # envoyer est exactement ce qu'elle demande.
+                    untranslated.append((action.type, self._why(action.type)))
                     continue
                 candidate = action.parameters.get(key)
                 destination = candidate if isinstance(candidate, Vector3) else None
@@ -124,6 +138,7 @@ class OrderTranslator:
         return Translation(
             moves=tuple(moves),
             attacks=tuple(attacks),
+            halts=tuple(halts),
             untranslated=tuple(untranslated),
         )
 
