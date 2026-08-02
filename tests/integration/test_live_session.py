@@ -434,3 +434,54 @@ def test_la_posture_imposee_survit_au_rechargement_de_doctrine() -> None:
     )
 
     assert agent.planner.forced_posture is Posture.ENVELOP
+
+
+# --- supervision de l'IA du jeu -----------------------------------------------
+
+
+def test_la_supervision_confie_l_armee_puis_la_surveille(tmp_path: Path) -> None:
+    """L'IA du jeu mene ; nous ne reprenons que ce dont elle fait mauvais usage."""
+    from totalwar_ai.bridge.live import SupervisedSession
+
+    (tmp_path / "totalwar_ai").mkdir()
+    probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
+    probe.advance(2000)
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+
+    session = SupervisedSession(bridge=FileBridge.open(tmp_path))
+    etat = session.bridge.latest_battle_state()
+    assert etat is not None
+
+    confiees = session.delegate_all(etat)
+    probe.advance(1000)
+    assert len(confiees) == len(ARMEE)
+    assert [order for order in probe.orders() if order["kind"] == "delegate"]
+
+    # Rien d'anormal : l'IA du jeu garde la main.
+    etape = session.step()
+    assert not etape.interventions
+    assert not etape.returned
+
+
+def test_l_arret_d_urgence_rend_tout_meme_en_supervision(tmp_path: Path) -> None:
+    from totalwar_ai.bridge.live import SupervisedSession
+
+    (tmp_path / "totalwar_ai").mkdir()
+    probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
+    probe.advance(2000)
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+
+    session = SupervisedSession(bridge=FileBridge.open(tmp_path))
+    etat = session.bridge.latest_battle_state()
+    assert etat is not None
+    session.delegate_all(etat)
+    probe.advance(1000)
+
+    session.stop()
+    probe.advance(1000)
+
+    assert [order for order in probe.orders() if order["kind"] == "reclaim"]
+    assert probe.grep("SONDE ARRETEE")
+    assert not session.delegated

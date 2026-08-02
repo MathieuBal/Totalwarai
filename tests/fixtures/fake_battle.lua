@@ -184,6 +184,11 @@ script_ai_planner = {
                 FAKE.orders[#FAKE.orders + 1] = { kind = "delegate", unit_id = tostring(#more) }
                 return true
             end,
+            remove_sunits = function(self, some)
+                FAKE.orders[#FAKE.orders + 1] =
+                    { kind = "reclaim_partial", unit_id = tostring(#some) }
+                return true
+            end,
             release = function(self)
                 self.released = true
                 FAKE.orders[#FAKE.orders + 1] = { kind = "reclaim" }
