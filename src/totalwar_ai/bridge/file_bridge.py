@@ -38,7 +38,9 @@ from typing import Any
 from totalwar_ai.bridge.command_models import (
     ProbeAbortCommand,
     ProbeAck,
+    ProbeBattleState,
     ProbeCommand,
+    ProbeMessageType,
     ProbeMoveCommand,
     ProbeUnitState,
 )
@@ -73,6 +75,8 @@ class FileBridge:
     _state_offset: int = 0
     _ack_offset: int = 0
     _next_sequence: int = 1
+    _pending_states: list[ProbeUnitState] = field(default_factory=list)
+    _pending_battle_states: list[ProbeBattleState] = field(default_factory=list)
     #: Taille du fichier d'accuses au moment de la derniere commande publiee.
     _ack_watermark: int = 0
 
@@ -167,11 +171,42 @@ class FileBridge:
     # --- Lua -> Python -------------------------------------------------------
 
     def read_states(self) -> list[ProbeUnitState]:
-        """Nouveaux etats depuis le dernier appel."""
-        return [
-            ProbeUnitState.from_dict(payload)
-            for payload in self._read_new_lines(self.paths.state, "state")
-        ]
+        """Nouveaux etats mono-unite depuis le dernier appel."""
+        self._drain_states()
+        drained, self._pending_states = self._pending_states, []
+        return drained
+
+    def read_battle_states(self) -> list[ProbeBattleState]:
+        """Nouveaux etats de bataille complets depuis le dernier appel."""
+        self._drain_states()
+        drained, self._pending_battle_states = self._pending_battle_states, []
+        return drained
+
+    def latest_battle_state(self) -> ProbeBattleState | None:
+        """Le plus recent etat de bataille disponible, les autres etant perimes."""
+        states = self.read_battle_states()
+        return states[-1] if states else None
+
+    def _drain_states(self) -> None:
+        """Vide le flux d'etats une seule fois, en triant par type de message.
+
+        Le Lua ecrit deux sortes d'etats dans le meme fichier : l'observation
+        d'une unite, que consomme la commande `probe`, et la bataille entiere,
+        que consomme l'agent. Un seul offset gouverne le fichier, donc la
+        lecture doit servir les deux lecteurs — sinon le premier a lire prive
+        le second.
+        """
+        for payload in self._read_new_lines(self.paths.state, "state"):
+            kind = payload.get("type")
+            try:
+                if kind == ProbeMessageType.BATTLE_STATE.value:
+                    self._pending_battle_states.append(ProbeBattleState.from_dict(payload))
+                elif kind == ProbeMessageType.UNIT_STATE.value:
+                    self._pending_states.append(ProbeUnitState.from_dict(payload))
+                # Un type inconnu vient d'une sonde plus recente : on l'ignore
+                # en silence plutot que de refuser tout le flux.
+            except SchemaError as error:
+                self._record_malformed(self.paths.state, 0, json.dumps(payload)[:200], str(error))
 
     def read_acks(self) -> list[ProbeAck]:
         """Nouveaux accuses depuis le dernier appel."""
@@ -241,6 +276,8 @@ class FileBridge:
         self._ack_offset = 0
         self._next_sequence = 1
         self._ack_watermark = 0
+        self._pending_states.clear()
+        self._pending_battle_states.clear()
         self.malformed.clear()
 
     @property

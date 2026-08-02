@@ -22,13 +22,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 lupa = pytest.importorskip("lupa", reason="lupa n'est pas installe")
 
+from totalwar_ai.agent.unit_classifier import UnitClassifier  # noqa: E402
 from totalwar_ai.bridge.file_bridge import FileBridge  # noqa: E402
 from totalwar_ai.domain.geometry import Vector3  # noqa: E402
+from totalwar_ai.domain.unit_state import Side, UnitRole  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PROBE = ROOT / "lua_mod" / "script" / "battle" / "mod" / "totalwar_ai_probe.lua"
@@ -43,6 +46,7 @@ class Probe:
         workdir: Path,
         units: list[tuple[str, str, float, float, bool]],
         *,
+        enemies: list[tuple[str, str, float, float, bool]] | None = None,
         restricted_math: bool = False,
     ) -> None:
         from lupa import LuaRuntime
@@ -75,14 +79,32 @@ class Probe:
         if restricted_math:
             self.runtime.execute("math.huge = nil\nmath.floor = nil\n")
         self.fake = self.lua.FAKE
-        lua_units = self.runtime.eval("function(f) return {} end")(self.fake)
+        self.fake.setup(self.fake, self._lua_units(units), self._lua_units(enemies))
+
+        self.runtime.execute(PROBE.read_text(encoding="utf-8"))
+
+    def _lua_units(self, units: list[tuple[str, str, float, float, bool]] | None) -> Any:
+        """Table Lua d'unites, ou `nil` quand il n'y a pas de camp adverse."""
+        if units is None:
+            return None
         table = self.runtime.eval("{}")
         for index, (unit_id, unit_type, x, z, controllable) in enumerate(units, start=1):
             table[index] = self.fake.make_unit(self.fake, unit_id, unit_type, x, z, controllable)
-        del lua_units
-        self.fake.setup(self.fake, table)
+        return table
 
-        self.runtime.execute(PROBE.read_text(encoding="utf-8"))
+    def kill_unit(self, unit_id: str) -> None:
+        """Rend une unite invalide, comme le jeu le fait pour une unite detruite."""
+        self.runtime.execute(
+            "for _, alliance in ipairs({bm:alliances():item(1)}) do\n"
+            "  local units = alliance:armies():item(1):units()\n"
+            "  for i = 1, units:count() do\n"
+            "    local u = units:item(i)\n"
+            f"    if tostring(u:unique_ui_id()) == {json.dumps(unit_id)} then\n"
+            "      u.is_valid_target = function() return false end\n"
+            "    end\n"
+            "  end\n"
+            "end\n"
+        )
 
     def advance(self, ms: int) -> None:
         self.fake.advance(self.fake, ms)
@@ -687,3 +709,103 @@ def test_la_phase_est_publiee_dans_l_etat(probe: Probe, workdir: Path) -> None:
     etat = bridge.read_states()[-1]
     assert etat.phase == "Deployed"
     assert etat.orders_take_effect
+
+
+# --- observation de la bataille entiere --------------------------------------
+
+
+@pytest.fixture
+def bataille(workdir: Path) -> Probe:
+    """Deux camps, comme en jeu : onze contre onze."""
+    return Probe(
+        workdir,
+        units=[
+            ("1001", "wh3_dlc20_chs_cha_daemon_prince_mnur", 0.0, -330.0, True),
+            ("1002", "wh3_main_nur_inf_plaguebearers_1", 20.0, -330.0, True),
+            ("1003", "wh_main_emp_art_great_cannon", -20.0, -350.0, False),
+        ],
+        enemies=[
+            ("2001", "wh_main_emp_inf_handgunners", 0.0, 330.0, False),
+            ("2002", "wh_main_emp_cav_reiksguard", 40.0, 330.0, False),
+        ],
+    )
+
+
+def test_la_bataille_entiere_est_publiee(bataille: Probe, workdir: Path) -> None:
+    probe, bridge = bataille, FileBridge.open(workdir)
+    probe.advance(2000)
+
+    etat = bridge.latest_battle_state()
+    assert etat is not None
+    assert [unite.unit_id for unite in etat.allies] == ["1001", "1002", "1003"]
+    assert [unite.unit_id for unite in etat.enemies] == ["2001", "2002"]
+
+
+def test_les_champs_absents_du_jeu_valent_none(bataille: Probe, workdir: Path) -> None:
+    """Un champ que le jeu n'expose pas doit manquer, pas valoir zero.
+
+    Le recensement en bataille reelle a montre `unary_morale` et toutes les
+    formes de fatigue absentes du bac a sable. Un moral a zero se confondrait
+    avec une unite qui rompt.
+    """
+    bataille.advance(2000)
+    etat = FileBridge.open(workdir).latest_battle_state()
+    assert etat is not None
+
+    unite = etat.allies[0]
+    assert unite.hitpoints == pytest.approx(0.8)  # expose par le faux jeu
+    assert unite.men_alive == 64
+    assert unite.ammo is None  # absent du faux jeu, comme du vrai pour ce type
+    assert unite.missile_range is None
+
+    domaine = unite.to_unit_state(Side.ALLY)
+    assert domaine.metadata["morale_available"] is False
+    assert domaine.metadata["fatigue_available"] is False
+
+
+def test_l_etat_se_traduit_pour_l_agent(bataille: Probe, workdir: Path) -> None:
+    """Le raccord vers le domaine : c'est ce que l'agent consommera."""
+    bataille.advance(2000)
+    etat = FileBridge.open(workdir).latest_battle_state()
+    assert etat is not None
+
+    domaine = etat.to_battle_state()
+    assert len(domaine.allies()) == 3
+    assert len(domaine.enemies()) == 2
+    assert domaine.unit("1001") is not None
+    assert domaine.unit("2001") is not None
+
+    # Le classifieur doit savoir quoi faire des cles reelles du jeu.
+    classifier = UnitClassifier.from_config()
+    roles = {unite.id: classifier.classify(unite) for unite in domaine.units}
+    assert roles["1001"] is UnitRole.LORD
+    assert roles["1003"] is UnitRole.ARTILLERY
+    assert roles["2001"] is UnitRole.RANGED_INFANTRY
+    assert roles["2002"] is UnitRole.SHOCK_CAVALRY
+
+
+def test_une_unite_morte_est_ecartee(workdir: Path) -> None:
+    """Garder les morts fausserait barycentres et rapports de force."""
+    probe = Probe(
+        workdir,
+        units=[("1001", "unite", 0.0, 0.0, True), ("1002", "unite", 10.0, 0.0, True)],
+    )
+    probe.kill_unit("1002")
+    probe.advance(2000)
+
+    etat = FileBridge.open(workdir).latest_battle_state()
+    assert etat is not None
+    assert len(etat.allies) == 2  # publiees telles quelles
+    assert [u.id for u in etat.to_battle_state().allies()] == ["1001"]  # filtrees ici
+
+
+def test_le_flux_mixte_sert_les_deux_lecteurs(bataille: Probe, workdir: Path) -> None:
+    """Un seul fichier, deux types de messages, aucun lecteur prive de l'autre."""
+    bataille.advance(3000)
+    bridge = FileBridge.open(workdir)
+
+    batailles = bridge.read_battle_states()
+    unites = bridge.read_states()
+    assert batailles, "aucun etat de bataille"
+    assert unites, "l'etat mono-unite a ete avale par l'autre lecteur"
+    assert not bridge.malformed

@@ -18,6 +18,7 @@ from enum import StrEnum
 from typing import Any
 
 from totalwar_ai.bridge.protocol import PROTOCOL_VERSION, check_version
+from totalwar_ai.domain.battle_state import BattlePhase, BattleState
 from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.domain.serialization import (
     SchemaError,
@@ -52,6 +53,8 @@ class ProbeMessageType(StrEnum):
     """Types de messages echanges par la sonde."""
 
     UNIT_STATE = "unit_state"
+    #: Bataille entiere : toutes les unites alliees, et tout ce qui ne l'est pas.
+    BATTLE_STATE = "battle_state"
     MOVE_UNIT = "move_unit"
     ACTION_RESULT = "action_result"
     #: Ordre d'arret : le Lua libere toutes ses unites et cesse de lire.
@@ -140,6 +143,154 @@ class ProbeUnitState:
             position=self.position,
             unit_key=self.unit_type,
             metadata={"controllable": self.controllable, "source": "probe"},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeUnitObservation:
+    """Une unite vue par la sonde, au sein d'un etat de bataille.
+
+    **Les champs optionnels valent `None` quand le jeu ne les expose pas.**
+    C'est deliberement different de zero : le recensement mene en bataille a
+    montre que `unary_morale` et toutes les formes de fatigue sont absentes du
+    bac a sable Lua. Un moral a zero se confondrait avec une unite qui rompt.
+    """
+
+    unit_id: str
+    position: Vector3
+    unit_type: str = ""
+    controllable: bool = False
+    alive: bool = True
+    routing: bool = False
+    shattered: bool = False
+    in_melee: bool = False
+    hidden: bool = False
+    can_fly: bool = False
+    #: Sante normalisee 0–1. `None` si le jeu ne la donne pas.
+    hitpoints: float | None = None
+    men_alive: int | None = None
+    bearing: float | None = None
+    ammo: int | None = None
+    missile_range: float | None = None
+
+    @property
+    def is_ranged(self) -> bool:
+        """Unite capable de tirer, d'apres ce que le jeu expose.
+
+        `missile_range` vaut 0 sur une unite de melee — verifie en bataille sur
+        un prince demon. Sans la donnee, on ne suppose rien.
+        """
+        return self.missile_range is not None and self.missile_range > 0.0
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> ProbeUnitObservation:
+        data = require_mapping(raw, "ProbeUnitObservation")
+        return cls(
+            unit_id=as_str(data, "id"),
+            position=Vector3.from_dict(require_mapping(data.get("position"), "position")),
+            unit_type=as_str(data, "type", default=""),
+            controllable=as_bool(data, "controllable", default=False),
+            alive=as_bool(data, "alive", default=True),
+            routing=as_bool(data, "routing", default=False),
+            shattered=as_bool(data, "shattered", default=False),
+            in_melee=as_bool(data, "in_melee", default=False),
+            hidden=as_bool(data, "hidden", default=False),
+            can_fly=as_bool(data, "can_fly", default=False),
+            hitpoints=_optional_float(data, "hitpoints"),
+            men_alive=_optional_int(data, "men_alive"),
+            bearing=_optional_float(data, "bearing"),
+            ammo=_optional_int(data, "ammo"),
+            missile_range=_optional_float(data, "missile_range"),
+        )
+
+    def to_unit_state(self, side: Side) -> UnitState:
+        """Traduction vers le domaine de l'agent.
+
+        Le role reste `UNKNOWN` : c'est au classifieur de le deduire de la cle
+        d'unite, en appliquant les regles de `config/unit_roles.yaml`.
+        """
+        metadata: dict[str, Any] = {
+            "source": "probe",
+            "controllable": self.controllable,
+            "shattered": self.shattered,
+            # Le jeu n'expose ni le moral ni la fatigue : `UnitState` les laisse
+            # a 50 et 0, valeurs qui ressemblent a des mesures. On marque donc
+            # explicitement qu'elles n'en sont pas — toute regle de l'agent qui
+            # s'en sert doit d'abord verifier ces drapeaux.
+            "morale_available": False,
+            "fatigue_available": False,
+        }
+        for name in ("hitpoints", "men_alive", "bearing", "ammo", "missile_range"):
+            value = getattr(self, name)
+            if value is not None:
+                metadata[name] = value
+        return UnitState(
+            id=self.unit_id,
+            side=side,
+            role=UnitRole.UNKNOWN,
+            position=self.position,
+            heading=self.bearing if self.bearing is not None else 0.0,
+            unit_key=self.unit_type,
+            health_ratio=self.hitpoints if self.hitpoints is not None else 1.0,
+            is_routing=self.routing or self.shattered,
+            is_engaged=self.in_melee,
+            is_hidden=self.hidden,
+            metadata=metadata,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeBattleState:
+    """La bataille entiere, telle que la sonde la voit a un instant donne."""
+
+    allies: tuple[ProbeUnitObservation, ...] = ()
+    enemies: tuple[ProbeUnitObservation, ...] = ()
+    sequence: int = 0
+    game_time_ms: int = 0
+    phase: str = ""
+    protocol_version: str = PROTOCOL_VERSION
+
+    @property
+    def orders_take_effect(self) -> bool:
+        """Voir `ProbeUnitState.orders_take_effect`."""
+        return self.phase in ("", "unknown", "Deployed", "Complete")
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> ProbeBattleState:
+        data = require_mapping(raw, "ProbeBattleState")
+        version = as_str(data, "protocol_version")
+        check_version(version)
+        _require_type(data, ProbeMessageType.BATTLE_STATE)
+        return cls(
+            allies=tuple(ProbeUnitObservation.from_dict(item) for item in _as_list(data, "allies")),
+            enemies=tuple(
+                ProbeUnitObservation.from_dict(item) for item in _as_list(data, "enemies")
+            ),
+            sequence=as_int(data, "sequence", default=0),
+            game_time_ms=as_int(data, "game_time_ms", default=0),
+            phase=as_str(data, "phase", default=""),
+            protocol_version=version,
+        )
+
+    def to_battle_state(self, battle_id: str = "live") -> BattleState:
+        """Etat de bataille consommable par l'agent existant.
+
+        Les unites mortes sont ecartees : l'agent n'a rien a decider a leur
+        sujet, et les garder fausserait les barycentres et rapports de force.
+        """
+        units = [
+            observation.to_unit_state(side)
+            for side, group in ((Side.ALLY, self.allies), (Side.ENEMY, self.enemies))
+            for observation in group
+            if observation.alive
+        ]
+        return BattleState(
+            battle_id=battle_id,
+            sequence=self.sequence,
+            game_time=self.game_time_ms / 1000.0,
+            phase=_domain_phase(self.phase),
+            units=tuple(units),
+            metadata={"game_phase": self.phase, "source": "probe"},
         )
 
 
@@ -273,3 +424,49 @@ def _require_type(data: Any, expected: ProbeMessageType) -> None:
     actual = as_str(data, "type")
     if actual != expected.value:
         raise SchemaError(f"Message de type {actual!r} la ou {expected.value!r} etait attendu")
+
+
+def _as_list(data: Any, key: str) -> list[Any]:
+    """Liste sous une cle, tolerante a son absence."""
+    value = data.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise SchemaError(f"Le champ '{key}' doit etre une liste")
+    return value
+
+
+def _optional_float(data: Any, key: str) -> float | None:
+    """Nombre optionnel : absent signifie « le jeu ne l'expose pas »."""
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SchemaError(f"Le champ '{key}' doit etre un nombre")
+    return float(value)
+
+
+def _optional_int(data: Any, key: str) -> int | None:
+    value = _optional_float(data, key)
+    return None if value is None else int(value)
+
+
+#: Correspondance entre les phases annoncees par le jeu et celles du domaine.
+#:
+#: Le jeu en compte davantage, et son `Deployed` marque le debut du combat, pas
+#: l'engagement : c'est donc `approach`. L'agent affinera ensuite lui-meme
+#: d'apres ce qu'il observe — le jeu ne dit pas quand la melee commence.
+_GAME_PHASES: dict[str, BattlePhase] = {
+    "Startup": BattlePhase.DEPLOYMENT,
+    "PrebattleWeather": BattlePhase.DEPLOYMENT,
+    "PrebattleCinematic": BattlePhase.DEPLOYMENT,
+    "Deployment": BattlePhase.DEPLOYMENT,
+    "Deployed": BattlePhase.APPROACH,
+    "VictoryCountdown": BattlePhase.ENGAGEMENT,
+    "Complete": BattlePhase.FINISHED,
+}
+
+
+def _domain_phase(game_phase: str) -> BattlePhase:
+    """Phase du domaine, `deployment` par defaut faute de mieux."""
+    return _GAME_PHASES.get(game_phase, BattlePhase.DEPLOYMENT)
