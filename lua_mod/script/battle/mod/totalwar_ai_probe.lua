@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 5
+TOTALWAR_AI_PROBE_REVISION = 6
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -223,6 +223,21 @@ local function read_attacks_field(text)
         end
     end
     return attacks
+end
+
+--- Extrait la liste `halts` d'une commande : les unites a immobiliser.
+---
+---   "halts":["1007","1009"]
+local function read_halts_field(text)
+    local block = string.match(text, '"halts"%s*:%s*(%b[])')
+    if not block then
+        return {}
+    end
+    local halts = {}
+    for unit_id in string.gmatch(block, '"([^"]+)"') do
+        halts[#halts + 1] = unit_id
+    end
+    return halts
 end
 
 --[[--------------------------------------------------------------------------
@@ -415,6 +430,7 @@ function PROBE:unit_snapshot(unit)
 
     add_bool("controllable", "is_controllable")
     add_bool("commanding", "is_commanding_unit")
+    add_bool("idle", "is_idle")
     add_bool("alive", "is_valid_target")
     add_bool("routing", "is_routing")
     add_bool("shattered", "is_shattered")
@@ -867,6 +883,39 @@ function PROBE:start_attack(unit_id, target_id, force_melee, release_after_ms)
     return true, nil
 end
 
+--- Immobilise une unite. Ne journalise aucun accuse.
+---
+--- « Tenir la position » ne se traduisait par aucun ordre, ce qui laissait
+--- l'unite poursuivre ce qu'elle faisait : l'agent croyait tenir sa ligne
+--- pendant que l'armee continuait d'avancer. Un arret explicite est le seul
+--- moyen de rendre cette intention.
+function PROBE:start_halt(unit_id)
+    local unit, army = self:find_unit_by_id(unit_id)
+    if not unit then
+        return false, "unite introuvable"
+    end
+    if not unit:is_controllable() then
+        return false, "unite non controlable"
+    end
+
+    local uc = army:create_unit_controller()
+    if not uc then
+        return false, "creation du unitcontroller impossible"
+    end
+    if not pcall(function() uc:add_units(unit) end) then
+        return false, "uc:add_units a echoue (groupe verrouille ?)"
+    end
+    if not pcall(function() uc:halt() end) then
+        uc:release_control()
+        return false, "uc:halt a echoue"
+    end
+
+    -- L'arret est instantane : rendre la main tout de suite, plutot que de
+    -- confisquer l'unite cinq secondes pour un ordre deja execute.
+    uc:release_control()
+    return true, nil
+end
+
 --- Programme la restitution du controle, quoi qu'il arrive ensuite.
 function PROBE:schedule_release(sequence, unit_id, release_after_ms)
     bm:callback(function()
@@ -909,7 +958,8 @@ end
 function PROBE:execute_orders(sequence, content, release_after_ms)
     local moves = read_moves_field(content)
     local attacks = read_attacks_field(content)
-    if #moves == 0 and #attacks == 0 then
+    local halts = read_halts_field(content)
+    if #moves == 0 and #attacks == 0 and #halts == 0 then
         self:emit_ack(sequence, "rejected", "aucun ordre dans la commande")
         return
     end
@@ -941,6 +991,17 @@ function PROBE:execute_orders(sequence, content, release_after_ms)
         compter(attack.unit_id, ok, motif)
     end
 
+    for index = 1, #halts do
+        local unit_id = halts[index]
+        local ok, motif = self:start_halt(unit_id)
+        if ok then
+            lances = lances + 1 -- pas de restitution a programmer : deja rendue
+        else
+            refuses = refuses + 1
+            premier_refus = premier_refus or (tostring(unit_id) .. " : " .. tostring(motif))
+        end
+    end
+
     local resume = tostring(lances) .. " ordre(s) lance(s), " .. tostring(refuses) .. " refuse(s)"
     if lances == 0 then
         self:emit_ack(sequence, "rejected", premier_refus, resume)
@@ -949,7 +1010,8 @@ function PROBE:execute_orders(sequence, content, release_after_ms)
     self:emit_ack(sequence, "accepted", premier_refus, resume)
     self:log(
         "manoeuvre : " .. tostring(#moves) .. " deplacement(s), "
-            .. tostring(#attacks) .. " attaque(s) — " .. resume
+            .. tostring(#attacks) .. " attaque(s), "
+            .. tostring(#halts) .. " arret(s) — " .. resume
     )
 end
 

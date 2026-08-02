@@ -66,6 +66,7 @@ local function make_unit(id, unit_type, x, z, controllable)
         men = 80,
         men_alive = 64,
         commanding = false,
+        idle = true,
         unique_ui_id = function(self) return self.id end,
         type = function(self) return self.unit_type end,
         position = function(self) return self.pos end,
@@ -73,6 +74,7 @@ local function make_unit(id, unit_type, x, z, controllable)
         is_valid_target = function(self) return true end,
         -- Le jeu identifie le seigneur : la premiere unite de l'armee.
         is_commanding_unit = function(self) return self.commanding == true end,
+        is_idle = function(self) return self.idle ~= false end,
 
         -- Accesseurs supplementaires, volontairement partiels : le vrai jeu
         -- n'expose pas tout, et le recensement doit savoir le dire. Les noms
@@ -118,6 +120,7 @@ local function make_unit_controller()
                 }
                 -- Le faux jeu deplace l'unite immediatement.
                 self.units[index].pos = make_vector(destination.x, 12.5, destination.z)
+                self.units[index].idle = false
             end
             return true
         end,
@@ -132,6 +135,16 @@ local function make_unit_controller()
                     unit_id = self.units[index].id,
                     target_id = target.id,
                 }
+            end
+            return true
+        end,
+        halt = function(self)
+            for index = 1, #self.units do
+                FAKE.orders[#FAKE.orders + 1] = {
+                    kind = "halt",
+                    unit_id = self.units[index].id,
+                }
+                self.units[index].idle = true
             end
             return true
         end,

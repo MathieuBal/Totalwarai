@@ -59,18 +59,24 @@ class LiveStep:
         )
         if self.skipped:
             return f"{entete} — {self.skipped}"
-        if not self.sent:
-            reste = self.translation.untranslated
-            if reste:
-                noms = ", ".join(sorted({item[0].value for item in reste}))
-                return f"{entete} — aucun ordre traduisible ({noms})"
-            return f"{entete} — rien a faire"
+
         detail = []
         if self.translation.moves:
             detail.append(f"{len(self.translation.moves)} deplacement(s)")
         if self.translation.attacks:
             detail.append(f"{len(self.translation.attacks)} attaque(s)")
-        return f"{entete} — " + ", ".join(detail)
+        if self.translation.halts:
+            detail.append(f"{len(self.translation.halts)} arret(s)")
+
+        # Les actions perdues se disent **toujours**, y compris quand d'autres
+        # sont parties. Ne les montrer qu'en l'absence d'ordre les a fait passer
+        # inapercues en bataille : deux deplacements masquaient trois
+        # contournements abandonnes, et le compte rendu paraissait normal.
+        if self.translation.untranslated:
+            noms = ", ".join(sorted({item[0].value for item in self.translation.untranslated}))
+            detail.append(f"{len(self.translation.untranslated)} action(s) perdue(s) : {noms}")
+
+        return f"{entete} — " + (", ".join(detail) if detail else "rien a faire")
 
 
 @dataclass
@@ -136,6 +142,7 @@ class LiveSession:
         self.bridge.send_orders(
             translation.moves,
             translation.attacks,
+            translation.halts,
             release_after_ms=self.release_after_ms,
         )
         return LiveStep(

@@ -174,6 +174,7 @@ class FileBridge:
         self,
         moves: Sequence[tuple[str, Vector3]] = (),
         attacks: Sequence[ProbeAttack] = (),
+        halts: Sequence[str] = (),
         *,
         sequence: int | None = None,
         release_after_ms: int = 5000,
@@ -186,6 +187,7 @@ class FileBridge:
         command = ProbeOrdersCommand(
             moves=tuple(moves),
             attacks=tuple(attacks),
+            halts=tuple(halts),
             sequence=sequence if sequence is not None else self._next_sequence,
             release_after_ms=release_after_ms,
         )

@@ -20,8 +20,11 @@ from tests.integration.test_lua_probe_execution import Probe
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
 from totalwar_ai.bridge.command_models import ProbeAttack, ProbeOrdersCommand, decode_command
 from totalwar_ai.bridge.file_bridge import FileBridge
-from totalwar_ai.bridge.live import LiveSession
+from totalwar_ai.bridge.live import LiveSession, LiveStep
+from totalwar_ai.bridge.orders import Translation
 from totalwar_ai.config import load_config
+from totalwar_ai.domain.actions import ActionType
+from totalwar_ai.domain.geometry import Vector3
 
 #: Une armee plausible : un seigneur, deux lignes, des tireurs, de l'artillerie.
 ARMEE = [
@@ -190,10 +193,7 @@ def test_le_seigneur_est_reconnu_comme_tel(session: LiveSession) -> None:
     assert [unite.unit_id for unite in commandants] == ["1001"]
 
 
-def _destinations(etape: object) -> list[tuple[str, tuple[float, float, float]]]:
-    from totalwar_ai.bridge.live import LiveStep
-
-    assert isinstance(etape, LiveStep)
+def _destinations(etape: LiveStep) -> list[tuple[str, tuple[float, float, float]]]:
     return [(unit_id, (point.x, point.y, point.z)) for unit_id, point in etape.translation.moves]
 
 
@@ -252,3 +252,65 @@ def test_deplacements_et_attaques_partent_ensemble(tmp_path: Path) -> None:
     publiee = decode_command(json.loads(bridge.paths.command.read_text(encoding="utf-8")))
     assert isinstance(publiee, ProbeOrdersCommand)
     assert publiee.order_count == 2
+
+
+def test_les_actions_perdues_se_disent_meme_quand_d_autres_partent(
+    session: LiveSession,
+) -> None:
+    """Constate en bataille : deux deplacements masquaient trois manoeuvres perdues.
+
+    Le resume ne montrait les actions non traduites que si *aucun* ordre
+    n'etait parti. Un tour ou l'agent perd la moitie de ses intentions
+    paraissait alors parfaitement normal.
+    """
+    from totalwar_ai.bridge.live import LiveStep
+
+    etape = LiveStep(
+        state=session.bridge.latest_battle_state(),
+        translation=Translation(
+            moves=(("1001", Vector3(0.0, 0.0, 0.0)),),
+            untranslated=((ActionType.REORIENT_FRONT, "peu importe"),),
+        ),
+        sent=1,
+    )
+
+    resume = etape.summary()
+    assert "1 deplacement(s)" in resume
+    assert "1 action(s) perdue(s)" in resume
+    assert "REORIENT_FRONT" in resume
+
+
+def test_tenir_la_ligne_arrete_reellement_les_unites(tmp_path: Path) -> None:
+    """Bout en bout : « tenir la position » doit produire un arret dans le jeu.
+
+    Constate en bataille : cent quatorze tours, deux ordres. Cinq « tenir la
+    position » par tour ne traversaient pas le pont, et l'armee continuait sur
+    sa lancee pendant que l'agent croyait tenir.
+    """
+    (tmp_path / "totalwar_ai").mkdir()
+    probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
+    probe.advance(2000)
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+
+    bridge = FileBridge.open(tmp_path)
+    # On met l'armee en mouvement, comme le ferait le joueur.
+    etat = bridge.latest_battle_state()
+    assert etat is not None
+    bridge.send_orders(moves=[(unite.unit_id, Vector3(0.0, 0.0, -200.0)) for unite in etat.allies])
+    probe.advance(2000)
+
+    session = LiveSession(
+        bridge=FileBridge.open(tmp_path),
+        agent=DeterministicTacticalAgent.from_config(load_config()),
+    )
+    for _ in range(4):
+        etape = session.step()
+        probe.advance(2000)
+        if etape.translation.halts:
+            break
+    else:  # pragma: no cover - filet
+        pytest.fail("aucun arret emis alors que l'armee est en mouvement")
+
+    arrets = [order for order in probe.orders() if order["kind"] == "halt"]
+    assert arrets, "aucun ordre d'arret n'est arrive jusqu'au jeu"
