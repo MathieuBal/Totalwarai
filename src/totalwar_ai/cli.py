@@ -467,7 +467,10 @@ def _supervise(
         bridge=bridge,
         supervisor=Supervisor(rules=DEFAULT_RULES if supervised else ()),
     )
-    recorder = BattleRecorder(directory=config.path("telemetry", "battles_dir") if record else None)
+    recorder = BattleRecorder(
+        directory=config.path("telemetry", "battles_dir") if record else None,
+        record_units=bool(config.telemetry.get("record_units", True)),
+    )
 
     print("Attente d'un etat du jeu (30 s)...")
     state = None
@@ -630,7 +633,10 @@ def _play(
     if posture is not None:
         agent.planner.forced_posture = posture
     session = LiveSession(bridge=bridge, agent=agent)
-    recorder = BattleRecorder(directory=config.path("telemetry", "battles_dir") if record else None)
+    recorder = BattleRecorder(
+        directory=config.path("telemetry", "battles_dir") if record else None,
+        record_units=bool(config.telemetry.get("record_units", True)),
+    )
 
     print(f"Pilotage pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.")
     if posture is not None:

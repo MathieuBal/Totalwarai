@@ -363,10 +363,13 @@ def test_une_bataille_pilotee_est_enregistree(
 
     assert recorder.turns == 3
     assert recorder.path is not None
-    lignes = recorder.path.read_text(encoding="utf-8").splitlines()
-    assert len(lignes) == 3
+    # L'inventaire des unites occupe ses propres lignes : on ne compte que les
+    # tours.
+    lignes = [json.loads(ligne) for ligne in recorder.path.read_text(encoding="utf-8").splitlines()]
+    tours = [ligne for ligne in lignes if "roster" not in ligne]
+    assert len(tours) == 3
 
-    premier = json.loads(lignes[0])
+    premier = tours[0]
     assert premier["allies"] == len(ARMEE)
     assert premier["enemies"] == len(ENNEMIS)
     assert premier["phase"] == "Deployed"

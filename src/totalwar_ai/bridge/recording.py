@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from totalwar_ai.bridge.command_models import ProbeBattleState
+from totalwar_ai.bridge.command_models import ProbeBattleState, ProbeUnitObservation
 from totalwar_ai.bridge.live import LiveStep
 from totalwar_ai.domain.battle_state import BattleOutcomeKind
 from totalwar_ai.memory.models import BattleSummary, Episode
@@ -43,9 +43,25 @@ class BattleRecorder:
 
     battle_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     directory: Path | None = None
+    #: Conserver l'etat de **chaque unite**, a chaque tour.
+    #:
+    #: Sans cela, une bataille enregistree ne dit que des comptes et des sommes
+    #: — dix-huit allies, quatorze de force — et rien de ce que les unites ont
+    #: fait. C'est suffisant pour comparer deux issues, et totalement
+    #: insuffisant pour apprendre en regardant jouer l'IA du moteur : on ne voit
+    #: pas ses decisions.
+    #:
+    #: Cout mesure : **un mega-octet par bataille**, pour quarante unites et
+    #: quatre minutes de combat — soit une trentaine de mega-octets pour le
+    #: corpus d'apprentissage vise. Sans l'inventaire ecrit a part, ce serait le
+    #: double : le type, le camp et la portee de tir ne changent jamais, et les
+    #: repeter a chaque tour pesait plus lourd que tout le reste.
+    record_units: bool = True
 
     #: Un objet JSON par tour, dans l'ordre.
     entries: list[dict[str, Any]] = field(default_factory=list)
+    #: Inventaire des unites rencontrees : identifiant -> ce qui ne change pas.
+    roster: dict[str, dict[str, Any]] = field(default_factory=dict)
     orders_sent: int = 0
     orders_blocked: int = 0
     actions_lost: int = 0
@@ -108,10 +124,37 @@ class BattleRecorder:
                 for action, reason in step.translation.untranslated
             ],
         }
+        if self.record_units:
+            self._refresh_roster(step.state)
+            entry["units"] = [
+                _unit_entry(observation)
+                for groupe in (step.state.allies, step.state.enemies)
+                for observation in groupe
+            ]
         self.entries.append(entry)
         if self._handle is not None:
             self._handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
             self._handle.flush()
+
+    def _refresh_roster(self, state: ProbeBattleState) -> None:
+        """Publie l'inventaire des unites, et le republie si de nouvelles arrivent.
+
+        Une bataille de campagne peut recevoir des renforts en cours de route :
+        un inventaire ecrit une fois pour toutes laisserait ces unites sans
+        type ni camp, donc inexploitables.
+        """
+        nouvelles = {
+            observation.unit_id: _roster_entry(observation, camp)
+            for camp, groupe in (("ally", state.allies), ("enemy", state.enemies))
+            for observation in groupe
+            if observation.unit_id not in self.roster
+        }
+        if not nouvelles:
+            return
+        self.roster.update(nouvelles)
+        if self._handle is not None:
+            ligne = {"turn": self.turns, "roster": nouvelles}
+            self._handle.write(json.dumps(ligne, ensure_ascii=False) + "\n")
 
     def close(self) -> None:
         if self._handle is not None:
@@ -181,6 +224,67 @@ class BattleRecorder:
         la memoire d'apprentissage sous les traits d'une mesure.
         """
         return Episode(summary=self.summary())
+
+
+#: Precision des coordonnees enregistrees, en decimales.
+#:
+#: Le metre suffit largement pour retrouver qui allait vers qui, et trois
+#: decimales par unite et par tour multipliees par trente batailles font du
+#: volume pour rien.
+_POSITION_PRECISION = 1
+
+
+def _roster_entry(observation: ProbeUnitObservation, side: str) -> dict[str, Any]:
+    """Ce qui ne change pas d'un tour a l'autre : ecrit une fois, pas deux cents.
+
+    Repeter le type, le camp et la portee de tir a chaque tour multipliait par
+    trois le poids d'une bataille — deux mega-octets et demi la ou huit cents
+    kilo-octets suffisent, et soixante-dix mega-octets pour un corpus de trente.
+    """
+    entry: dict[str, Any] = {"side": side, "type": observation.unit_type}
+    if observation.commanding:
+        entry["commanding"] = True
+    if observation.can_fly:
+        entry["can_fly"] = True
+    if observation.missile_range is not None:
+        entry["missile_range"] = observation.missile_range
+    return entry
+
+
+def _unit_entry(observation: ProbeUnitObservation) -> dict[str, Any]:
+    """Ce qui bouge : position et condition, tour par tour.
+
+    **Un champ absent veut dire que le jeu ne l'expose pas**, et jamais zero —
+    c'est la meme regle que dans le protocole. Un moral a zero se confondrait
+    avec une unite qui rompt ; une munition a zero, avec un carquois vide.
+    """
+    entry: dict[str, Any] = {
+        "id": observation.unit_id,
+        "x": round(observation.position.x, _POSITION_PRECISION),
+        "z": round(observation.position.z, _POSITION_PRECISION),
+    }
+    # Les booleens ne sont ecrits que lorsqu'ils sont vrais : sur une bataille
+    # entiere, la plupart des unites ne sont ni au contact, ni en deroute, ni
+    # cachees, et quatre `false` par ligne pesent plus que l'information.
+    if not observation.alive:
+        entry["dead"] = True
+    if observation.in_melee:
+        entry["in_melee"] = True
+    if observation.idle:
+        entry["idle"] = True
+    if observation.routing or observation.shattered:
+        entry["routing"] = True
+    if observation.hidden:
+        entry["hidden"] = True
+    if observation.hitpoints is not None:
+        entry["hitpoints"] = round(observation.hitpoints, 3)
+    if observation.men_alive is not None:
+        entry["men_alive"] = observation.men_alive
+    if observation.bearing is not None:
+        entry["bearing"] = round(observation.bearing, 1)
+    if observation.ammo is not None:
+        entry["ammo"] = observation.ammo
+    return entry
 
 
 def _strength(state: ProbeBattleState, side: str) -> float:
