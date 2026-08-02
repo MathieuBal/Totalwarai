@@ -87,6 +87,10 @@ class Probe:
     def advance(self, ms: int) -> None:
         self.fake.advance(self.fake, ms)
 
+    def enter_phase(self, name: str) -> None:
+        """Declenche le rappel de changement de phase du faux jeu."""
+        self.fake.phase_callbacks[name]()
+
     def deny_writes(self) -> None:
         """Retire le droit d'ecriture apres coup, sans toucher a la lecture.
 
@@ -616,3 +620,70 @@ def test_le_recensement_ne_tue_pas_la_sonde(probe: Probe, workdir: Path) -> None
     probe.advance(3000)
     assert not probe.grep("ERREUR dans publish_state")
     assert FileBridge.open(workdir).read_states()
+
+
+# --- ordres survivant a la bataille ------------------------------------------
+
+
+def test_une_commande_d_une_partie_precedente_n_est_pas_executee(
+    workdir: Path,
+) -> None:
+    """Un ordre ne survit pas a la bataille qui l'a recu.
+
+    La memoire anti-rejeu du Lua vit en memoire : elle repart vide a chaque
+    bataille. Un fichier de commande oublie sur le disque etait donc execute au
+    demarrage de la bataille suivante — constate en jeu, un ordre d'une partie
+    passee deplacant une unite d'une nouvelle partie.
+    """
+    # Une commande deposee AVANT que la sonde ne demarre : elle vient d'ailleurs.
+    bridge = FileBridge.open(workdir)
+    ancienne = bridge.move_unit("1006", Vector3(999.0, 0.0, 999.0))
+
+    probe = Probe(workdir, units=[("1006", "unite", 0.0, 0.0, True)])
+    probe.advance(3000)
+
+    assert probe.grep("commande anterieure a cette bataille ignoree")
+    assert not probe.orders(), probe.orders()
+    assert not bridge.read_acks()
+    assert ancienne.sequence == 1
+
+
+def test_une_commande_posterieure_au_demarrage_est_bien_executee(
+    probe: Probe, workdir: Path
+) -> None:
+    """Neutraliser l'ancienne commande ne doit pas bloquer les suivantes."""
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+    etat = bridge.wait_for_state(timeout=0, sleep=lambda _: None)
+    assert etat is not None
+
+    commande = bridge.move_unit(etat.unit_id, Vector3(etat.position.x + 20.0, 0.0, 0.0))
+    probe.advance(1000)
+
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=0, sleep=lambda _: None)
+    assert accuse is not None and accuse.accepted
+
+
+# --- phase de bataille -------------------------------------------------------
+
+
+def test_la_phase_est_publiee_dans_l_etat(probe: Probe, workdir: Path) -> None:
+    """Python doit distinguer « rien produit » de « bataille pas commencee »."""
+    probe.advance(2000)
+    bridge = FileBridge.open(workdir)
+
+    etat = bridge.read_states()[-1]
+    assert etat.phase == "unknown"
+    assert etat.orders_take_effect  # dans le doute, on ne bloque pas
+
+    probe.enter_phase("Deployment")
+    probe.advance(2000)
+    etat = bridge.read_states()[-1]
+    assert etat.phase == "Deployment"
+    assert not etat.orders_take_effect
+
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+    etat = bridge.read_states()[-1]
+    assert etat.phase == "Deployed"
+    assert etat.orders_take_effect
