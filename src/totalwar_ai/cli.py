@@ -122,6 +122,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="l'IA du jeu mene la bataille, nos regles corrigent ses angles morts (defaut 300 s)",
     )
     probe.add_argument(
+        "--observe",
+        type=float,
+        nargs="?",
+        const=300.0,
+        metavar="SECONDES",
+        help="l'IA du jeu joue seule, on enregistre sans intervenir : "
+        "c'est la mesure de reference a laquelle comparer les autres modes "
+        "(defaut 300 s)",
+    )
+    probe.add_argument(
         "--delegate",
         action="store_true",
         help="confier toute l'armee a l'IA de bataille du jeu "
@@ -318,7 +328,7 @@ def _cmd_probe(args: argparse.Namespace) -> int:
 
     # Les trois modes de pilotage attendent des etats du jeu. Une sentinelle
     # d'arret oubliee les fait tourner a vide, sans qu'aucun n'en dise rien.
-    if args.supervise or args.delegate or args.play:
+    if args.supervise or args.observe or args.delegate or args.play:
         if _stop_sentinel_blocks(bridge):
             return 1
         # On ne pilote jamais sur une archive : seuls les etats publies a partir
@@ -327,6 +337,8 @@ def _cmd_probe(args: argparse.Namespace) -> int:
 
     if args.supervise:
         return _supervise(bridge, args.supervise, record=not args.no_record)
+    if args.observe:
+        return _supervise(bridge, args.observe, record=not args.no_record, supervised=False)
     if args.delegate:
         return _delegate(bridge)
     if args.reclaim:
@@ -384,7 +396,13 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
-def _supervise(bridge: FileBridge, duration: float, *, record: bool = True) -> int:
+def _supervise(
+    bridge: FileBridge,
+    duration: float,
+    *,
+    record: bool = True,
+    supervised: bool = True,
+) -> int:
     """L'IA du jeu mene la bataille ; nos regles corrigent ses angles morts.
 
     Elle connait le terrain, le pathfinding et les formations, que nous n'avons
@@ -394,11 +412,20 @@ def _supervise(bridge: FileBridge, duration: float, *, record: bool = True) -> i
 
     Chaque reprise est journalisee avec son motif : une session sans
     intervention doit se lire aussi clairement qu'une session mouvementee.
+
+    **`supervised=False` retire toutes les regles** : l'IA du jeu joue seule et
+    l'on se contente d'observer et d'enregistrer. C'est la mesure de reference,
+    et elle passe volontairement par le meme code que la supervision — deux
+    chemins differents ne produiraient pas deux batailles comparables.
     """
     from totalwar_ai.bridge.live import SupervisedSession
+    from totalwar_ai.bridge.supervision import DEFAULT_RULES, Supervisor
 
     config = load_config()
-    session = SupervisedSession(bridge=bridge)
+    session = SupervisedSession(
+        bridge=bridge,
+        supervisor=Supervisor(rules=DEFAULT_RULES if supervised else ()),
+    )
     recorder = BattleRecorder(directory=config.path("telemetry", "battles_dir") if record else None)
 
     print("Attente d'un etat du jeu (30 s)...")
@@ -427,7 +454,8 @@ def _supervise(bridge: FileBridge, duration: float, *, record: bool = True) -> i
             f"  {len(manquantes)} unite(s) refusees par le jeu et laissees de cote : "
             + ", ".join(manquantes)
         )
-    print(f"Supervision pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.")
+    quoi = "Supervision" if supervised else "Observation (aucune regle : l'IA du jeu joue seule)"
+    print(f"{quoi} pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.")
     if recorder.path is not None:
         print(f"Enregistrement : {recorder.path}")
     print()
@@ -457,6 +485,8 @@ def _supervise(bridge: FileBridge, duration: float, *, record: bool = True) -> i
         f"\n{recorder.turns} tour(s), {recorder.orders_sent} intervention(s) sur "
         f"{len(confiees)} unite(s) confiees."
     )
+    if not supervised:
+        print("  Aucune regle n'etait active : c'est la mesure de reference.")
     if not interrompu:
         print("Les unites restent confiees a l'IA du jeu.")
         print("  `totalwar-ai probe --reclaim` pour reprendre la main.")
@@ -490,11 +520,21 @@ def _delegate(bridge: FileBridge) -> int:
         return 1
 
     commande = bridge.delegate(unit_ids)
-    print(f"{len(unit_ids)} unite(s) confiees a l'IA du jeu (ordre {commande.sequence}).")
     accuse = bridge.wait_for_ack(commande.sequence, timeout=15.0)
     if accuse is None:
         print("Aucun accuse recu.", file=sys.stderr)
         return 1
+
+    # Le compte annonce est celui du jeu, jamais le notre. Annoncer dix-huit
+    # unites confiees quand le Lua n'en avait pris que six s'est produit en
+    # bataille, et la difference est restee invisible toute la session.
+    confiees = [unit_id for unit_id in unit_ids if unit_id not in accuse.refused_ids]
+    print(f"{len(confiees)} unite(s) confiees a l'IA du jeu (ordre {commande.sequence}).")
+    if accuse.refused_ids:
+        print(
+            f"  {len(accuse.refused_ids)} refusee(s) par le jeu : "
+            + ", ".join(sorted(accuse.refused_ids))
+        )
     print(f"Accuse : {accuse.status.value}" + (f" ({accuse.error})" if accuse.error else ""))
     if accuse.accepted:
         print("`totalwar-ai probe --reclaim` pour reprendre la main.")

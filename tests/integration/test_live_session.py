@@ -563,3 +563,46 @@ def test_le_pont_ignore_les_etats_de_la_session_precedente(tmp_path: Path) -> No
 
     probe.advance(2000)
     assert pilote.latest_battle_state() is not None, "les etats suivants doivent arriver"
+
+
+def test_le_mode_de_reference_confie_tout_et_n_intervient_jamais(tmp_path: Path) -> None:
+    """La mesure de reference ne vaut que si rien ne contrarie l'IA du jeu.
+
+    Une seule regle qui se declencherait suffirait a fausser la comparaison
+    entre « l'IA du jeu seule » et « l'IA du jeu supervisee » : on ne mesurerait
+    plus la difference entre les deux, mais deux supervisions differentes.
+    """
+    from totalwar_ai.bridge.live import SupervisedSession
+    from totalwar_ai.bridge.supervision import Supervisor
+
+    (tmp_path / "totalwar_ai").mkdir()
+    probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
+    probe.advance(2000)
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+
+    # Un seigneur a l'agonie : la supervision le reprendrait, la reference non.
+    probe.runtime.execute(
+        "local units = bm:alliances():item(1):armies():item(1):units()\n"
+        "for i = 1, units:count() do\n"
+        "  local u = units:item(i)\n"
+        "  if tostring(u:unique_ui_id()) == '1001' then u.men_alive = 10 end\n"
+        "end\n"
+    )
+    probe.advance(2000)
+
+    session = SupervisedSession(
+        bridge=FileBridge.open(tmp_path).tail(),
+        supervisor=Supervisor(rules=()),
+        wait=lambda _: probe.advance(600),
+    )
+    probe.advance(1200)
+    etat = session.bridge.latest_battle_state()
+    assert etat is not None
+    assert len(session.delegate_all(etat)) == len(ARMEE)
+
+    for _ in range(3):
+        probe.advance(1200)
+        etape = session.step()
+        assert not etape.interventions, "une reprise a eu lieu sans aucune regle active"
+        assert not etape.returned
