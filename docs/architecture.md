@@ -164,20 +164,26 @@ harnais, `test_lua_probe_execution.py`, exécute le vrai script dans un Lua
 embarqué (`lupa`) contre un faux jeu : il a attrapé plusieurs défauts avant
 qu'ils ne coûtent un essai en bataille.
 
-### Quatre façons de piloter, une seule boucle
+### Cinq façons de piloter, une seule boucle
 
-`totalwar-ai probe` expose quatre modes, du plus autonome au plus supervisé :
+`totalwar-ai probe` expose cinq modes, du plus autonome au plus supervisé :
 
 | Mode | Qui décide | À quoi il sert |
 | --- | --- | --- |
 | `--play` | notre agent seul | mesurer ce que l'agent sait faire |
-| `--delegate` | l'IA du jeu seule | établir la référence à battre |
+| `--observe` | l'IA du jeu seule | établir la référence à battre |
 | `--supervise` | l'IA du jeu, nos règles corrigent | le mode de travail visé |
+| `--delegate` | l'IA du jeu seule, sans boucle | confier l'armée et rendre la main |
 | `--move` | l'opérateur | diagnostic du pont |
 
-Les trois premiers partagent `bridge/live.py` : même lecture d'état, même
-mémoire des effectifs, même traduction en ordres. Ce qui change est uniquement
-qui produit les décisions.
+`--play`, `--observe` et `--supervise` partagent `bridge/live.py` : même lecture
+d'état, même mémoire des effectifs, même traduction en ordres. Ce qui change est
+uniquement qui produit les décisions.
+
+**`--observe` est `--supervise` avec un jeu de règles vide.** Ce n'est pas une
+économie de code mais une condition de validité : deux chemins distincts ne
+produiraient pas deux batailles comparables, et c'est précisément leur
+comparaison qui doit dire si nos règles améliorent ou dégradent l'IA du moteur.
 
 ### Déléguer à l'IA du jeu, puis la superviser
 

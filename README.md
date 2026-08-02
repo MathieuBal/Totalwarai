@@ -94,8 +94,7 @@ Neuf essais en bataille ont établi, pas supposé :
 - **les ordres de déplacement passent** — une unité s'est déplacée de 20,3 m,
   mesurés par le jeu, sur ordre publié par Python ;
 - l'agent a mené une bataille de bout en bout, et chaque décision est
-  enregistrée.
-
+  enregistrée ;
 - **l'arrêt d'urgence fonctionne** : le fichier sentinelle a fait tout libérer
   au jeu et reprendre les unités confiées à son IA (essai n° 9).
 
@@ -109,7 +108,7 @@ Ce que le jeu **ne** donne pas, vérifié accesseur par accesseur : ni moral, ni
 fatigue, ni vitesse, ni largeur de front, ni la moindre donnée de terrain. Le
 détail est dans [`docs/feasibility.md`](docs/feasibility.md).
 
-### Quatre façons de jouer une bataille
+### Cinq façons de jouer une bataille
 
 | Commande | Qui décide | Éprouvé en bataille |
 | --- | --- | --- |
