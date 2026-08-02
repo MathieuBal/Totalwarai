@@ -253,13 +253,20 @@ dans [`feasibility.md`](feasibility.md).
 
 **Vérifié dans *WARHAMMER III*** : l'écriture et la lecture de fichiers depuis
 le Lua de bataille, l'observation de l'armée entière et de l'adversaire, la
-classification des unités, les ordres de déplacement, d'attaque et
-d'immobilisation, et l'agent pilotant une bataille de bout en bout.
+classification des unités, les **ordres de déplacement** (20,3 m mesurés par le
+jeu), et l'agent pilotant une bataille de bout en bout.
 
 **Écrit et testé contre le faux jeu, jamais exécuté dans le vrai** — et donc à
-ne pas présenter comme fonctionnel : la restitution automatique du contrôle au
-bout de cinq secondes, l'arrêt d'urgence, la délégation à `script_ai_planner` et
-la supervision (révisions 7 et 8).
+ne pas présenter comme fonctionnel : les ordres d'attaque et d'immobilisation,
+la restitution automatique du contrôle au bout de cinq secondes, l'arrêt
+d'urgence, la délégation à `script_ai_planner` et la supervision (révisions 7
+et 8).
+
+La frontière est celle du **journal d'essais**, pas celle de la couverture de
+tests : `uc:attack_unit` est acquitté par le Lua et couvert par le harnais
+`lupa`, mais aucun essai n'a mesuré son effet en bataille. Un ordre acquitté
+n'est pas un ordre exécuté — le moteur acquitte aussi ceux qu'il ignore avant
+la phase `Deployed`.
 
 ## Ce qui n'existe pas
 

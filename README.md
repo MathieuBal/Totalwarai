@@ -91,9 +91,16 @@ Huit essais en bataille ont établi, pas supposé :
   risque principal du projet, il est levé ;
 - l'armée entière est observée : identifiants, types, positions, effectifs,
   santé, munitions, portée, déroute, contact, seigneur ;
-- les ordres passent — déplacement de groupe, attaque, arrêt ;
+- **les ordres de déplacement passent** — une unité s'est déplacée de 20,3 m,
+  mesurés par le jeu, sur ordre publié par Python ;
 - l'agent a mené une bataille de bout en bout, et chaque décision est
   enregistrée.
+
+Ce qui est écrit mais **jamais mesuré en bataille**, et qu'il ne faut donc pas
+tenir pour acquis : les ordres d'attaque et d'arrêt, la restitution automatique
+du contrôle, l'arrêt d'urgence, la délégation et la supervision. Le Lua les
+acquitte, le harnais Lua embarqué les couvre — mais aucun essai n'en a constaté
+l'effet dans le jeu.
 
 Ce que le jeu **ne** donne pas, vérifié accesseur par accesseur : ni moral, ni
 fatigue, ni vitesse, ni largeur de front, ni la moindre donnée de terrain. Le
@@ -101,15 +108,19 @@ détail est dans [`docs/feasibility.md`](docs/feasibility.md).
 
 ### Quatre façons de jouer une bataille
 
-| Commande | Qui décide |
-| --- | --- |
-| `probe --delegate` | **l'IA du jeu** joue toute l'armée |
-| `probe --supervise` | l'IA du jeu joue, **nos règles corrigent** ses angles morts |
-| `probe --play` | **notre agent** joue seul |
-| `probe --reclaim` / `--abort` | **vous** reprenez la main |
+| Commande | Qui décide | Éprouvé en bataille |
+| --- | --- | --- |
+| `probe --delegate` | **l'IA du jeu** joue toute l'armée | non |
+| `probe --supervise` | l'IA du jeu joue, **nos règles corrigent** ses angles morts | non |
+| `probe --play` | **notre agent** joue seul | oui |
+| `probe --reclaim` / `--abort` | **vous** reprenez la main | non |
 
 Les trois premiers enregistrent la bataille dans le même format, ce qui permet
 de les comparer.
+
+La colonne de droite n'est pas un détail : seul `--play` a réellement tourné
+dans le jeu. Les trois autres sont arrivés avec les révisions 7 et 8 du script
+Lua, qui n'ont pas encore été rejouées en bataille.
 
 **Sur la délégation.** *WARHAMMER III* embarque sa propre IA de bataille,
 accessible par `script_ai_planner`. Elle connaît le terrain, le pathfinding et
@@ -720,18 +731,29 @@ Un modèle candidat devient le modèle stable uniquement s’il :
 
 ### Phase 0 — Faisabilité technique
 
-- [ ] Identifier la version du jeu ciblée.
-- [ ] Recenser les API Lua de bataille réellement accessibles en campagne.
-- [ ] Vérifier l’accès aux unités alliées.
-- [ ] Vérifier l’accès aux unités ennemies visibles.
-- [ ] Lire positions, état, moral, fatigue et munitions si disponibles.
-- [ ] Tester un ordre de déplacement sur une unité.
-- [ ] Tester un ordre d’attaque.
-- [ ] Tester la reprise manuelle du contrôle.
-- [ ] Tester un moyen de communication local.
-- [ ] Documenter les impossibilités et contournements.
+- [ ] Identifier la version du jeu ciblée. — *non relevée ; seule la version de
+      Lua l'est (5.1)*
+- [x] Recenser les API Lua de bataille réellement accessibles en campagne. —
+      *recensement automatique de 24 accesseurs, essais n° 6 et 7*
+- [x] Vérifier l’accès aux unités alliées. — *11 unités recensées*
+- [x] Vérifier l’accès aux unités ennemies visibles. — *2ᵉ alliance, 11 unités*
+- [x] Lire positions, état, moral, fatigue et munitions si disponibles. —
+      *positions, santé, effectif, munitions et portée : oui. **Moral et fatigue :
+      inaccessibles**, sous toutes leurs formes*
+- [x] Tester un ordre de déplacement sur une unité. — *20,3 m parcourus, essai n° 4*
+- [ ] Tester un ordre d’attaque. — *`uc:attack_unit` est écrit et acquitté, mais
+      aucun essai n'a mesuré son effet : les pilotages n'ont émis que des
+      déplacements*
+- [ ] Tester la reprise manuelle du contrôle. — *écrite, jamais déclenchée en
+      bataille : ni la restitution après 5 s, ni l'arrêt d'urgence*
+- [x] Tester un moyen de communication local. — *trois fichiers dans
+      `<installation>/totalwar_ai/`, aller-retour complet*
+- [x] Documenter les impossibilités et contournements. —
+      [`docs/feasibility.md`](docs/feasibility.md)
 
-**Livrable :** preuve de concept capable d’observer au moins une unité et de lui envoyer un ordre contrôlé.
+**Livrable :** preuve de concept capable d’observer au moins une unité et de lui
+envoyer un ordre contrôlé. — *atteint à l'essai n° 4 ; la phase reste ouverte sur
+la reprise du contrôle, qui est le seul point de sûreté non vérifié*
 
 ### Phase 1 — Simulateur et contrats
 
@@ -921,12 +943,25 @@ Totalwarai/
 
 Les données de bataille et les modèles lourds ne doivent pas être versionnés directement dans Git.
 
-> **État réel du dépôt.** Cette arborescence est la cible. Aujourd'hui, `lua_mod/`
-> n'existe pas (Phase 0 non commencée), `bridge/file_bridge.py` et le paquet
-> `learning/{trainer,evaluator}.py` sont volontairement différés — voir
-> [`docs/decisions/0002-pont-reel-differe.md`](docs/decisions/0002-pont-reel-differe.md).
-> Le reste est en place, plus `config/simulation.yaml`,
-> `agent/grouping.py`, `simulation/runner.py` et `learning/rewards.py`.
+> **État réel du dépôt.** Cette arborescence est la cible de conception ; le
+> dépôt s'en écarte sur deux points, et l'écart est instructif.
+>
+> **`lua_mod/` existe et a tourné en bataille**, mais en **un seul fichier**,
+> `script/battle/mod/totalwar_ai_probe.lua`, et non les quatre prévus. Le bac à
+> sable Lua de bataille s'est révélé trop restreint pour justifier un découpage :
+> pas de `require`, un seul point d'entrée chargé par le jeu. Le pont
+> correspondant, `bridge/file_bridge.py`, existe aussi — la décision de le
+> différer ([`0002`](docs/decisions/0002-pont-reel-differe.md)) a été levée, et
+> le paquet `bridge/` compte aujourd'hui six modules de plus que prévu
+> (`command_models`, `paths`, `roster`, `orders`, `supervision`, `live`,
+> `recording`), tous détaillés dans [`docs/architecture.md`](docs/architecture.md).
+>
+> **`learning/{trainer,evaluator}.py` n'existe toujours pas** (Phases 5–6) :
+> aucun modèle n'est entraîné. `learning/checkpoints.py`, lui, existe — il sert
+> l'adaptation bornée de la doctrine, pas des poids appris. En place et non
+> prévus ici : `config/simulation.yaml`, `agent/grouping.py`,
+> `agent/doctrine.py`, `simulation/runner.py`, `learning/rewards.py`,
+> `learning/adaptation.py` et `learning/evaluation.py`.
 
 ---
 

@@ -4,13 +4,23 @@
 >
 > L'aller-retour complet est acquis depuis l'essai n° 4 — ordre publié par
 > Python, lu et exécuté par le Lua, unité déplacée de **20,3 m** mesurés par le
-> jeu, accusé remonté. Depuis : observation de l'armée entière, ordres
-> d'attaque et d'arrêt, agent en pilotage, enregistrement des batailles.
+> jeu, accusé remonté. Depuis : observation de l'armée entière, recensement des
+> accesseurs, classification des unités, agent en pilotage de bout en bout,
+> enregistrement des batailles.
 >
 > **Ce qui reste non confirmé en jeu**, et ne doit donc pas être présenté comme
-> fonctionnel : la restitution automatique du contrôle après cinq secondes,
-> l'arrêt d'urgence, et la délégation à l'IA du jeu — écrite et testée contre le
-> faux jeu, jamais exécutée dans le vrai.
+> fonctionnel :
+>
+> - la restitution automatique du contrôle après cinq secondes ;
+> - l'arrêt d'urgence, par commande comme par fichier sentinelle ;
+> - **les ordres d'attaque et d'immobilisation** : le code est écrit et le Lua
+>   les acquitte, mais aucun essai n'a mesuré leur effet — les pilotages n'ont
+>   émis que des déplacements ;
+> - la délégation à `script_ai_planner` et la supervision (révisions 7 et 8),
+>   écrites et testées contre le faux jeu, jamais exécutées dans le vrai.
+>
+> Les essais n° 7 et 8 n'ont pas de compte rendu détaillé ci-dessous : seuls
+> leurs enseignements ont été reportés dans les tableaux.
 
 ## Ce que le jeu permet, en une phrase
 
