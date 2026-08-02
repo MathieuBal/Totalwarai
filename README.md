@@ -113,13 +113,15 @@ détail est dans [`docs/feasibility.md`](docs/feasibility.md).
 
 | Commande | Qui décide | Éprouvé en bataille |
 | --- | --- | --- |
-| `probe --delegate` | **l'IA du jeu** joue toute l'armée | partiellement |
+| `probe --observe` | **l'IA du jeu** joue seule — la référence à battre | non |
+| `probe --delegate` | l'IA du jeu prend l'armée, sans enregistrement | partiellement |
 | `probe --supervise` | l'IA du jeu joue, **nos règles corrigent** ses angles morts | non |
 | `probe --play` | **notre agent** joue seul | oui |
 | `probe --reclaim` / `--abort` | **vous** reprenez la main | oui |
 
-Les trois premiers enregistrent la bataille dans le même format, ce qui permet
-de les comparer.
+`--observe` et `--supervise` enregistrent la bataille dans le même format et
+passent par le même code, au jeu de règles près : c'est ce qui rend les deux
+résultats comparables.
 
 La colonne de droite n'est pas un détail. À l'essai n° 9, la délégation a bien
 créé le planificateur du moteur, mais sur six unités sur dix-huit — la sonde ne
@@ -214,8 +216,9 @@ $env:TOTALWAR_AI_BRIDGE_DIR = "<installation de WARHAMMER III>"
 
 totalwar-ai probe --log 40        # doit afficher : Pack a jour (revision N)
 totalwar-ai probe --reset         # vider les flux et lever un arret precedent
-totalwar-ai probe --delegate      # l'IA du jeu prend l'armee
+totalwar-ai probe --observe 300   # l'IA du jeu joue seule : la reference
 totalwar-ai probe --supervise 300 # elle joue, nos regles corrigent
+totalwar-ai probe --delegate      # confier l'armee, sans rien enregistrer
 totalwar-ai probe --play 120      # notre agent joue seul
 totalwar-ai probe --reclaim       # vous reprenez la main
 totalwar-ai probe --abort         # arret d'urgence, tout est libere
