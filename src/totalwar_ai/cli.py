@@ -400,16 +400,53 @@ def _print_game_log(bridge: FileBridge, limit: int) -> int:
         )
         return 1
 
-    for ligne in lignes[-limit:]:
-        print(f"  {ligne.strip()}")
+    # Les etats sont repetitifs par nature : quatre-vingts lignes d'affilee
+    # peuvent n'etre que la meme unite immobile. On les met de cote pour que le
+    # reste — diagnostics, recensement, erreurs, accuses — reste lisible.
+    routine = [ligne for ligne in lignes if _est_routinier(ligne)]
+    notable = [ligne for ligne in lignes if not _est_routinier(ligne)]
 
-    # Un diagnostic manquant est en soi une information.
-    if not any("diagnostic des entrees-sorties" in ligne for ligne in lignes):
-        print(
-            "\nCe journal ne contient pas le diagnostic des entrees-sorties : "
-            "le pack embarque une version anterieure du script. Le reconstruire."
-        )
+    for ligne in notable[-limit:]:
+        print(f"  {ligne.strip()}")
+    if routine:
+        print(f"\n  ... et {len(routine)} ligne(s) d'etat, masquees ici.")
+        print(f"  Derniere : {routine[-1].strip()}")
+
+    # Ce que le journal ne contient PAS est souvent l'information utile.
+    for marqueur, message in _MARQUEURS_DE_VERSION:
+        if not any(marqueur in ligne for ligne in lignes):
+            print(f"\n{message}")
+            break
     return 0
+
+
+#: Marqueurs attendus dans un journal, du plus ancien au plus recent.
+#:
+#: Leur absence date le script embarque dans le pack. C'est le diagnostic le
+#: plus frequent de ce projet : un pack non reconstruit apres modification.
+_MARQUEURS_DE_VERSION: tuple[tuple[str, str], ...] = (
+    (
+        "diagnostic des entrees-sorties",
+        "Ce journal ne contient pas le diagnostic des entrees-sorties : le pack "
+        "embarque une version anterieure du script. Le reconstruire.",
+    ),
+    (
+        "recensement des accesseurs",
+        "Ce journal ne contient pas le recensement des accesseurs : le pack "
+        "embarque une version anterieure du script. Le reconstruire.",
+    ),
+    (
+        "BATTLE phase",
+        "Ce journal ne contient aucune ligne `BATTLE` : le pack embarque une "
+        "version anterieure a l'observation de la bataille entiere. "
+        "Le reconstruire.",
+    ),
+)
+
+
+def _est_routinier(ligne: str) -> bool:
+    """Ligne d'etat periodique, sans valeur pour le diagnostic."""
+    return "] STATE " in ligne or "] BATTLE " in ligne
 
 
 def _print_probe_status(bridge: FileBridge) -> None:

@@ -809,3 +809,22 @@ def test_le_flux_mixte_sert_les_deux_lecteurs(bataille: Probe, workdir: Path) ->
     assert batailles, "aucun etat de bataille"
     assert unites, "l'etat mono-unite a ete avale par l'autre lecteur"
     assert not bridge.malformed
+
+
+def test_le_journal_n_est_pas_noye_par_les_etats(probe: Probe) -> None:
+    """Tant que l'ecriture marche, le journal n'a pas a recevoir chaque etat.
+
+    Constate en jeu : 297 Ko de journal en dix-sept minutes, ou `probe --log`
+    n'affichait plus que des lignes identiques. Le canal de repli noyait le
+    diagnostic qu'il est cense servir.
+    """
+    probe.advance(30_000)  # une trentaine d'etats publies
+    assert len(probe.grep("STATE ")) < 10
+
+
+def test_sans_ecriture_le_journal_recoit_tout(tmp_path: Path) -> None:
+    """Quand le fichier est inaccessible, le journal redevient le seul canal."""
+    # Pas de dossier d'echange : l'ecriture echoue des le depart.
+    probe = Probe(tmp_path, units=[("1001", "unite", 0.0, 0.0, True)])
+    probe.advance(30_000)
+    assert len(probe.grep("STATE ")) > 20

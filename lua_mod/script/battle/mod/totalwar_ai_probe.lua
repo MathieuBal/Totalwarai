@@ -288,10 +288,19 @@ function PROBE:emit_state(unit_id, unit_type, position, controllable)
         .. '"controllable":' .. tostring(controllable and true or false)
         .. "}}"
 
-    -- Le log recoit systematiquement le message : c'est le canal de repli.
-    self:log("STATE " .. line)
+    -- Le journal reste le canal de repli, mais seulement quand il en est un.
+    --
+    -- Tant que l'ecriture de fichier fonctionne, Python lit le flux et n'a nul
+    -- besoin du journal : un etat par seconde y devient du bruit qui noie le
+    -- diagnostic — 297 Ko en dix-sept minutes de bataille, ou `probe --log`
+    -- n'affichait plus que des lignes identiques. On n'en garde donc qu'un
+    -- echantillon. Si l'ecriture devient impossible, le journal redevient le
+    -- seul canal : on y remet alors chaque etat, integralement.
     if self:check_write_access() then
+        self:log_occasionally("state_count", "STATE " .. line)
         self:write_or_complain(self.state_file, line, "state")
+    else
+        self:log("STATE " .. line)
     end
     return self.sequence
 end
