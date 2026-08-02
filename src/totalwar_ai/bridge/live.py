@@ -171,9 +171,9 @@ class LiveSession:
 
 #: Actions que la boucle sait rendre aujourd'hui.
 #:
-#: Restent hors de portee `PROTECT`, `FLANK` et `REORIENT_FRONT` : toutes trois
-#: demandent une position calculee — interception, contournement, orientation —
-#: que ni l'agent ni le jeu ne fournissent aujourd'hui.
+#: Seule `REORIENT_FRONT` reste hors de portee : elle demande un ordre
+#: d'orientation que le jeu n'expose pas, et elle avait ete retiree du perimetre
+#: de l'agent apres mesure (voir ADR 0004).
 TRANSLATABLE_ACTIONS: frozenset[ActionType] = frozenset(
     {
         ActionType.MOVE_GROUP,
@@ -184,5 +184,7 @@ TRANSLATABLE_ACTIONS: frozenset[ActionType] = frozenset(
         ActionType.ATTACK_TARGET,
         ActionType.FOCUS_FIRE,
         ActionType.CHASE_ROUTING,
+        ActionType.FLANK,
+        ActionType.PROTECT,
     }
 )

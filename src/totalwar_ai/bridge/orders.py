@@ -19,6 +19,7 @@ from totalwar_ai.bridge.command_models import ProbeAttack
 from totalwar_ai.domain.actions import ActionType, AgentAction
 from totalwar_ai.domain.battle_state import BattleState
 from totalwar_ai.domain.geometry import Vector3, heading_vector
+from totalwar_ai.domain.unit_state import Side
 
 #: Espacement lateral par defaut entre deux unites d'une meme ligne, en metres.
 #:
@@ -26,6 +27,19 @@ from totalwar_ai.domain.geometry import Vector3, heading_vector
 #: a sable), impossible donc de calculer un espacement juste. Trente metres
 #: laissent passer une unite d'infanterie sans chevauchement visible.
 DEFAULT_SPACING = 30.0
+
+#: Distance a laquelle une unite contourne sa cible, en metres.
+#:
+#: Assez large pour que le moteur ne rabatte pas l'unite droit sur l'ennemi —
+#: un contournement trop serre se termine en charge frontale — assez court pour
+#: que la manoeuvre aboutisse avant que la cible n'ait bouge.
+FLANK_OFFSET = 70.0
+
+#: Fraction du trajet menace -> protege ou se place l'intercepteur.
+#:
+#: Au-dela de la moitie : l'interception doit avoir lieu **avant** le contact,
+#: donc plus pres de la menace que du protege.
+INTERCEPT_RATIO = 0.65
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,17 +92,26 @@ class OrderTranslator:
                     untranslated.append((action.type, refus))
                 continue
 
-            key = self.destination_keys.get(action.type)
-            if key is None:
-                if action.type is not ActionType.HOLD_POSITION:
-                    untranslated.append((action.type, self._why(action.type)))
-                # `HOLD_POSITION` se traduit par l'absence d'ordre : ne rien
-                # envoyer est exactement ce qu'elle demande.
-                continue
+            if action.type is ActionType.FLANK:
+                destination = self._flank_position(action, state)
+            elif action.type is ActionType.PROTECT:
+                destination = self._intercept_position(action, state)
+            else:
+                key = self.destination_keys.get(action.type)
+                if key is None:
+                    if action.type is not ActionType.HOLD_POSITION:
+                        untranslated.append((action.type, self._why(action.type)))
+                    # `HOLD_POSITION` se traduit par l'absence d'ordre : ne rien
+                    # envoyer est exactement ce qu'elle demande.
+                    continue
+                candidate = action.parameters.get(key)
+                destination = candidate if isinstance(candidate, Vector3) else None
+                if destination is None:
+                    untranslated.append((action.type, f"parametre '{key}' absent ou invalide"))
+                    continue
 
-            destination = action.parameters.get(key)
-            if not isinstance(destination, Vector3):
-                untranslated.append((action.type, f"parametre '{key}' absent ou invalide"))
+            if destination is None:
+                untranslated.append((action.type, self._why(action.type)))
                 continue
 
             for unit_id, point in self._spread(action, destination, state):
@@ -133,6 +156,53 @@ class OrderTranslator:
             vues += 1
         return None if vues else "aucune unite disponible"
 
+    def _flank_position(self, action: AgentAction, state: BattleState) -> Vector3 | None:
+        """Point d'ou contourner une cible, sur son flanc.
+
+        La manoeuvre se calcule dans le repere de l'affrontement : l'axe qui
+        va de notre armee vers la cible, et sa perpendiculaire. On se porte sur
+        le cote demande, a `FLANK_OFFSET` de la cible, et **legerement au-dela**
+        d'elle — s'arreter a sa hauteur reviendrait a l'aborder de face.
+
+        Renvoie `None` quand la cible a disparu : mieux vaut ne rien ordonner
+        que d'envoyer la cavalerie sur un souvenir.
+        """
+        target_id = action.parameters.get("target_id")
+        target = state.unit(target_id) if isinstance(target_id, str) else None
+        if target is None:
+            return None
+
+        axe = state.centroid(Side.ALLY).direction_to(target.position)
+        if axe.length() == 0.0:
+            return None
+        lateral = Vector3(axe.z, 0.0, -axe.x)
+        # `side` vaut "left" ou "right" ; toute autre valeur passe a droite,
+        # ce qui reste une manoeuvre valide plutot qu'un refus.
+        signe = -1.0 if str(action.parameters.get("side", "")).lower() == "left" else 1.0
+        return target.position + lateral.scaled(signe * FLANK_OFFSET) + axe.scaled(FLANK_OFFSET / 2)
+
+    def _intercept_position(self, action: AgentAction, state: BattleState) -> Vector3 | None:
+        """Point ou couper la route a la menace la plus proche d'un protege.
+
+        Se porter sur le protege lui-meme ne le protege pas : l'escorte
+        arriverait derriere lui, la menace atteignant le protege en meme temps.
+        On se place donc **sur le trajet**, aux deux tiers du chemin vers la
+        menace, pour l'accrocher avant le contact.
+        """
+        proteges = action.parameters.get("protected_ids")
+        if not isinstance(proteges, list | tuple) or not proteges:
+            return None
+        protege = state.unit(str(proteges[0]))
+        if protege is None:
+            return None
+
+        menaces = state.enemies()
+        if not menaces:
+            return None
+        menace = min(menaces, key=lambda enemy: protege.position.distance_2d(enemy.position))
+        ecart = menace.position - protege.position
+        return protege.position + ecart.scaled(INTERCEPT_RATIO)
+
     def _spread(
         self,
         action: AgentAction,
@@ -167,8 +237,8 @@ class OrderTranslator:
     def _why(action_type: ActionType) -> str:
         """Pourquoi cette action n'a pas d'equivalent aujourd'hui."""
         besoins = {
-            ActionType.PROTECT: "necessite une position d'interception calculee",
-            ActionType.FLANK: "necessite une position de contournement calculee",
+            ActionType.PROTECT: "protege ou menace introuvable",
+            ActionType.FLANK: "cible introuvable",
             ActionType.REORIENT_FRONT: "necessite un ordre d'orientation",
         }
         return besoins.get(action_type, "aucun ordre equivalent disponible")
