@@ -49,7 +49,7 @@ from totalwar_ai.bridge.command_models import (
     ProbeReclaimCommand,
     ProbeUnitState,
 )
-from totalwar_ai.bridge.paths import BridgePaths
+from totalwar_ai.bridge.paths import STOP_CONSUMED, BridgePaths
 from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.domain.serialization import SchemaError
 
@@ -265,7 +265,18 @@ class FileBridge:
 
     @property
     def stop_requested(self) -> bool:
-        return self.paths.stop.exists()
+        """Un arret est-il demande, et pas seulement un vestige d'essai passe ?
+
+        Le Lua ne peut pas supprimer le fichier — `os.remove` n'est pas garanti
+        dans son bac a sable — alors il le vide de son sens au demarrage d'une
+        bataille. Les deux cotes doivent donc lire la meme chose : un fichier
+        marque `consumed` n'est plus un ordre d'arret.
+        """
+        try:
+            contenu = self.paths.stop.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return STOP_CONSUMED not in contenu
 
     # --- Lua -> Python -------------------------------------------------------
 

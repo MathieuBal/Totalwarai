@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 10
+TOTALWAR_AI_PROBE_REVISION = 11
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -344,6 +344,50 @@ end
 function PROBE:file_exists(path)
     local content = self:read_file(path)
     return content ~= nil
+end
+
+--- Marque qu'une sentinelle d'arret a deja ete honoree.
+---
+--- Le fichier ne peut pas etre supprime : `os.remove` n'est pas garanti dans le
+--- bac a sable du jeu, alors que `io.open` l'est. On le vide donc de son sens.
+local STOP_CONSUMED = "consumed"
+
+--- Un arret est-il demande **pour cette bataille** ?
+---
+--- La seule presence du fichier ne suffit pas. Il survit a la bataille qui l'a
+--- vu naitre, et la sonde de la bataille suivante le lisait comme un ordre
+--- d'arret : elle se coupait avant meme le deploiement, sans que rien du cote
+--- Python ne puisse le rattraper — l'arret du Lua est definitif. Ce piege a
+--- coute plusieurs essais.
+---
+--- Une sentinelle laissee par une bataille precedente n'a plus d'objet : les
+--- unites qu'elle protegeait n'existent plus. On la consomme au demarrage.
+function PROBE:stop_requested()
+    local content = self:read_file(self.stop_file)
+    if content == nil then
+        return false
+    end
+    return string.find(content, STOP_CONSUMED, 1, true) == nil
+end
+
+--- Neutralise une sentinelle heritee d'une bataille precedente.
+function PROBE:consume_stale_stop()
+    if not self:stop_requested() then
+        return
+    end
+    self:log(
+        "sentinelle d'arret laissee par une bataille precedente : levee. "
+            .. "Elle ne protegeait que des unites qui n'existent plus."
+    )
+    local handle = io and io.open and io.open(self.stop_file, "w")
+    if handle then
+        handle:write(STOP_CONSUMED .. "\n")
+        handle:close()
+    else
+        -- Ecriture refusee : mieux vaut refuser de demarrer que de tourner en
+        -- ignorant un arret qu'on ne sait pas lever.
+        self:log("ECHEC : impossible de lever la sentinelle, la sonde reste arretee")
+    end
 end
 
 --[[--------------------------------------------------------------------------
@@ -1252,7 +1296,7 @@ function PROBE:process_command_file()
 
     -- L'arret d'urgence par fichier prime sur tout le reste : il fonctionne
     -- meme si l'analyse des commandes echoue.
-    if self:file_exists(self.stop_file) then
+    if self:stop_requested() then
         self:abort("fichier d'arret present")
         return
     end
@@ -1477,8 +1521,13 @@ function PROBE:start()
             .. (unit and ("premiere = " .. self:unit_identifier(unit)) or "aucune utilisable")
     )
 
-    -- Avant tout rappel periodique : neutraliser un ordre laisse par une
-    -- partie precedente, faute de quoi il s'executerait ici.
+    -- Avant tout rappel periodique : neutraliser ce qu'une partie precedente a
+    -- laisse sur le disque, faute de quoi cette bataille en heriterait.
+    --
+    -- L'ordre compte : la sentinelle d'abord. Tant qu'elle etait lue comme un
+    -- arret, la sonde se coupait quelques secondes apres le chargement, avant
+    -- meme le deploiement, et plus rien du cote Python ne pouvait la relancer.
+    self:consume_stale_stop()
     self:discard_stale_command()
 
     -- Recensement unique : il dit ce que le jeu expose vraiment, et remplace

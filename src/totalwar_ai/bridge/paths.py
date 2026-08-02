@@ -27,7 +27,7 @@ from pathlib import Path
 #: Doit valoir `TOTALWAR_AI_PROBE_REVISION` dans
 #: `lua_mod/script/battle/mod/totalwar_ai_probe.lua`. Un test verifie l'egalite,
 #: pour que les deux ne puissent pas diverger en silence.
-EXPECTED_PROBE_REVISION = 10
+EXPECTED_PROBE_REVISION = 11
 
 #: Variable d'environnement qui court-circuite toute la detection.
 BRIDGE_DIR_ENV_VAR = "TOTALWAR_AI_BRIDGE_DIR"
@@ -40,6 +40,14 @@ STATE_FILENAME = "totalwar_ai_state.jsonl"
 COMMAND_FILENAME = "totalwar_ai_command.json"
 ACK_FILENAME = "totalwar_ai_ack.jsonl"
 STOP_FILENAME = "totalwar_ai_stop"
+
+#: Contenu qui marque une sentinelle d'arret **deja honoree**.
+#:
+#: Le Lua ne peut pas supprimer le fichier — `os.remove` n'est pas garanti dans
+#: son bac a sable, contrairement a `io.open`. Il le reecrit donc avec ce mot au
+#: demarrage d'une bataille, pour qu'une sentinelle heritee de la bataille
+#: precedente ne coupe pas la suivante. Les deux cotes lisent ce marqueur.
+STOP_CONSUMED = "consumed"
 
 #: Emplacements Steam habituels de WARHAMMER III, par plateforme.
 _STEAM_CANDIDATES: dict[str, tuple[str, ...]] = {
