@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 6
+TOTALWAR_AI_PROBE_REVISION = 7
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -75,6 +75,8 @@ local PROBE = {
     aborted = false,
     can_write = nil,          -- resultat du test d'ecriture, evalue une seule fois
     phase = "unknown",        -- derniere phase de bataille annoncee par le jeu
+    ai_planner = nil,         -- script_ai_planner du jeu, quand des unites lui sont confiees
+    delegated = {},           -- ui_id -> true, les unites actuellement confiees
 }
 
 --- Phases annoncees par le jeu, dans l'ordre observe en bataille.
@@ -223,6 +225,19 @@ local function read_attacks_field(text)
         end
     end
     return attacks
+end
+
+--- Extrait une liste d'identifiants : "cle":["1001","1002"]
+local function read_id_list(text, key)
+    local block = string.match(text, '"' .. key .. '"%s*:%s*(%b[])')
+    if not block then
+        return {}
+    end
+    local ids = {}
+    for unit_id in string.gmatch(block, '"([^"]+)"') do
+        ids[#ids + 1] = unit_id
+    end
+    return ids
 end
 
 --- Extrait la liste `halts` d'une commande : les unites a immobiliser.
@@ -785,6 +800,12 @@ function PROBE:release_unit(ui_id)
     return true
 end
 
+--- Rend au joueur tout ce que la sonde detient, par quelque voie que ce soit.
+---
+--- Point de passage unique de la sentinelle de fichier, de la commande d'arret
+--- et de la fin de bataille. La delegation a l'IA du jeu s'y defait donc aussi :
+--- la greffer ailleurs laisserait une voie d'arret incapable de la rompre, et
+--- les unites resteraient confiees a une IA que plus rien ne pilote.
 function PROBE:release_all(reason)
     local count = 0
     for ui_id, _ in pairs(self.controlled) do
@@ -792,6 +813,7 @@ function PROBE:release_all(reason)
             count = count + 1
         end
     end
+    count = count + self:reclaim_units()
     if count > 0 then
         self:log("toutes les unites relachees (" .. tostring(reason or "sans motif") .. ")")
     end
@@ -914,6 +936,109 @@ function PROBE:start_halt(unit_id)
     -- confisquer l'unite cinq secondes pour un ordre deja execute.
     uc:release_control()
     return true, nil
+end
+
+--[[--------------------------------------------------------------------------
+    Delegation a l'IA du jeu
+
+    Le moteur de WARHAMMER III embarque sa propre IA de bataille, accessible par
+    `script_ai_planner`. Elle connait le terrain, le pathfinding, les statistiques
+    d'unites et les formations — tout ce que le recensement a montre inaccessible
+    a un script Lua.
+
+    Lui confier des unites est **bien plus engageant** qu'un ordre de deplacement :
+    le joueur en perd le controle jusqu'a ce qu'on les reprenne, sans delai de
+    restitution automatique. Toutes les voies d'arret existantes doivent donc la
+    defaire : sentinelle de fichier, commande d'arret, fin de bataille.
+----------------------------------------------------------------------------]]
+
+--- `script_unit` correspondant a une unite, cree au besoin.
+---
+--- Le jeu en tient deja un pour la plupart des unites ; les invocations et les
+--- transformations font exception. `script_unit:new` peut signaler une erreur
+--- de script dans ce cas — d'ou le `pcall`, qui laisse la delegation continuer
+--- sur les autres unites au lieu de tout interrompre.
+function PROBE:script_unit_for(unit)
+    local ok, existing = pcall(function() return bm:get_scriptunit_for_unit(unit) end)
+    if ok and existing then
+        return existing
+    end
+    local created_ok, created = pcall(function() return script_unit:new(unit) end)
+    if created_ok and created then
+        return created
+    end
+    return nil
+end
+
+--- Confie des unites a l'IA du jeu.
+---
+--- Renvoie le nombre d'unites effectivement confiees, et le motif du premier
+--- refus. Une unite en echec n'empeche pas les autres.
+function PROBE:delegate_units(unit_ids)
+    local sunits, refuses, premier_refus = {}, 0, nil
+    for index = 1, #unit_ids do
+        local unit_id = unit_ids[index]
+        local unit = self:find_unit_by_id(unit_id)
+        if not unit then
+            refuses = refuses + 1
+            premier_refus = premier_refus or (tostring(unit_id) .. " : unite introuvable")
+        elseif not unit:is_controllable() then
+            refuses = refuses + 1
+            premier_refus = premier_refus or (tostring(unit_id) .. " : unite non controlable")
+        else
+            -- Une unite sous notre controle direct ne peut pas etre confiee :
+            -- on la rend d'abord, sans quoi les deux ordres se disputeraient.
+            self:release_unit(unit_id)
+            local sunit = self:script_unit_for(unit)
+            if sunit then
+                sunits[#sunits + 1] = sunit
+                self.delegated[tostring(unit_id)] = true
+            else
+                refuses = refuses + 1
+                premier_refus = premier_refus or (tostring(unit_id) .. " : script_unit indisponible")
+            end
+        end
+    end
+
+    if #sunits == 0 then
+        return 0, premier_refus or "aucune unite confiable"
+    end
+
+    if self.ai_planner then
+        local ok, err = pcall(function() self.ai_planner:add_sunits(sunits) end)
+        if not ok then
+            return 0, "add_sunits a echoue : " .. tostring(err)
+        end
+    else
+        local ok, planner = pcall(function()
+            return script_ai_planner:new("totalwar_ai", sunits, false)
+        end)
+        if not ok or not planner then
+            return 0, "creation du script_ai_planner impossible : " .. tostring(planner)
+        end
+        self.ai_planner = planner
+    end
+    return #sunits, premier_refus
+end
+
+--- Reprend toutes les unites confiees a l'IA du jeu.
+---
+--- Sans effet s'il n'y en a aucune : la reprise doit pouvoir etre demandee a
+--- tout moment, y compris par precaution.
+function PROBE:reclaim_units()
+    if not self.ai_planner then
+        return 0
+    end
+    local rendues = 0
+    for _ in pairs(self.delegated) do
+        rendues = rendues + 1
+    end
+    pcall(function() self.ai_planner:release() end)
+    pcall(function() self.ai_planner:ensure_units_are_released() end)
+    self.ai_planner = nil
+    self.delegated = {}
+    self:log("controle rendu au joueur : " .. tostring(rendues) .. " unite(s) reprises a l'IA du jeu")
+    return rendues
 end
 
 --- Programme la restitution du controle, quoi qu'il arrive ensuite.
@@ -1094,6 +1219,36 @@ function PROBE:process_command_file()
     -- commandes successives se perdraient : le fichier est un objet unique,
     -- remplace a chaque ecriture, et le Lua ne le relit que toutes les 500 ms.
     -- `move_units` reste accepte : un pack plus recent que Python doit marcher.
+    if command_type == "delegate" then
+        local ids = read_id_list(content, "unit_ids")
+        if #ids == 0 then
+            self:emit_ack(sequence, "rejected", "aucune unite a confier")
+            return
+        end
+        local ok, confiees, motif = pcall(function() return self:delegate_units(ids) end)
+        if not ok then
+            self:emit_ack(sequence, "rejected", "erreur d'execution : " .. tostring(confiees))
+            return
+        end
+        if confiees == 0 then
+            self:emit_ack(sequence, "rejected", motif)
+            return
+        end
+        self:emit_ack(sequence, "accepted", motif, tostring(confiees) .. " unite(s) confiee(s)")
+        self:log(tostring(confiees) .. " unite(s) confiee(s) a l'IA du jeu")
+        return
+    end
+
+    if command_type == "reclaim" then
+        local ok, rendues = pcall(function() return self:reclaim_units() end)
+        if not ok then
+            self:emit_ack(sequence, "rejected", "erreur d'execution : " .. tostring(rendues))
+            return
+        end
+        self:emit_ack(sequence, "released", nil, tostring(rendues) .. " unite(s) reprises")
+        return
+    end
+
     if command_type == "orders" or command_type == "move_units" then
         local ok_group, err_group = pcall(function()
             self:execute_orders(

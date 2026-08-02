@@ -177,3 +177,55 @@ La leçon n'est pas « il fallait tout lire d'emblée », mais **« relire le co
 tiers dès qu'une question précise se pose »**. Une recherche ciblée sur une
 question formulée trouve en quelques minutes ce qu'une lecture exhaustive
 préalable aurait noyé.
+
+## La découverte qui change le projet (02/08/2026)
+
+**AI General 3 ne calcule pas de tactique. Il délègue à l'IA du jeu.**
+
+Son code le dit littéralement :
+
+```
+script_ai_planner:new("pancake_aigeneral", list_of_sus_to_use, is_debug)
+-- "units that currently haven't been given to the AI"
+-- "this gives *everything* to the AI"
+```
+
+Toute l'API tient en cinq appels : `new`, `add_sunits`, `remove_sunits`,
+`release`, `ensure_units_are_released`. Les `script_unit` s'obtiennent par
+`bm:get_scriptunit_for_unit(unit)`, ou se créent par `script_unit:new(unit)`
+lorsque le jeu n'en tient pas — cas des invocations et des transformations, qui
+peut lever une erreur de script, d'où un `pcall`.
+
+### Pourquoi cela compte
+
+L'IA de bataille de Creative Assembly connaît le terrain, le pathfinding, les
+statistiques d'unités et les formations. **Tout ce que notre recensement a
+montré inaccessible à un script Lua** : ni moral, ni fatigue, ni vitesse, ni
+largeur de front, et aucune donnée de terrain.
+
+Un mod qui délègue hérite donc de toutes ces informations sans les lire. Un
+agent qui décide lui-même doit s'en passer. Ce n'est pas une différence de
+soin ou de vitesse de développement : ce sont deux problèmes de difficulté très
+inégale, et il fallait le dire plus tôt.
+
+### Ce que le mod calcule quand même
+
+La délégation ne fait pas tout. Le mod garde pour lui :
+
+* le choix des unités à confier, et le moment de les reprendre — c'est là que
+  vit sa configuration (`ALL_BUT_LORD`, renforts seulement, etc.) ;
+* un module de poursuite des fuyards, avec appariement des poursuivants aux
+  cibles (`_assign_all`, `prev_melee_target_table`) ;
+* la gestion du tir à volonté et de l'escarmouche (`fire_at_will`, `skirmish`),
+  mémorisée puis restaurée quand une unité est rendue au joueur.
+
+### Ce que nous en avons fait
+
+La délégation est implémentée dans notre sonde (`delegate` / `reclaim`), en
+appelant **directement les API du moteur** — aucune dépendance à AI General, qui
+n'a pas besoin d'être installé.
+
+Elle sert deux buts : donner immédiatement un mod qui joue vraiment, et fournir
+la **référence de comparaison** qui manquait à notre agent. L'ADR 0005 constate
+que le simulateur et le jeu se contredisent sans qu'on puisse les départager ;
+l'IA du jeu, elle, joue dans le jeu.

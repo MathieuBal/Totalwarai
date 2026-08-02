@@ -114,6 +114,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="laisser l'agent piloter la bataille pendant N secondes (defaut 120)",
     )
     probe.add_argument(
+        "--delegate",
+        action="store_true",
+        help="confier toute l'armee a l'IA de bataille du jeu "
+        "(elle connait le terrain et les formations ; notre agent, non)",
+    )
+    probe.add_argument(
+        "--reclaim",
+        action="store_true",
+        help="reprendre les unites confiees a l'IA du jeu",
+    )
+    probe.add_argument(
         "--posture",
         choices=[item.value for item in Posture],
         help="imposer une posture a l'agent pendant le pilotage "
@@ -297,6 +308,11 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         print("Arret d'urgence publie : le script Lua doit tout liberer.")
         return 0
 
+    if args.delegate:
+        return _delegate(bridge)
+    if args.reclaim:
+        return _reclaim(bridge)
+
     if args.play:
         return _play(
             bridge,
@@ -346,6 +362,56 @@ def _cmd_probe(args: argparse.Namespace) -> int:
             return 1
         return _confirm_movement(bridge, state.unit_id, state.position)
 
+    return 0
+
+
+def _delegate(bridge: FileBridge) -> int:
+    """Confie toute l'armee observee a l'IA de bataille du jeu.
+
+    **Plus engageant qu'un ordre de deplacement** : les unites restent a l'IA du
+    jeu jusqu'a `--reclaim`, sans restitution automatique. Le fichier d'arret et
+    la fin de bataille les reprennent aussi.
+    """
+    print("Attente d'un etat du jeu (30 s)...")
+    state = bridge.latest_battle_state()
+    for _ in range(60):
+        if state is not None:
+            break
+        time.sleep(0.5)
+        state = bridge.latest_battle_state()
+    if state is None:
+        print("Aucun etat recu : la bataille est-elle lancee ?", file=sys.stderr)
+        return 1
+
+    unit_ids = [unite.unit_id for unite in state.allies if unite.controllable and unite.alive]
+    if not unit_ids:
+        print("Aucune unite controlable a confier.", file=sys.stderr)
+        return 1
+
+    commande = bridge.delegate(unit_ids)
+    print(f"{len(unit_ids)} unite(s) confiees a l'IA du jeu (ordre {commande.sequence}).")
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=15.0)
+    if accuse is None:
+        print("Aucun accuse recu.", file=sys.stderr)
+        return 1
+    print(f"Accuse : {accuse.status.value}" + (f" ({accuse.error})" if accuse.error else ""))
+    if accuse.accepted:
+        print("`totalwar-ai probe --reclaim` pour reprendre la main.")
+    return 0 if accuse.accepted else 1
+
+
+def _reclaim(bridge: FileBridge) -> int:
+    """Reprend les unites confiees a l'IA du jeu."""
+    commande = bridge.reclaim()
+    accuse = bridge.wait_for_ack(commande.sequence, timeout=15.0)
+    if accuse is None:
+        print(
+            "Aucun accuse recu. En cas de doute, `probe --abort` libere tout "
+            "par une voie independante.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Reprise : {accuse.status.value} — {accuse.detail or ''}")
     return 0
 
 
