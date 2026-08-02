@@ -77,7 +77,21 @@ class ProbeUnitState:
     controllable: bool = False
     sequence: int = 0
     game_time_ms: int = 0
+    #: Phase de bataille annoncee par le jeu au moment de l'observation.
+    #: Vide si la sonde ne l'a pas encore transmise (protocole anterieur).
+    phase: str = ""
     protocol_version: str = PROTOCOL_VERSION
+
+    @property
+    def orders_take_effect(self) -> bool:
+        """Un ordre emis maintenant peut-il produire un deplacement ?
+
+        Avant `Deployed`, le moteur accepte l'ordre et l'acquitte, mais l'unite
+        ne bouge pas — constate en jeu, immobile 33 s durant apres un ordre
+        accepte. Une phase inconnue est traitee comme jouable : c'est le cas
+        d'une sonde plus ancienne, ou l'on ne veut pas bloquer a tort.
+        """
+        return self.phase in ("", "unknown", "Deployed", "Complete")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +99,7 @@ class ProbeUnitState:
             "type": ProbeMessageType.UNIT_STATE.value,
             "sequence": self.sequence,
             "game_time_ms": self.game_time_ms,
+            "phase": self.phase,
             "unit": {
                 "id": self.unit_id,
                 "type": self.unit_type,
@@ -107,6 +122,7 @@ class ProbeUnitState:
             controllable=as_bool(unit, "controllable", default=False),
             sequence=as_int(data, "sequence", default=0),
             game_time_ms=as_int(data, "game_time_ms", default=0),
+            phase=as_str(data, "phase", default=""),
             protocol_version=version,
         )
 

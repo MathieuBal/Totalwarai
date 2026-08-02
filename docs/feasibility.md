@@ -71,19 +71,38 @@ données existent et sont lisibles par un script de bataille** :
 | type de partie | `bm:is_multiplayer()` | accessible | **accessible** — appelée sans erreur, a autorisé le démarrage |
 | rappels périodiques | `bm:repeat_callback()` | accessible | **accessible** — acceptée sans erreur au démarrage |
 | phases de bataille | `bm:register_phase_change_callback` | accessible | **accessible** — `Startup`, `PrebattleWeather`, `PrebattleCinematic`, `Deployment`, `Deployed` observées dans le journal |
-| cap / orientation | `unit:bearing()` | probable | **non testée** |
-| munitions | `unit:ammo_left()` | probable | **non testée** |
-| portée de tir | `unit:missile_range()` | probable | **non testée** |
-| capacité de vol | `unit:can_fly()` | probable | **non testée** |
-| moral | inconnue | inconnu | **non testée** |
-| fatigue | inconnue | inconnu | **non testée** |
-| effectifs restants | inconnue | inconnu | **non testée** |
-| unités ennemies visibles | `bm:get_non_player_alliance()` | probable | **non testée** |
-| unité en déroute | inconnue | inconnu | **non testée** |
-| unité cachée | inconnue | inconnu | **non testée** |
+| cap / orientation | `unit:bearing()` | probable | **accessible** — `0.972` (essai n° 6) |
+| munitions | `unit:ammo_left()` | probable | **accessible** — `0` sur une unité de mêlée, cohérent |
+| portée de tir | `unit:missile_range()` | probable | **accessible** — `0` sur une unité de mêlée, cohérent |
+| capacité de vol | `unit:can_fly()` | probable | **accessible** — `true` sur un prince démon, correct |
+| **moral** | `unit:unary_morale()` | inconnu | **inaccessible** — la méthode n'existe pas |
+| **fatigue** | quatre noms tentés | inconnu | **inaccessible** — `fatigue`, `unary_fatigue`, `fatigue_level` absents |
+| effectifs restants | `unit:number_of_men_alive()` | inconnu | **accessible** — `number_of_men` absent, mais `unary_hitpoints` donne 0–1 |
+| unité en déroute | `unit:is_routing()` | inconnu | **accessible** — `false` |
+| unité brisée | `unit:is_shattered()` | inconnu | **accessible** — `false` |
+| unité au contact | `unit:is_in_melee()` | inconnu | **accessible** — `false` |
+| unité cachée | `unit:is_hidden()` | inconnu | **accessible** — `false` |
+| unités ennemies | `bm:alliances()` | probable | **accessible** — 2 alliances, la 2ᵉ aligne 11 unités (essai n° 6) |
+| vitesse, largeur de front | `speed`, `width` | inconnu | **inaccessible** — absents |
+| nom affichable | `unit:name()` | inconnu | **inutilisable** — renvoie `"1"`, un identifiant de script |
 
-Les lignes « inconnue » sont celles que le mod étudié ne lit pas : rien ne dit
-qu'elles sont indisponibles, seulement que nous n'avons aucun indice.
+Relevé par le recensement automatique de l'essai n° 6, qui appelle chaque
+accesseur candidat une fois sous `pcall` et journalise le résultat.
+
+### Deux manques qui pèsent sur la conception
+
+**Le moral n'est pas lisible.** `is_routing` et `is_shattered` donnent le
+*résultat* d'une rupture, jamais la jauge qui la précède. L'agent ne pourra donc
+pas anticiper une déroute — seulement la constater. Toute règle du simulateur
+qui s'appuie sur un moral continu est inapplicable en jeu telle quelle.
+
+**La fatigue est invisible.** Les quatre noms tentés sont absents. Les décisions
+qui en dépendent (relever une unité épuisée, choisir le moment d'une charge)
+n'ont aucune donnée sur quoi s'appuyer.
+
+Ces deux manques ne sont pas des bogues à corriger : ce sont des contraintes du
+terrain. Ils devront être reportés dans les règles de l'agent avant tout
+pilotage réel, faute de quoi il déciderait sur des champs constamment vides.
 
 ## Commande — ce que le Lua permet d'ordonner
 
@@ -199,6 +218,45 @@ Ce qu'il faut faire, dans l'ordre, pour remplir les cases ci-dessus.
 
 ## Résultats de l'essai en bataille
 
+### Essai n° 6 — 02/08/2026, 01 h 56
+
+Le recensement automatique a répondu : voir le tableau d'observation ci-dessus,
+dont il remplace toutes les lignes « inconnue » par des faits. Deux découvertes
+structurantes — **moral et fatigue sont inaccessibles** — et deux défauts.
+
+**Un ordre survivait à sa bataille.** Le journal montre, dès le démarrage :
+
+```text
+lecture OK : ./totalwar_ai/totalwar_ai_command.json existe deja
+ACK {... "sequence":3, "status":"accepted" ...}
+unite 1001 envoyee vers 326.934, -330.902
+```
+
+C'est la commande de la bataille **précédente**, restée sur le disque. La
+mémoire anti-rejeu du Lua vit en mémoire et repart vide à chaque bataille : un
+ordre d'hier s'appliquait donc à la partie d'aujourd'hui. La sonde neutralise
+désormais toute commande trouvée au démarrage — elle en note la séquence comme
+déjà traitée, sans supprimer le fichier, dont Python reste propriétaire.
+
+**Un ordre accepté qui ne produit rien.** L'unité est restée à `x = 297.676`
+pendant trente-trois secondes malgré un ordre acquitté vers `326.934`. Elle
+n'était ni en déroute ni invalide. L'explication la plus probable est la phase :
+tout cela se passe avant `Deployed`, et le moteur accepte alors les ordres sans
+les exécuter. La sonde publie donc maintenant la phase dans chaque état, et le
+CLI prévient quand un ordre ne peut pas aboutir. **À confirmer** : c'est une
+hypothèse cohérente avec les relevés, pas une certitude.
+
+**Ce que cet essai confirme par ailleurs.** La restitution du contrôle
+fonctionne, et elle est tracée :
+
+```text
+controle rendu au joueur pour l'unite 1001
+ACK {... "sequence":3, "status":"released", "note":"controle rendu apres delai" ...}
+```
+
+Cela corrige l'hypothèse notée à l'essai n° 5 : l'ordre ne « survivait » pas à
+`release_control()`. L'unité n'avait tout simplement jamais bougé.
+
 ### Essai n° 5 — 02/08/2026, 01 h 34
 
 Deux ordres de 150 m, exécutés : `26.9 → 176.9`, puis `176.9 → 326.9`. Les
@@ -227,11 +285,14 @@ l'unité soit immobile sur trois états consécutifs avant de conclure, et
 distingue « arrivée » de « encore en mouvement ».
 
 **Une observation à confirmer.** `release_after_ms` vaut 5 s, or l'unité a
-parcouru ses 150 m — 30 m/s serait invraisemblable. L'ordre semble donc
-**survivre à `release_control()`** : rendre la main au joueur ne l'annule pas.
-Si cela se confirme, c'est important pour la sûreté — reprendre le contrôle ne
-suffit pas à arrêter une unité, il faut lui donner un ordre contraire. À
-mesurer explicitement avant de piloter une armée entière.
+parcouru ses 150 m — 30 m/s serait invraisemblable. L'ordre semblait donc
+survivre à `release_control()`.
+
+> **Corrigé par l'essai n° 6.** L'hypothèse était fausse. `release_control()`
+> rend bien la main, et l'essai suivant montre une unité qui ne bouge pas du
+> tout après un ordre acquitté. Le délai entre l'ordre et la lecture suivante
+> était simplement bien plus long que les 5 s supposées : rien ne permettait de
+> conclure. Un chiffre plausible n'est pas une mesure.
 
 ### Essai n° 4 — 01/08/2026, 22 h 42
 

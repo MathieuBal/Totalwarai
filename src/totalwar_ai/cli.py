@@ -293,8 +293,14 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         print(
             f"Unite {state.unit_id} ({state.unit_type or 'type inconnu'}) "
             f"en ({state.position.x:.1f}, {state.position.z:.1f}), "
-            f"controlable={state.controllable}"
+            f"controlable={state.controllable}" + (f", phase {state.phase}" if state.phase else "")
         )
+        if not state.orders_take_effect:
+            print(
+                f"Phase {state.phase} : le moteur accepte les ordres mais l'unite "
+                "ne bougera pas avant le debut de la bataille.",
+                file=sys.stderr,
+            )
 
     if args.move and state is not None:
         destination = Vector3(state.position.x + args.move, state.position.y, state.position.z)

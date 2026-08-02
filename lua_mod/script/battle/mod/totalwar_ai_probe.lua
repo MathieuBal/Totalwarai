@@ -60,7 +60,16 @@ local PROBE = {
     controlled = {},          -- ui_id -> { uc = unitcontroller, release_at_ms = number }
     aborted = false,
     can_write = nil,          -- resultat du test d'ecriture, evalue une seule fois
+    phase = "unknown",        -- derniere phase de bataille annoncee par le jeu
 }
+
+--- Phases annoncees par le jeu, dans l'ordre observe en bataille.
+---
+--- Un ordre emis avant `Deployed` est accepte par le moteur mais ne produit
+--- aucun deplacement : constate en jeu, unite immobile 33 secondes durant apres
+--- un ordre acquitte. Publier la phase permet a Python de le savoir au lieu de
+--- conclure a une panne.
+local PHASES = { "Startup", "PrebattleWeather", "PrebattleCinematic", "Deployment", "Deployed" }
 
 --[[--------------------------------------------------------------------------
     Journalisation
@@ -267,6 +276,7 @@ function PROBE:emit_state(unit_id, unit_type, position, controllable)
         .. '"type":"unit_state",'
         .. '"sequence":' .. json_number(self.sequence) .. ","
         .. '"game_time_ms":' .. json_number(bm:time_elapsed_ms()) .. ","
+        .. '"phase":' .. json_string(self.phase) .. ","
         .. '"unit":{'
         .. '"id":' .. json_string(unit_id) .. ","
         .. '"type":' .. json_string(unit_type) .. ","
@@ -558,6 +568,33 @@ end
     Boucle de lecture des commandes
 ----------------------------------------------------------------------------]]
 
+--- Neutralise une commande laissee par une partie precedente.
+---
+--- La memoire anti-rejeu vit en memoire : elle repart vide a chaque bataille.
+--- Un fichier de commande oublie sur le disque etait donc execute au demarrage
+--- de la bataille suivante — constate en jeu, un ordre d'une partie passee
+--- deplacant une unite d'une nouvelle partie. Aucun ordre ne doit survivre a la
+--- bataille pour laquelle il a ete emis.
+---
+--- On ne supprime pas le fichier : Python en est proprietaire, et le detruire
+--- masquerait la trace. On note simplement sa sequence comme deja traitee.
+function PROBE:discard_stale_command()
+    local content = self:read_file(self.command_file)
+    if not content or content == "" then
+        return
+    end
+    local sequence = read_number_field(content, "sequence")
+    if not sequence then
+        return
+    end
+    self.last_command_sequence = sequence
+    self:log(
+        "commande anterieure a cette bataille ignoree (sequence "
+            .. json_number(sequence)
+            .. ") : un ordre ne survit pas a la bataille qui l'a recu"
+    )
+end
+
 function PROBE:process_command_file()
     if self.aborted then
         return
@@ -722,6 +759,10 @@ function PROBE:start()
             .. (unit and ("premiere = " .. self:unit_identifier(unit)) or "aucune utilisable")
     )
 
+    -- Avant tout rappel periodique : neutraliser un ordre laisse par une
+    -- partie precedente, faute de quoi il s'executerait ici.
+    self:discard_stale_command()
+
     -- Recensement unique : il dit ce que le jeu expose vraiment, et remplace
     -- les lignes « inconnue » de la fiche de faisabilite par des faits.
     self:census_alliances()
@@ -737,8 +778,19 @@ function PROBE:start()
     bm:repeat_callback(function() self:guarded("process_command_file") end,
         self.poll_interval_ms, "totalwar_ai_poll")
 
+    -- Suivi des phases : Python doit pouvoir distinguer « l'ordre n'a rien
+    -- produit » de « la bataille n'a pas encore commence ».
+    for index = 1, #PHASES do
+        local name = PHASES[index]
+        bm:register_phase_change_callback(name, function()
+            self.phase = name
+            self:log("phase : " .. name)
+        end)
+    end
+
     -- Filet de securite : quoi qu'il arrive, rien ne reste pris a la fin.
     bm:register_phase_change_callback("Complete", function()
+        self.phase = "Complete"
         self:abort("fin de bataille")
     end)
 end
