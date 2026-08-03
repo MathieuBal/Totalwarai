@@ -542,6 +542,18 @@ def _supervise(
             f"  {len(manquantes)} unite(s) refusees par le jeu et laissees de cote : "
             + ", ".join(manquantes)
         )
+    # Une armee menee en partie est une armee qui perd. Neuf unites confiees sur
+    # douze allies passait inapercu : seules les unites *demandees* etaient
+    # comptees, et une unite non controlable ne l'etait meme pas.
+    vivantes = [unite for unite in state.allies if unite.alive]
+    if len(demandees) < len(vivantes):
+        ecartees = [unite for unite in vivantes if unite.unit_id not in set(demandees)]
+        print(
+            f"  {len(ecartees)} unite(s) alliee(s) non pilotables a cet instant, "
+            "elles seront reprises des qu'elles le deviendront :"
+        )
+        for unite in ecartees[:8]:
+            print(f"      {unite.unit_id}  {unite.unit_type or 'type inconnu'}")
     quoi = "Supervision" if supervised else "Observation (aucune regle : l'IA du jeu joue seule)"
     print(f"{quoi} pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.")
     if recorder.path is not None:

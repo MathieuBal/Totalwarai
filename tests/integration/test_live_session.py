@@ -752,3 +752,67 @@ def test_les_regles_qui_se_seraient_declenchees_sont_comptees(
     regles = {rule for _, rule in etape.shadow.rules}
     assert "seigneur_en_danger" in regles, f"regles vues : {etape.shadow.rules}"
     assert not etape.interventions, "l'observation a repris une unite"
+
+
+# --- l'armee entiere, du debut a la fin ----------------------------------------
+
+
+def test_une_unite_laissee_de_cote_est_reprise_au_tour_suivant(
+    bataille: Probe, tmp_path: Path
+) -> None:
+    """Une delegation faite une fois au depart ne couvre pas une bataille.
+
+    Constate au premier soir de corpus : neuf unites confiees sur douze allies,
+    et l'operateur voyant son armee « pousser, mais pas avec toutes les unites ».
+    Une unite peut n'etre pas encore controlable au moment de la delegation,
+    arriver en renfort, ou etre relachee par le planificateur du jeu — dans les
+    trois cas elle restait plantee jusqu'a la fin.
+    """
+    from totalwar_ai.bridge.live import SupervisedSession
+    from totalwar_ai.bridge.supervision import Supervisor
+
+    session = SupervisedSession(
+        bridge=FileBridge.open(tmp_path).tail(),
+        supervisor=Supervisor(rules=()),
+        wait=lambda _: bataille.advance(600),
+    )
+    bataille.advance(1200)
+    state = session.bridge.latest_battle_state()
+    assert state is not None
+
+    # On ne confie qu'une partie de l'armee : l'autre echappe a l'IA du jeu.
+    partielle = [state.allies[0].unit_id]
+    session.bridge.delegate(partielle)
+    bataille.advance(1200)
+    session.delegated = set(partielle)
+
+    session.step()
+
+    attendues = {unite.unit_id for unite in state.allies if unite.controllable and unite.alive}
+    assert session.delegated == attendues, (
+        f"{len(attendues) - len(session.delegated)} unite(s) toujours sans pilote"
+    )
+
+
+def test_une_unite_reprise_par_la_supervision_n_est_pas_reconfiee(
+    bataille: Probe, tmp_path: Path
+) -> None:
+    """Reconfier une unite reprise annulerait la correction dans le tour meme."""
+    from totalwar_ai.bridge.live import SupervisedSession
+    from totalwar_ai.bridge.supervision import DEFAULT_RULES, Supervisor
+
+    superviseur = Supervisor(rules=DEFAULT_RULES)
+    session = SupervisedSession(
+        bridge=FileBridge.open(tmp_path).tail(),
+        supervisor=superviseur,
+        wait=lambda _: bataille.advance(600),
+    )
+    bataille.advance(1200)
+    state = session.bridge.latest_battle_state()
+    assert state is not None
+    tenue = state.allies[0].unit_id
+    superviseur.reclaimed[tenue] = 0.0
+
+    session.step()
+
+    assert tenue not in session.delegated, "l'unite tenue par la supervision a ete reconfiee"
