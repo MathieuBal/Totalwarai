@@ -43,9 +43,12 @@ deux, celle de gauche ou celle du flanc — releve d'un autre module.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from totalwar_ai.domain.unit_state import UnitRole
 from totalwar_ai.learning.observation import Move, Observation
@@ -59,6 +62,12 @@ from totalwar_ai.learning.observation import Move, Observation
 #: la cavalerie va aux tireurs, ressortait avec un gout prononce pour les
 #: lanciers, qui sont simplement ce qui l'arretait en chemin.
 CHOICE_MOVES = frozenset({Move.CLOSE, Move.FIRE})
+
+#: Marqueur en tete d'un modele enregistre.
+#:
+#: Un fichier qui se nomme lui-meme reste lisible dans six mois, et un modele
+#: d'un autre format ne se charge pas a moitie.
+MODEL_FORMAT = "totalwar_ai.targeting.v1"
 
 #: Choix observes en deca desquels une affinite ne se lit pas.
 #:
@@ -140,6 +149,85 @@ class TargetingModel:
         if not available:
             return None
         return max(available, key=lambda role: self.affinity(attacker, role))
+
+    # --- ce que l'agent peut en faire ----------------------------------------
+
+    def usable(self, attacker: UnitRole) -> bool:
+        """Ce role a-t-il assez de cas pour qu'on lui obeisse en bataille ?
+
+        **Un modele a moitie appris est pire qu'une table ecrite a la main** :
+        il a l'autorite d'une mesure et l'assise d'une anecdote. Tant qu'un role
+        n'a pas deux couples solidement observes, l'agent garde `TARGET_PRIORITY`
+        pour ce role — et seulement pour ce role.
+        """
+        return sum(1 for item in self.preference(attacker) if item.solid) >= 2
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "format": MODEL_FORMAT,
+            "samples": self.samples,
+            "skipped": self.skipped,
+            "affinities": [
+                {
+                    "attacker": item.attacker.value,
+                    "target": item.target.value,
+                    "chosen": item.chosen,
+                    "expected": round(item.expected, 4),
+                }
+                for item in sorted(
+                    self.affinities.values(), key=lambda entry: (entry.attacker, entry.target)
+                )
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> TargetingModel:
+        """Relit un modele enregistre, en ignorant ce qu'il ne comprend pas.
+
+        Un role disparu du domaine — renomme, retire — ne doit pas empecher de
+        charger les autres : le modele est une aide, jamais une dependance.
+        """
+        if not isinstance(raw, dict) or raw.get("format") != MODEL_FORMAT:
+            return cls()
+        affinites: dict[tuple[UnitRole, UnitRole], Affinity] = {}
+        for entry in raw.get("affinities") or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                attaquant = UnitRole(entry["attacker"])
+                cible = UnitRole(entry["target"])
+            except (KeyError, ValueError):
+                continue
+            affinites[(attaquant, cible)] = Affinity(
+                attacker=attaquant,
+                target=cible,
+                chosen=int(entry.get("chosen", 0)),
+                expected=float(entry.get("expected", 0.0)),
+            )
+        return cls(
+            affinities=affinites,
+            samples=int(raw.get("samples", 0)),
+            skipped=int(raw.get("skipped", 0)),
+        )
+
+    def save(self, path: Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(self.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> TargetingModel:
+        """Modele enregistre, ou un modele vide si le fichier manque.
+
+        Ne leve jamais : l'agent doit pouvoir jouer sans avoir rien appris.
+        """
+        try:
+            brut = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return cls()
+        return cls.from_dict(brut)
 
     def render(self) -> str:
         if not self.affinities:

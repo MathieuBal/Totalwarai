@@ -107,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="apprendre le ciblage des batailles enregistrees et le mesurer",
     )
     learn.add_argument(
+        "--save",
+        action="store_true",
+        help="enregistrer le ciblage appris pour que l'agent s'en serve en bataille",
+    )
+    learn.add_argument(
         "--units",
         nargs="?",
         const="",
@@ -1030,7 +1035,7 @@ def _cmd_learn(args: argparse.Namespace, config: AppConfig) -> int:
     print(corpus.render())
 
     if args.targets:
-        return _learn_targets(corpus)
+        return _learn_targets(corpus, save_to=_model_path(config) if args.save else None)
     if not args.check:
         print(
             "\n`--check` dit ce que valent les batailles enregistrees, "
@@ -1048,6 +1053,7 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
     """
     from totalwar_ai.learning.activity import summarise
     from totalwar_ai.learning.replay import iter_states
+    from totalwar_ai.learning.timeline import summarise as deroule
 
     if not corpus.battles:
         print(corpus.render())
@@ -1067,10 +1073,19 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
 
     print(f"--- activite par unite : {bataille.battle_id[:8]} ---\n")
     print(summarise(iter_states(bataille.path)).render())
+
+    # Le deroule demande une seconde lecture du fichier plutot qu'un corpus en
+    # memoire : relire coute moins cher que de tout garder ouvert.
+    print(f"\n--- deroule de la bataille : {bataille.battle_id[:8]} ---\n")
+    print(deroule(iter_states(bataille.path)).render())
     return 0
 
 
-def _learn_targets(corpus: Corpus) -> int:
+def _model_path(config: AppConfig) -> Path:
+    return config.path("memory", "models_dir") / "targeting.json"
+
+
+def _learn_targets(corpus: Corpus, *, save_to: Path | None = None) -> int:
     """Apprend le ciblage et la formation des batailles reelles exploitables.
 
     N'apprend **que** des batailles exploitables : une bataille trouee ferait
@@ -1099,10 +1114,12 @@ def _learn_targets(corpus: Corpus) -> int:
         if len(etats) >= 2:
             observations += infer(etats).observations
 
+    modele = learn(observations)
+    mesure = evaluate(observations)
     print(f"\n--- ciblage appris sur {len(corpus.usable)} bataille(s) ---\n")
-    print(learn(observations).render())
+    print(modele.render())
     print()
-    print(evaluate(observations).explain())
+    print(mesure.explain())
 
     print("\n--- formation observee ---\n")
     print(
@@ -1110,6 +1127,51 @@ def _learn_targets(corpus: Corpus) -> int:
             itertools.chain.from_iterable(iter_states(battle.path) for battle in corpus.usable)
         ).render()
     )
+
+    if save_to is not None:
+        return _save_targeting(modele, mesure, save_to)
+    print(
+        "\n`totalwar-ai learn --targets --save` mettra ce ciblage entre les mains "
+        "de l'agent.\n  Rien n'est enregistre tant qu'on ne le demande pas."
+    )
+    return 0
+
+
+def _save_targeting(modele: object, mesure: object, path: Path) -> int:
+    """Met le ciblage appris entre les mains de l'agent, s'il vaut mieux que la table.
+
+    **Un modele qui ne bat pas la table ecrite a la main n'est pas enregistre.**
+    Il aurait l'autorite d'une mesure et la valeur d'une supposition, et la
+    prochaine bataille en dependrait sans que personne ne l'ait decide.
+    """
+    from totalwar_ai.learning.targeting import Accuracy, TargetingModel
+
+    assert isinstance(modele, TargetingModel) and isinstance(mesure, Accuracy)
+    if not mesure.beats_random:
+        print(
+            "\nRefus d'enregistrer : le modele ne bat pas le hasard "
+            f"({mesure.learned:.1%} contre {mesure.random:.1%}).\n"
+            "  Il n'a rien appris ; l'agent garde sa table ecrite a la main."
+        )
+        return 1
+    if not mesure.beats_handwritten:
+        print(
+            "\nRefus d'enregistrer : le modele ne bat pas TARGET_PRIORITY "
+            f"({mesure.learned:.1%} contre {mesure.handwritten:.1%}).\n"
+            "  Il n'apprend rien que nous ne sachions deja."
+        )
+        return 1
+
+    modele.save(path)
+    exploitables = sorted(
+        {item.attacker for item in modele.affinities.values() if modele.usable(item.attacker)}
+    )
+    print(f"\nCiblage enregistre : {path}")
+    print(
+        f"  {len(exploitables)} role(s) assez observes pour que l'agent s'y fie : "
+        + (", ".join(role.value for role in exploitables) or "aucun")
+    )
+    print("  Les autres roles gardent TARGET_PRIORITY : le remplacement se fait role par role.")
     return 0
 
 

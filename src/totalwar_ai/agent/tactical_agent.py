@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from totalwar_ai.agent.doctrine import apply_to_planner, apply_to_safety
 from totalwar_ai.agent.explainability import Decision
@@ -21,11 +21,14 @@ from totalwar_ai.agent.grouping import GroupKind
 from totalwar_ai.agent.planner import BattlePlan, Planner, PlannerSettings
 from totalwar_ai.agent.safety_rules import SafetyEngine, SafetySettings
 from totalwar_ai.agent.unit_classifier import UnitClassifier
-from totalwar_ai.config import AppConfig, load_config
+from totalwar_ai.config import AppConfig, ConfigError, load_config
 from totalwar_ai.domain.actions import AgentAction
 from totalwar_ai.domain.battle_state import BattlePhase, BattleState
 from totalwar_ai.domain.unit_state import PRECIOUS_ROLES, RANGED_ROLES
 from totalwar_ai.learning.adaptation import DoctrineProfile
+
+if TYPE_CHECKING:
+    from totalwar_ai.learning.targeting import TargetingModel
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +96,10 @@ class DeterministicTacticalAgent:
         agent_cfg = resolved.agent
         safety_cfg = resolved.safety
         return cls(
-            planner=Planner(settings=PlannerSettings.from_config(agent_cfg, safety_cfg)),
+            planner=Planner(
+                settings=PlannerSettings.from_config(agent_cfg, safety_cfg),
+                targeting=_learned_targeting(resolved),
+            ),
             safety=SafetyEngine.from_config(safety_cfg),
             classifier=UnitClassifier.from_config(),
             decision_interval=float(agent_cfg.get("decision_interval_seconds", 2.0)),
@@ -130,6 +136,10 @@ class DeterministicTacticalAgent:
         self.planner = Planner(
             settings=apply_to_planner(self.planner.settings, profile),
             forced_posture=self.planner.forced_posture,
+            # Le modele appris survit lui aussi : le perdre ici rendrait
+            # l'apprentissage silencieusement caduc des la premiere doctrine
+            # rechargee, et rien ne le signalerait.
+            targeting=self.planner.targeting,
         )
         self.safety = SafetyEngine.from_settings(apply_to_safety(self.safety.settings, profile))
         self.doctrine = profile
@@ -277,3 +287,23 @@ class DeterministicTacticalAgent:
             self._blocked_signatures.add(signature)
             kept.append(decision)
         return kept, repeated
+
+
+def _learned_targeting(config: AppConfig) -> TargetingModel | None:
+    """Ce que l'IA du jeu recherche, si on l'a deja appris d'elle.
+
+    **L'absence de modele n'est pas une erreur** : c'est l'etat par defaut du
+    projet, et l'agent doit pouvoir jouer sans corpus. Un fichier illisible est
+    traite comme une absence, pour la meme raison — un modele est une aide,
+    jamais une dependance.
+    """
+    from totalwar_ai.learning.targeting import TargetingModel
+
+    try:
+        chemin = config.path("memory", "models_dir") / "targeting.json"
+    except ConfigError:
+        return None
+    if not chemin.exists():
+        return None
+    modele = TargetingModel.load(chemin)
+    return modele if modele.affinities else None

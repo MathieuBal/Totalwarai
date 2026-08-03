@@ -18,7 +18,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from totalwar_ai.agent.explainability import Decision, decide
 from totalwar_ai.agent.grouping import GroupKind, GroupSet, TacticalGroup, build_groups
@@ -32,6 +32,9 @@ from totalwar_ai.domain.unit_state import (
     UnitRole,
     UnitState,
 )
+
+if TYPE_CHECKING:
+    from totalwar_ai.learning.targeting import TargetingModel
 
 #: Interet tactique intrinseque d'une cible, dans [0, 1].
 TARGET_PRIORITY: dict[UnitRole, float] = {
@@ -164,6 +167,33 @@ class Planner:
     #: laisse croire que l'agent a choisi cette posture.
     forced_posture: Posture | None = None
 
+    #: Ce que l'IA du jeu recherche, appris en la regardant jouer.
+    #:
+    #: **L'agent joue alors sur les preferences du moteur, pas sur les notres.**
+    #: `TARGET_PRIORITY` reste la table de secours : elle sert partout ou le
+    #: modele n'a pas assez de cas, et le remplacement se fait role par role, pas
+    #: en bloc. Un modele a moitie appris a l'autorite d'une mesure et l'assise
+    #: d'une anecdote — c'est pire qu'une table ecrite a la main.
+    #:
+    #: `None` tant que rien n'a ete appris, et c'est le cas par defaut : l'agent
+    #: doit pouvoir jouer sans corpus.
+    targeting: TargetingModel | None = None
+
+    def target_value(self, attacker: UnitRole, candidate: UnitRole) -> float:
+        """Interet intrinseque d'une cible, appris si possible, ecrit sinon.
+
+        L'affinite apprise vaut 1.0 pour « indifferent » ; la table ecrite a la
+        main vaut 0.4 par defaut et 1.0 pour l'artillerie. Les deux sont ramenees
+        au meme cadran pour que le reste du calcul de score ne change pas de
+        sens selon la source.
+        """
+        if self.targeting is not None and self.targeting.usable(attacker):
+            # Une affinite de 2.0 vaut deux fois le hasard ; ramenee ici sur la
+            # meme etendue que TARGET_PRIORITY, elle pese autant qu'une cible
+            # jugee maximale a la main, jamais davantage.
+            return min(1.0, self.targeting.affinity(attacker, candidate) / 2.0)
+        return TARGET_PRIORITY.get(candidate, 0.4)
+
     # --- plan general --------------------------------------------------------
 
     def build_plan(self, state: BattleState) -> BattlePlan:
@@ -247,11 +277,11 @@ class Planner:
         if for_missile:
             # Le tir choisit surtout selon la valeur de la cible : la distance
             # ne coute qu'un peu de precision tant qu'on reste dans la portee.
-            score = 0.9 / (1.0 + distance / 50.0) + TARGET_PRIORITY.get(candidate.role, 0.4)
+            score = 0.9 / (1.0 + distance / 50.0) + self.target_value(attacker.role, candidate.role)
         else:
             # Au corps a corps, chaque metre parcouru est du temps offert a
             # l'ennemi : la proximite prime largement sur la valeur de la cible.
-            score = 2.0 / (1.0 + distance / 25.0) + TARGET_PRIORITY.get(candidate.role, 0.4)
+            score = 2.0 / (1.0 + distance / 25.0) + self.target_value(attacker.role, candidate.role)
         score += 0.30 * (1.0 - candidate.effective_strength)
 
         already = (assignments or {}).get(candidate.id, 0)

@@ -9,6 +9,10 @@ jeu — et cela se verifie **sans jouer une seule bataille**.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from totalwar_ai.domain.battle_state import BattleState
 from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.domain.unit_state import Side, UnitRole
@@ -215,3 +219,121 @@ def test_la_coupe_est_chronologique() -> None:
     mesure = evaluate(observations, holdout=0.3)
     assert mesure.samples == 30
     assert mesure.learned == 0.0, "la seconde moitie a fuite dans l'apprentissage"
+
+
+# --- de ce qu'on apprend a ce que l'agent en fait -------------------------------
+
+
+def _modele_appris() -> object:
+    """Un modele ou la cavalerie recherche nettement les tireurs."""
+    offert = (UnitRole.RANGED_INFANTRY, UnitRole.MELEE_INFANTRY, UnitRole.SPEAR_INFANTRY)
+    observations = [
+        _choix(UnitRole.SHOCK_CAVALRY, UnitRole.RANGED_INFANTRY, offert) for _ in range(60)
+    ]
+    observations += [
+        _choix(UnitRole.SHOCK_CAVALRY, UnitRole.MELEE_INFANTRY, offert) for _ in range(6)
+    ]
+    return learn(observations)
+
+
+def test_un_modele_survit_a_l_aller_retour(tmp_path: Path) -> None:
+    from totalwar_ai.learning.targeting import TargetingModel
+
+    modele = _modele_appris()
+    assert isinstance(modele, TargetingModel)
+    chemin = tmp_path / "targeting.json"
+    modele.save(chemin)
+
+    relu = TargetingModel.load(chemin)
+    assert relu.samples == modele.samples
+    # L'attendu est arrondi a l'ecriture : quatre decimales suffisent largement
+    # a un rapport, et un fichier lisible vaut mieux qu'une precision inutile.
+    assert relu.affinity(UnitRole.SHOCK_CAVALRY, UnitRole.RANGED_INFANTRY) == pytest.approx(
+        modele.affinity(UnitRole.SHOCK_CAVALRY, UnitRole.RANGED_INFANTRY)
+    )
+    assert relu.usable(UnitRole.SHOCK_CAVALRY)
+
+
+def test_un_fichier_absent_ou_illisible_donne_un_modele_vide(tmp_path: Path) -> None:
+    """L'agent doit pouvoir jouer sans avoir rien appris."""
+    from totalwar_ai.learning.targeting import TargetingModel
+
+    assert TargetingModel.load(tmp_path / "jamais_ecrit.json").affinities == {}
+    abime = tmp_path / "abime.json"
+    abime.write_text("{ceci n'est pas du JSON", encoding="utf-8")
+    assert TargetingModel.load(abime).affinities == {}
+
+
+def test_un_modele_d_un_autre_format_n_est_pas_charge_a_moitie(tmp_path: Path) -> None:
+    from totalwar_ai.learning.targeting import TargetingModel
+
+    chemin = tmp_path / "autre.json"
+    chemin.write_text('{"format": "autre.chose", "affinities": []}', encoding="utf-8")
+    assert TargetingModel.load(chemin).affinities == {}
+
+
+def test_un_role_trop_peu_observe_n_est_pas_suivi() -> None:
+    """Un modele a moitie appris a l'autorite d'une mesure et l'assise d'une anecdote."""
+    from totalwar_ai.learning.targeting import TargetingModel
+
+    duo = (UnitRole.RANGED_INFANTRY, UnitRole.MELEE_INFANTRY)
+    maigre = learn([_choix(UnitRole.LORD, UnitRole.RANGED_INFANTRY, duo) for _ in range(3)])
+    assert isinstance(maigre, TargetingModel)
+    assert not maigre.usable(UnitRole.LORD)
+
+    fourni = _modele_appris()
+    assert isinstance(fourni, TargetingModel)
+    assert fourni.usable(UnitRole.SHOCK_CAVALRY)
+
+
+def test_le_planificateur_suit_le_modele_quand_il_est_solide() -> None:
+    """C'est le point ou l'agent cesse de jouer sur nos convictions."""
+    from totalwar_ai.agent.planner import TARGET_PRIORITY, Planner
+    from totalwar_ai.learning.targeting import TargetingModel
+
+    modele = _modele_appris()
+    assert isinstance(modele, TargetingModel)
+    ecrit = Planner()
+    appris = Planner(targeting=modele)
+
+    # La table ecrite a la main place les tireurs a 0.85 quel que soit l'attaquant.
+    assert (
+        ecrit.target_value(UnitRole.SHOCK_CAVALRY, UnitRole.RANGED_INFANTRY)
+        == (TARGET_PRIORITY[UnitRole.RANGED_INFANTRY])
+    )
+    # Le modele les place au-dessus de la melee, et c'est lui qui parle.
+    tireurs = appris.target_value(UnitRole.SHOCK_CAVALRY, UnitRole.RANGED_INFANTRY)
+    melee = appris.target_value(UnitRole.SHOCK_CAVALRY, UnitRole.MELEE_INFANTRY)
+    assert tireurs > melee, f"tireurs {tireurs:.2f}, melee {melee:.2f}"
+
+
+def test_un_role_non_appris_garde_la_table_ecrite_a_la_main() -> None:
+    """Le remplacement se fait role par role, jamais en bloc."""
+    from totalwar_ai.agent.planner import TARGET_PRIORITY, Planner
+    from totalwar_ai.learning.targeting import TargetingModel
+
+    modele = _modele_appris()
+    assert isinstance(modele, TargetingModel)
+    planner = Planner(targeting=modele)
+
+    # Rien n'a ete appris sur l'artillerie : elle garde sa valeur ecrite.
+    assert (
+        planner.target_value(UnitRole.ARTILLERY, UnitRole.RANGED_INFANTRY)
+        == (TARGET_PRIORITY[UnitRole.RANGED_INFANTRY])
+    )
+
+
+def test_un_modele_appris_survit_au_rechargement_de_doctrine() -> None:
+    """Le perdre la rendrait l'apprentissage silencieusement caduc."""
+    from totalwar_ai.agent.planner import Planner
+    from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
+    from totalwar_ai.learning.adaptation import DoctrineProfile
+    from totalwar_ai.learning.targeting import TargetingModel
+
+    modele = _modele_appris()
+    assert isinstance(modele, TargetingModel)
+    agent = DeterministicTacticalAgent(planner=Planner(targeting=modele))
+
+    agent.apply_doctrine(DoctrineProfile(adjustments={"engagement_distance": 5.0}))
+
+    assert agent.planner.targeting is modele
