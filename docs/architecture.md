@@ -47,7 +47,7 @@ appauvri que le moteur accepte.
 | `simulation` | Simulateur abstrait, scénarios, boucle de bataille. | tout le reste |
 | `telemetry` | Événements structurés, journal JSONL, rapport Markdown. | `domain`, `agent` |
 | `memory` | Persistance SQLite, transitions, tampon de rejeu. | `domain`, `telemetry` |
-| `learning` | Barème de récompense, adaptation de la doctrine, checkpoints et banc d'évaluation. L'entraînement de modèles viendra en Phase 6. | `domain`, `telemetry`, `memory` |
+| `learning` | Barème de récompense, adaptation de la doctrine, checkpoints, banc d'évaluation, **et l'observation de l'IA du moteur** : santé du corpus (`corpus.py`) et inférence des décisions (`observation.py`). L'entraînement de modèles viendra en Phase 6. | `domain`, `telemetry`, `memory` |
 
 Règle de dépendance : `domain` ne dépend de rien, et rien dans `domain`,
 `bridge` ou `agent` ne connaît le simulateur. L'adaptateur vers le jeu réel s'est
@@ -250,6 +250,31 @@ appliqué, et `--no-adapt` restaure le comportement de référence.
 `SafetyEngine.reset()` remet à zéro le compteur d'ordres mais **ne lève pas**
 l'arrêt d'urgence. Reprendre la main est une décision du joueur ; elle ne doit
 pas disparaître parce qu'une nouvelle bataille commence.
+
+### Apprendre en regardant jouer l'IA du moteur
+
+Notre agent ne verra jamais le terrain, le moral ni la fatigue — le recensement
+l'a établi accesseur par accesseur. Écrire des règles à la main contre un
+adversaire qui y voit a donc un plafond. La voie retenue est de **l'observer et
+d'apprendre ses décisions**.
+
+Trois pièces sont en place, aucune n'ayant encore vu une vraie bataille :
+
+- **l'enregistrement par unité** (`bridge/recording.py`) — position, altitude,
+  contact, effectif, munitions, à chaque état publié. Un méga-octet par
+  bataille, l'inventaire des unités écrit à part pour ne pas répéter ce qui ne
+  change jamais ;
+- **la décision fantôme** (`bridge/live.py`) — l'agent décide dans le vide
+  pendant l'observation, sans rien envoyer au jeu. Chaque tour devient un couple
+  étiqueté « elle a fait ceci, nous aurions fait cela » ;
+- **l'inférence des décisions** (`learning/observation.py`) — le jeu ne dit pas
+  quel ordre porte une unité ; on le conclut de deux états successifs, et l'on
+  compte les cas où l'on n'y arrive pas.
+
+**L'inférence s'étalonne sans jouer.** La doublure a une politique connue
+exactement : si l'inférence ne la retrouve pas, elle ne dira rien de bon sur
+l'IA du jeu. Le raisonnement complet est dans
+[`decisions/0007`](decisions/0007-observer-pour-apprendre.md).
 
 ## Ce qui est vérifié en jeu, et ce qui ne l'est pas
 
