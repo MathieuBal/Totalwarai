@@ -74,6 +74,8 @@ class LiveStep:
     #: garde tous : la frequence d'observation n'est pas celle de decision, et
     #: un etat jete est une donnee d'apprentissage perdue pour toujours.
     observed: tuple[ProbeBattleState, ...] = ()
+    #: Ce que notre agent aurait decide, sans que rien ne parte vers le jeu.
+    shadow: ShadowDecision | None = None
     #: Unites que le jeu a **refuse** de rendre ou de reprendre, avec le motif.
     #:
     #: Une supervision qui ne lit pas les accuses croit avoir agi : constate en
@@ -125,6 +127,49 @@ class LiveStep:
             detail.append(f"{len(self.refused)} refusee(s) par le jeu")
 
         return f"{entete} — " + (", ".join(detail) if detail else "rien a faire")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowDecision:
+    """Ce que **nous** aurions fait, sans rien envoyer au jeu.
+
+    L'IA du moteur mene la bataille ; notre agent decide en parallele, dans le
+    vide. Chaque tour devient alors un couple etiquete — « elle a fait ceci,
+    nous aurions fait cela » — et c'est la matiere premiere de l'apprentissage
+    par observation, obtenue sans jouer une bataille de plus.
+
+    Deuxieme usage, tout aussi utile : les regles de supervision sont evaluees
+    elles aussi, et l'on sait enfin **a quelle frequence chacune se
+    declencherait en vraie bataille**. `artillerie_au_contact` n'a jamais rien
+    declenche au banc ; cela dira si c'est le banc ou la regle.
+
+    **Rien de tout ceci ne part vers le jeu.** C'est une observation, et la
+    garantie tient par construction : ni l'agent ni la traduction ne touchent au
+    pont.
+    """
+
+    decisions: tuple[str, ...] = ()
+    blocked: tuple[str, ...] = ()
+    translation: Translation = field(default_factory=Translation)
+    #: `(identifiant, regle)` pour chaque reprise qu'un superviseur aurait faite.
+    rules: tuple[tuple[str, str], ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "decisions": list(self.decisions),
+            "blocked": list(self.blocked),
+            "moves": [
+                {"unit_id": unit_id, "destination": point.to_dict()}
+                for unit_id, point in self.translation.moves
+            ],
+            "attacks": [attack.to_dict() for attack in self.translation.attacks],
+            "halts": list(self.translation.halts),
+            "untranslated": [
+                {"action": action.value, "reason": reason}
+                for action, reason in self.translation.untranslated
+            ],
+            "rules": [{"unit_id": unit_id, "rule": rule} for unit_id, rule in self.rules],
+        }
 
 
 @dataclass
@@ -335,6 +380,14 @@ class SupervisedSession:
     #: Unites que le jeu refuse d'atteindre. On cesse de les compter comme
     #: notres : insister produit un ordre refuse par seconde, sans fin.
     unreachable: set[str] = field(default_factory=set)
+    #: Agent qui decide **dans le vide**, pour comparaison. Voir `ShadowDecision`.
+    shadow_agent: DeterministicTacticalAgent | None = None
+    #: Superviseur d'ombre : quelles regles se seraient declenchees ?
+    #:
+    #: Distinct de `supervisor`, qui agit vraiment. Celui-ci ne sert qu'a
+    #: mesurer, et son etat interne n'influence jamais la bataille.
+    shadow_rules: Supervisor | None = None
+    translator: OrderTranslator = field(default_factory=OrderTranslator)
 
     def delegate_all(self, state: ProbeBattleState) -> list[str]:
         """Confie a l'IA du jeu toutes les unites controlables.
@@ -378,6 +431,7 @@ class SupervisedSession:
             ammo_ratios=self._ratios(state, self.roster.ammo_ratio),
         )
         domaine = _classified(domaine)
+        ombre = self._shadow(domaine)
 
         interventions = self.supervisor.review(domaine, self.delegated)
         rendues = self.supervisor.ready_to_return(domaine)
@@ -410,7 +464,43 @@ class SupervisedSession:
             interventions=tuple(interventions),
             returned=tuple(rendues),
             refused=tuple(refuses),
+            shadow=ombre,
             sent=len(interventions) + len(rendues),
+        )
+
+    def _shadow(self, domaine: BattleState) -> ShadowDecision | None:
+        """Ce que nous aurions fait, calcule sans rien envoyer au jeu.
+
+        Ni l'agent ni la traduction ne touchent au pont : la garantie de ne rien
+        emettre tient par construction, et un test la verifie en comptant les
+        commandes publiees pendant une session d'observation.
+        """
+        if self.shadow_agent is None and self.shadow_rules is None:
+            return None
+
+        decisions: tuple[str, ...] = ()
+        refusees: tuple[str, ...] = ()
+        traduction = Translation()
+        if self.shadow_agent is not None:
+            tour = self.shadow_agent.decide(domaine)
+            decisions = tuple(item.explain() for item in tour.decisions)
+            refusees = tuple(item.explain() for item in tour.blocked)
+            traduction = self.translator.translate(tour.actions, domaine)
+
+        regles: tuple[tuple[str, str], ...] = ()
+        if self.shadow_rules is not None:
+            # Le perimetre est l'armee entiere : on veut savoir ce qui se serait
+            # declenche, pas ce que la supervision reelle a le droit de toucher.
+            perimetre = {unite.id for unite in domaine.allies()}
+            regles = tuple(
+                (item.unit_id, item.rule) for item in self.shadow_rules.review(domaine, perimetre)
+            )
+            # Rendre aussitot : ce superviseur ne tient aucune unite, et le
+            # laisser accumuler l'empecherait de se declencher a nouveau.
+            self.shadow_rules.forget([unit_id for unit_id, _ in regles])
+
+        return ShadowDecision(
+            decisions=decisions, blocked=refusees, translation=traduction, rules=regles
         )
 
     def _confirm(self, sequence: int, demandees: Sequence[str], quoi: str) -> list[tuple[str, str]]:

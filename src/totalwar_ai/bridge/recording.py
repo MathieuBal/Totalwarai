@@ -157,6 +157,11 @@ class BattleRecorder:
                     ],
                 }
             )
+            # Ce que nous aurions fait, l'IA du moteur menant la bataille. C'est
+            # la matiere premiere de l'apprentissage par observation : chaque
+            # tour devient un couple etiquete, sans jouer une bataille de plus.
+            if step.shadow is not None:
+                entry["shadow"] = step.shadow.to_dict()
         if self.record_units:
             self._refresh_roster(state)
             entry["units"] = [

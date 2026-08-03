@@ -463,9 +463,18 @@ def _supervise(
     from totalwar_ai.bridge.supervision import DEFAULT_RULES, Supervisor
 
     config = load_config()
+    # L'agent decide **dans le vide**, en parallele de l'IA du moteur : rien ne
+    # part vers le jeu, et chaque tour devient un couple etiquete « elle a fait
+    # ceci, nous aurions fait cela ». C'est la matiere premiere de
+    # l'apprentissage par observation, obtenue sans jouer une bataille de plus.
+    #
+    # Les regles sont evaluees a part, pour savoir enfin a quelle frequence
+    # chacune se declencherait en vraie bataille.
     session = SupervisedSession(
         bridge=bridge,
         supervisor=Supervisor(rules=DEFAULT_RULES if supervised else ()),
+        shadow_agent=DeterministicTacticalAgent.from_config(config),
+        shadow_rules=Supervisor(rules=DEFAULT_RULES),
     )
     recorder = BattleRecorder(
         directory=config.path("telemetry", "battles_dir") if record else None,
