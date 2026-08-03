@@ -388,6 +388,13 @@ class SupervisedSession:
     #: mesurer, et son etat interne n'influence jamais la bataille.
     shadow_rules: Supervisor | None = None
     translator: OrderTranslator = field(default_factory=OrderTranslator)
+    #: Pourquoi la derniere delegation a echoue, dans les mots du jeu.
+    #:
+    #: **Un echec sans motif n'est pas diagnosticable.** Le Lua nomme la cause —
+    #: unite introuvable, non controlable, `script_ai_planner` impossible — et
+    #: nous la jetions : l'operateur ne lisait que « le jeu a refuse », ce qui ne
+    #: distingue pas un refus d'un accuse jamais recu.
+    last_refusal: str = ""
 
     def delegate_all(self, state: ProbeBattleState) -> list[str]:
         """Confie a l'IA du jeu toutes les unites controlables.
@@ -397,12 +404,24 @@ class SupervisedSession:
         bataille : l'accuse portait `accepted` et le vrai compte dans son
         detail, que personne ne lisait.
         """
+        self.last_refusal = ""
         unit_ids = [unite.unit_id for unite in state.allies if unite.controllable and unite.alive]
         if not unit_ids:
+            self.last_refusal = "aucune unite controlable et vivante dans l'etat recu"
             return []
         commande = self.bridge.delegate(unit_ids)
         ack = self.bridge.wait_for_ack(commande.sequence, timeout=self.ack_timeout, sleep=self.wait)
-        if ack is None or not ack.accepted:
+        if ack is None:
+            # Silence et refus ne se soignent pas pareil : l'un dit que le Lua
+            # n'a pas repondu a temps, l'autre qu'il a repondu non.
+            self.last_refusal = (
+                f"aucun accuse en {self.ack_timeout:.0f} s "
+                f"(sequence {commande.sequence}) : la sonde repond-elle ?"
+            )
+            self.delegated = set()
+            return []
+        if not ack.accepted:
+            self.last_refusal = ack.error or f"refus sans motif (statut {ack.status.value})"
             self.delegated = set()
             return []
         self.unreachable.update(ack.refused_ids)

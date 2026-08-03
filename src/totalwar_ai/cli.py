@@ -519,7 +519,18 @@ def _supervise(
     demandees = [unite.unit_id for unite in state.allies if unite.controllable and unite.alive]
     confiees = session.delegate_all(state)
     if not confiees:
+        # Le motif vient du Lua. Sans lui, « le jeu a refuse » ne distingue pas
+        # un refus d'un accuse jamais recu, et ne se diagnostique pas.
         print("Aucune unite confiee : le jeu a refuse la delegation.", file=sys.stderr)
+        print(f"  motif : {session.last_refusal or 'inconnu'}", file=sys.stderr)
+        print(
+            f"  {len(demandees)} unite(s) demandee(s), phase du jeu : {state.phase or 'inconnue'}",
+            file=sys.stderr,
+        )
+        print(
+            "  `totalwar-ai probe --log 30` affiche l'accuse complet cote jeu.",
+            file=sys.stderr,
+        )
         return 1
     # Le compte annonce est celui du jeu. En annoncer un autre s'est produit en
     # bataille : dix-huit demandees, six confiees, et la difference passee sous
