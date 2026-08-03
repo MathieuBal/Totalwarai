@@ -16,7 +16,7 @@ import pytest
 from totalwar_ai.bridge.command_models import ProbeAttack, ProbeBattleState, ProbeUnitObservation
 from totalwar_ai.bridge.live import LiveStep
 from totalwar_ai.bridge.orders import Translation
-from totalwar_ai.bridge.recording import LIVE_SCENARIO, BattleRecorder
+from totalwar_ai.bridge.recording import LIVE_SCENARIO, RECORDING_FORMAT, BattleRecorder
 from totalwar_ai.domain.actions import ActionType
 from totalwar_ai.domain.battle_state import BattleOutcomeKind
 from totalwar_ai.domain.geometry import Vector3
@@ -448,3 +448,31 @@ def test_l_altitude_est_conservee(tmp_path: Path) -> None:
     tour = next(ligne for ligne in _lignes(recorder.path) if "units" in ligne)
     altitudes = {unite["id"]: unite["y"] for unite in tour["units"]}  # type: ignore[index,union-attr]
     assert altitudes == {"a1": 33.4, "e1": 21.1}
+
+
+# --- une session qui n'a pas commence ne laisse rien -----------------------------
+
+
+def test_aucun_fichier_tant_que_rien_n_est_observe(tmp_path: Path) -> None:
+    """Delegation refusee, bataille pas encore lancee : rien a enregistrer.
+
+    Neuf fichiers `aucun tour enregistre` pour trois vraies batailles, au
+    premier soir de corpus : le fichier etait ouvert avant de savoir s'il y
+    aurait quoi que ce soit dedans.
+    """
+    recorder = BattleRecorder(directory=tmp_path)
+    recorder.close()
+
+    assert list(tmp_path.glob("*.jsonl")) == []
+
+
+def test_le_premier_etat_cree_le_fichier(tmp_path: Path) -> None:
+    recorder = BattleRecorder(directory=tmp_path)
+    recorder.observe(_tour(_etat(3, 3, ms=1000)))
+    recorder.close()
+
+    ecrits = list(tmp_path.glob("*.jsonl"))
+    assert len(ecrits) == 1
+    assert recorder.path is not None and ecrits[0] == recorder.path
+    premiere = ecrits[0].read_text(encoding="utf-8").splitlines()[0]
+    assert json.loads(premiere)["format"] == RECORDING_FORMAT

@@ -102,3 +102,50 @@ def test_un_fichier_tronque_ne_condamne_pas_la_bataille(tmp_path: Path) -> None:
     fiche = inspect(recorder.path)
     assert fiche.observations == 3, "les tours valides ont ete perdus"
     assert not fiche.error
+
+
+# --- les trous, et ce qui n'en est pas ------------------------------------------
+
+
+def _enregistrement(tmp_path: Path, sequences: list[int]) -> Path:
+    from totalwar_ai.bridge.recording import RECORDING_FORMAT
+
+    chemin = tmp_path / "bataille.jsonl"
+    lignes = [json.dumps({"format": RECORDING_FORMAT, "battle_id": "b"})]
+    lignes += [
+        json.dumps(
+            {
+                "turn": index,
+                "sequence": sequence,
+                "game_time_ms": index * 500,
+                "phase": "Deployed",
+                "units": [{"id": "a", "x": 0.0, "y": 0.0, "z": float(index)}],
+            }
+        )
+        for index, sequence in enumerate(sequences)
+    ]
+    chemin.write_text("\n".join(lignes) + "\n", encoding="utf-8")
+    return chemin
+
+
+def test_la_sonde_avance_de_deux_en_deux_sans_rien_perdre(tmp_path: Path) -> None:
+    """Elle emet deux messages par publication, et les deux partagent le compteur.
+
+    Compter les numeros absents declarait la moitie du flux perdue : les trois
+    premieres batailles reelles sont ressorties a « 782 etats manquants » sur
+    784, alors que rien ne manquait.
+    """
+    fiche = inspect(_enregistrement(tmp_path, [1, 3, 5, 7, 9, 11, 13]))
+    assert fiche.gaps == 0
+    assert fiche.observations == 7
+
+
+def test_un_vrai_trou_reste_visible(tmp_path: Path) -> None:
+    """Trois publications sautees entre deux etats, au pas de deux."""
+    fiche = inspect(_enregistrement(tmp_path, [1, 3, 5, 13, 15, 17]))
+    assert fiche.gaps == 3
+
+
+def test_un_flux_au_pas_de_un_se_lit_aussi(tmp_path: Path) -> None:
+    fiche = inspect(_enregistrement(tmp_path, [1, 2, 3, 6, 7, 8]))
+    assert fiche.gaps == 2

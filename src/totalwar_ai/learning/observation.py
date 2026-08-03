@@ -274,6 +274,21 @@ def _approached(
     Un rapprochement ne compte que s'il represente une part notable du chemin
     parcouru : une unite qui longe la ligne adverse se rapproche un peu de tout
     le monde sans viser personne.
+
+    .. rubric:: L'adversaire est fige a sa position precedente
+
+    **C'est ce qui distingue « j'ai marche vers lui » de « il a fondu sur
+    moi ».** Comparer les deux positions nouvelles compte le deplacement des
+    deux unites dans un seul chiffre, et attribue a notre intention la vitesse
+    de l'autre.
+
+    Le defaut n'etait pas theorique : sur les trois premieres batailles reelles,
+    **tous les roles ressortaient avec une affinite proche de 5 pour les unites
+    volantes** — y compris les volantes entre elles. Une unite volante qui
+    traverse le champ se rapproche de toute l'armee a la fois, et l'inference
+    lisait cela comme une armee entiere decidant de la charger. En figeant
+    l'adversaire, le gain mesure ne peut plus exceder notre propre deplacement,
+    et c'est bien notre mouvement qu'on interprete.
     """
     gains: list[tuple[float, UnitState]] = []
     for adversaire in adversaires:
@@ -281,7 +296,7 @@ def _approached(
         if ancien is None:
             continue
         gain = avant.position.distance_2d(ancien.position) - apres.position.distance_2d(
-            adversaire.position
+            ancien.position
         )
         if gain >= deplacement * APPROACH_RATIO:
             gains.append((gain, adversaire))

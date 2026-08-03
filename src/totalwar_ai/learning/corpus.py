@@ -13,6 +13,7 @@ dira.
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -188,11 +189,7 @@ def inspect(path: Path) -> BattleHealth:
     sequences = [
         int(ligne["sequence"]) for ligne in tours if isinstance(ligne.get("sequence"), int)
     ]
-    # Un saut de sequence signale des etats publies par la sonde et perdus en
-    # route. Sans la sequence enregistree, ce trou serait invisible.
-    trous = 0
-    if len(sequences) >= 2:
-        trous = max(0, (max(sequences) - min(sequences) + 1) - len(sequences))
+    trous = _gaps(sequences)
 
     temps = [int(ligne.get("game_time_ms", 0)) for ligne in tours]
     inventaire: set[str] = set()
@@ -211,6 +208,33 @@ def inspect(path: Path) -> BattleHealth:
         has_shadow=any("shadow" in ligne for ligne in tours),
         finished=any(ligne.get("phase") == "Complete" for ligne in tours),
     )
+
+
+def _gaps(sequences: list[int]) -> int:
+    """Etats publies par la sonde et perdus en route.
+
+    **Le numero de sequence n'avance pas de un.** La sonde emet deux messages a
+    chaque publication — l'etat mono-unite, puis l'etat de bataille — et les
+    deux partagent le compteur. Les etats de bataille enregistres se suivent
+    donc de deux en deux, et compter les numeros absents declarait la moitie
+    du flux perdue : les trois premieres batailles reelles sont ressorties a
+    « 782 etats manquants » sur 784, alors que rien ne manquait.
+
+    Le pas normal est donc le **plus petit ecart observe** : c'est la cadence
+    que la sonde tient quand elle ne perd rien. Tout ecart plus grand est un
+    trou, et sa taille dit combien d'etats y sont passes.
+    """
+    if len(sequences) < 3:
+        # Trop court pour deduire une cadence. Ne rien affirmer vaut mieux
+        # qu'annoncer un trou qui n'est peut-etre que le pas normal.
+        return 0
+    ordonnees = sorted(sequences)
+    ecarts = [suivant - courant for courant, suivant in itertools.pairwise(ordonnees)]
+    positifs = [ecart for ecart in ecarts if ecart > 0]
+    if not positifs:
+        return 0
+    pas = min(positifs)
+    return sum(round(ecart / pas) - 1 for ecart in positifs if ecart > pas)
 
 
 def _read(path: Path) -> Iterator[dict[str, Any]]:

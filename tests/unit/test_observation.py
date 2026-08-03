@@ -302,3 +302,67 @@ def test_la_continuite_ne_ressuscite_pas_une_cible_disparue() -> None:
     observation = infer([debut, contact, apres]).observations[-1]
     assert observation.ambiguous
     assert observation.target_id is None
+
+
+# --- qui s'est rapproche de qui ------------------------------------------------
+
+
+def test_une_unite_immobile_ne_charge_pas_ce_qui_fond_sur_elle() -> None:
+    """« Il a fondu sur moi » n'est pas « j'ai marche vers lui ».
+
+    Defaut trouve sur les trois premieres batailles reelles : tous les roles
+    ressortaient avec une affinite proche de 5 pour les unites volantes, y
+    compris les volantes entre elles. Une volante qui traverse le champ se
+    rapproche de toute l'armee a la fois, et l'inference lisait cela comme une
+    armee entiere decidant de la charger.
+    """
+    avant = _etat(
+        _unite("statique", UnitRole.RANGED_INFANTRY, Side.ALLY),
+        _unite("volante", UnitRole.FLYING_UNIT, Side.ENEMY, z=200.0),
+    )
+    # Nous n'avons pas bouge ; l'ennemi a parcouru cent metres vers nous.
+    apres = _etat(
+        _unite("statique", UnitRole.RANGED_INFANTRY, Side.ALLY, z=1.0),
+        _unite("volante", UnitRole.FLYING_UNIT, Side.ENEMY, z=100.0),
+        temps=1.0,
+    )
+
+    observation = infer([avant, apres]).observations[0]
+    assert observation.move is Move.HOLD, f"conclu {observation.move.value}"
+    assert observation.target_id is None
+
+
+def test_notre_propre_deplacement_designe_encore_la_cible() -> None:
+    """La correction ne doit pas aveugler l'inference sur une vraie approche."""
+    avant = _etat(
+        _unite("a", UnitRole.MELEE_INFANTRY, Side.ALLY),
+        _unite("e", UnitRole.MELEE_INFANTRY, Side.ENEMY, z=100.0),
+        _unite("loin", UnitRole.MELEE_INFANTRY, Side.ENEMY, x=300.0),
+    )
+    # C'est nous qui avons marche, l'ennemi n'a pas bouge.
+    apres = _etat(
+        _unite("a", UnitRole.MELEE_INFANTRY, Side.ALLY, z=30.0),
+        _unite("e", UnitRole.MELEE_INFANTRY, Side.ENEMY, z=100.0),
+        _unite("loin", UnitRole.MELEE_INFANTRY, Side.ENEMY, x=300.0),
+        temps=1.0,
+    )
+
+    observation = infer([avant, apres]).observations[0]
+    assert observation.move is Move.CLOSE
+    assert observation.target_id == "e"
+
+
+def test_une_unite_qui_recule_devant_une_charge_decroche() -> None:
+    """Elle s'eloigne, meme si la distance finale a diminue."""
+    avant = _etat(
+        _unite("a", UnitRole.RANGED_INFANTRY, Side.ALLY),
+        _unite("charge", UnitRole.SHOCK_CAVALRY, Side.ENEMY, z=200.0),
+    )
+    apres = _etat(
+        _unite("a", UnitRole.RANGED_INFANTRY, Side.ALLY, z=-40.0),
+        _unite("charge", UnitRole.SHOCK_CAVALRY, Side.ENEMY, z=60.0),
+        temps=1.0,
+    )
+
+    observation = infer([avant, apres]).observations[0]
+    assert observation.move is Move.WITHDRAW
