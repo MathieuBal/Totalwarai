@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from totalwar_ai.bridge.command_models import ProbeBattleState
+from totalwar_ai.bridge.command_models import ProbeBattleState, ProbeUnitObservation
 from totalwar_ai.bridge.live import LiveStep
 from totalwar_ai.domain.battle_state import BattleOutcomeKind
 from totalwar_ai.memory.models import BattleSummary, Episode
@@ -36,6 +36,13 @@ from totalwar_ai.memory.models import BattleSummary, Episode
 #: les deux sources : `totalwar-ai history --scenario live` les isole.
 LIVE_SCENARIO = "live"
 
+#: Marqueur en tete de chaque enregistrement de bataille reelle.
+#:
+#: `data/battles/` recoit aussi les journaux du simulateur, au format tout
+#: different. Un fichier qui se nomme lui-meme evite au corpus d'apprentissage
+#: de melanger les deux, et restera lisible dans six mois.
+RECORDING_FORMAT = "totalwar_ai.live.v1"
+
 
 @dataclass
 class BattleRecorder:
@@ -43,9 +50,28 @@ class BattleRecorder:
 
     battle_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     directory: Path | None = None
+    #: Conserver l'etat de **chaque unite**, a chaque tour.
+    #:
+    #: Sans cela, une bataille enregistree ne dit que des comptes et des sommes
+    #: — dix-huit allies, quatorze de force — et rien de ce que les unites ont
+    #: fait. C'est suffisant pour comparer deux issues, et totalement
+    #: insuffisant pour apprendre en regardant jouer l'IA du moteur : on ne voit
+    #: pas ses decisions.
+    #:
+    #: Cout mesure : **un mega-octet par bataille**, pour quarante unites et
+    #: quatre minutes de combat — soit une trentaine de mega-octets pour le
+    #: corpus d'apprentissage vise. Sans l'inventaire ecrit a part, ce serait le
+    #: double : le type, le camp et la portee de tir ne changent jamais, et les
+    #: repeter a chaque tour pesait plus lourd que tout le reste.
+    record_units: bool = True
 
     #: Un objet JSON par tour, dans l'ordre.
     entries: list[dict[str, Any]] = field(default_factory=list)
+    #: Inventaire des unites rencontrees : identifiant -> ce qui ne change pas.
+    roster: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Etats publies par le jeu et enregistres. Distinct de `turns`, qui compte
+    #: les tours de decision : le jeu publie plus souvent qu'on ne decide.
+    observations: int = 0
     orders_sent: int = 0
     orders_blocked: int = 0
     actions_lost: int = 0
@@ -63,55 +89,128 @@ class BattleRecorder:
             base.mkdir(parents=True, exist_ok=True)
             self.path: Path | None = base / f"{self.battle_id}.jsonl"
             self._handle = self.path.open("w", encoding="utf-8")
+            # En-tete d'identification. Le meme repertoire recoit les journaux
+            # du simulateur, au format tout different : sans cette ligne, le
+            # corpus d'apprentissage les prendrait pour des batailles reelles —
+            # quatre cent quinze d'un coup, constate en developpant.
+            self._handle.write(
+                json.dumps(
+                    {"format": RECORDING_FORMAT, "battle_id": self.battle_id},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
         else:
             self.path = None
 
     # --- collecte ------------------------------------------------------------
 
     def observe(self, step: LiveStep) -> None:
-        """Enregistre un tour. Un tour sans etat n'en est pas un."""
+        """Enregistre un tour. Un tour sans etat n'en est pas un.
+
+        **Tous** les etats publies pendant le tour sont enregistres, pas
+        seulement celui sur lequel on a decide : le jeu publie plus souvent que
+        la boucle ne decide, et un etat jete ne se retrouve jamais.
+
+        Seul l'etat de decision porte les ordres et les motifs — les autres sont
+        de pures observations. `turns` continue de compter les decisions, parce
+        que c'est ce que l'operateur lit ; `observations` compte les etats.
+        """
         if step.state is None:
             return
 
         self.turns += 1
-        if self._first_state is None:
-            self._first_state = step.state
-            self._initial_allies = len(step.state.allies)
-            self._initial_enemies = len(step.state.enemies)
-        self._last_state = step.state
-
         self.orders_sent += step.sent
         self.orders_blocked += len(step.blocked)
         self.actions_lost += len(step.translation.untranslated)
 
-        entry = {
+        # `observed` est vide chez les appelants qui ne le remplissent pas :
+        # on retombe alors sur le seul etat de decision.
+        for state in step.observed or (step.state,):
+            self._record(state, step if state is step.state else None)
+
+    def _record(self, state: ProbeBattleState, step: LiveStep | None) -> None:
+        """Un etat publie. `step` n'est fourni que pour l'etat de decision."""
+        self.observations += 1
+        if self._first_state is None:
+            self._first_state = state
+            self._initial_allies = len(state.allies)
+            self._initial_enemies = len(state.enemies)
+        self._last_state = state
+
+        entry: dict[str, Any] = {
             "turn": self.turns,
-            "game_time_ms": step.state.game_time_ms,
-            "phase": step.state.phase,
-            "allies": len(step.state.allies),
-            "enemies": len(step.state.enemies),
-            "ally_strength": _strength(step.state, "allies"),
-            "enemy_strength": _strength(step.state, "enemies"),
-            "skipped": step.skipped,
-            "orders": {
-                "moves": [
-                    {"unit_id": unit_id, "destination": point.to_dict()}
-                    for unit_id, point in step.translation.moves
-                ],
-                "attacks": [attack.to_dict() for attack in step.translation.attacks],
-                "halts": list(step.translation.halts),
-            },
-            "decisions": list(step.decisions),
-            "blocked": list(step.blocked),
-            "untranslated": [
-                {"action": action.value, "reason": reason}
-                for action, reason in step.translation.untranslated
-            ],
+            # Le numero de la sonde, distinct de notre compteur de tours. Sans
+            # lui un trou dans le flux est indetectable, et rien ne distingue
+            # une bataille exploitable d'une bataille trouee.
+            "sequence": state.sequence,
+            "game_time_ms": state.game_time_ms,
+            "phase": state.phase,
+            "allies": len(state.allies),
+            "enemies": len(state.enemies),
+            "ally_strength": _strength(state, "allies"),
+            "enemy_strength": _strength(state, "enemies"),
         }
+        if step is not None:
+            entry.update(
+                {
+                    # Marque le tour ou l'on a decide. Les autres entrees sont
+                    # de pures observations : l'absence d'`orders` y est une
+                    # information, pas un oubli.
+                    "decision": True,
+                    "skipped": step.skipped,
+                    "orders": {
+                        "moves": [
+                            {"unit_id": unit_id, "destination": point.to_dict()}
+                            for unit_id, point in step.translation.moves
+                        ],
+                        "attacks": [attack.to_dict() for attack in step.translation.attacks],
+                        "halts": list(step.translation.halts),
+                    },
+                    "decisions": list(step.decisions),
+                    "blocked": list(step.blocked),
+                    "untranslated": [
+                        {"action": action.value, "reason": reason}
+                        for action, reason in step.translation.untranslated
+                    ],
+                }
+            )
+            # Ce que nous aurions fait, l'IA du moteur menant la bataille. C'est
+            # la matiere premiere de l'apprentissage par observation : chaque
+            # tour devient un couple etiquete, sans jouer une bataille de plus.
+            if step.shadow is not None:
+                entry["shadow"] = step.shadow.to_dict()
+        if self.record_units:
+            self._refresh_roster(state)
+            entry["units"] = [
+                _unit_entry(observation)
+                for groupe in (state.allies, state.enemies)
+                for observation in groupe
+            ]
         self.entries.append(entry)
         if self._handle is not None:
             self._handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
             self._handle.flush()
+
+    def _refresh_roster(self, state: ProbeBattleState) -> None:
+        """Publie l'inventaire des unites, et le republie si de nouvelles arrivent.
+
+        Une bataille de campagne peut recevoir des renforts en cours de route :
+        un inventaire ecrit une fois pour toutes laisserait ces unites sans
+        type ni camp, donc inexploitables.
+        """
+        nouvelles = {
+            observation.unit_id: _roster_entry(observation, camp)
+            for camp, groupe in (("ally", state.allies), ("enemy", state.enemies))
+            for observation in groupe
+            if observation.unit_id not in self.roster
+        }
+        if not nouvelles:
+            return
+        self.roster.update(nouvelles)
+        if self._handle is not None:
+            ligne = {"turn": self.turns, "roster": nouvelles}
+            self._handle.write(json.dumps(ligne, ensure_ascii=False) + "\n")
 
     def close(self) -> None:
         if self._handle is not None:
@@ -181,6 +280,73 @@ class BattleRecorder:
         la memoire d'apprentissage sous les traits d'une mesure.
         """
         return Episode(summary=self.summary())
+
+
+#: Precision des coordonnees enregistrees, en decimales.
+#:
+#: Le metre suffit largement pour retrouver qui allait vers qui, et trois
+#: decimales par unite et par tour multipliees par trente batailles font du
+#: volume pour rien.
+_POSITION_PRECISION = 1
+
+
+def _roster_entry(observation: ProbeUnitObservation, side: str) -> dict[str, Any]:
+    """Ce qui ne change pas d'un tour a l'autre : ecrit une fois, pas deux cents.
+
+    Repeter le type, le camp et la portee de tir a chaque tour multipliait par
+    trois le poids d'une bataille — deux mega-octets et demi la ou huit cents
+    kilo-octets suffisent, et soixante-dix mega-octets pour un corpus de trente.
+    """
+    entry: dict[str, Any] = {"side": side, "type": observation.unit_type}
+    if observation.commanding:
+        entry["commanding"] = True
+    if observation.can_fly:
+        entry["can_fly"] = True
+    if observation.missile_range is not None:
+        entry["missile_range"] = observation.missile_range
+    return entry
+
+
+def _unit_entry(observation: ProbeUnitObservation) -> dict[str, Any]:
+    """Ce qui bouge : position et condition, tour par tour.
+
+    **Un champ absent veut dire que le jeu ne l'expose pas**, et jamais zero —
+    c'est la meme regle que dans le protocole. Un moral a zero se confondrait
+    avec une unite qui rompt ; une munition a zero, avec un carquois vide.
+    """
+    entry: dict[str, Any] = {
+        "id": observation.unit_id,
+        "x": round(observation.position.x, _POSITION_PRECISION),
+        # **L'altitude est la seule donnee de terrain que le jeu nous donne.**
+        # `position():get_y()` repond — verifie en bataille, entre 21 et 33 — et
+        # elle etait jetee. Elle dit tout de suite qui tient la hauteur, et,
+        # accumulee sur des dizaines de batailles, elle dessine le relief des
+        # cartes deja jouees.
+        "y": round(observation.position.y, _POSITION_PRECISION),
+        "z": round(observation.position.z, _POSITION_PRECISION),
+    }
+    # Les booleens ne sont ecrits que lorsqu'ils sont vrais : sur une bataille
+    # entiere, la plupart des unites ne sont ni au contact, ni en deroute, ni
+    # cachees, et quatre `false` par ligne pesent plus que l'information.
+    if not observation.alive:
+        entry["dead"] = True
+    if observation.in_melee:
+        entry["in_melee"] = True
+    if observation.idle:
+        entry["idle"] = True
+    if observation.routing or observation.shattered:
+        entry["routing"] = True
+    if observation.hidden:
+        entry["hidden"] = True
+    if observation.hitpoints is not None:
+        entry["hitpoints"] = round(observation.hitpoints, 3)
+    if observation.men_alive is not None:
+        entry["men_alive"] = observation.men_alive
+    if observation.bearing is not None:
+        entry["bearing"] = round(observation.bearing, 1)
+    if observation.ammo is not None:
+        entry["ammo"] = observation.ammo
+    return entry
 
 
 def _strength(state: ProbeBattleState, side: str) -> float:

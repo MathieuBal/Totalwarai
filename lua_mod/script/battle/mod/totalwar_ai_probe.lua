@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 12
+TOTALWAR_AI_PROBE_REVISION = 13
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -67,7 +67,11 @@ local PROBE = {
     stop_file = "./totalwar_ai/totalwar_ai_stop",
 
     poll_interval_ms = 500,
-    state_interval_ms = 1000,
+    -- Deux etats par seconde. La boucle Python decide une fois par seconde ;
+    -- observer plus finement coute peu et rend l'inference des decisions
+    -- nettement plus sure — c'est sur ces etats que l'agent apprendra a jouer
+    -- comme l'IA du moteur. Repasser a 1000 si le jeu s'en trouve ralenti.
+    state_interval_ms = 500,
 
     sequence = 0,             -- compteur des etats emis
     last_command_sequence = 0, -- derniere commande executee : jamais rejouee
@@ -833,6 +837,85 @@ function PROBE:census_army_api()
                 end
             end
         end
+    end
+    self:log("--- fin du recensement ---")
+end
+
+--- Noms candidats pour lire l'altitude du sol depuis le battle_manager.
+---
+--- Tous inventes : aucun n'a jamais ete constate. On se contente de tester leur
+--- existence, sans les appeler — un nom inconnu peut avoir des effets de bord.
+local TERRAIN_METHODS = {
+    "get_terrain_height",
+    "terrain_height",
+    "get_ground_height",
+    "ground_height",
+    "get_height_at_position",
+}
+
+--- Recense ce que le jeu dit du **terrain**.
+---
+--- La fiche de faisabilite a longtemps porte « aucune donnee de terrain ».
+--- C'etait vrai des accesseurs d'unite recenses, et faux du reste : deux voies
+--- n'avaient jamais ete testees.
+---
+--- 1. `unit:position():get_y()` **repond** — altitude entre 21 et 33 relevee en
+---    bataille. C'est l'altitude du sol sous chaque unite, et elle est deja
+---    publiee dans l'etat.
+--- 2. `v_to_ground(v(x, y, z))` projette un point **sur le sol**. Notre propre
+---    code l'appelle a chaque ordre de deplacement. Si le vecteur rendu expose
+---    son `get_y()`, alors nous tenons une sonde d'altitude en tout point de la
+---    carte — et un relief complet devient calculable avant le premier coup de
+---    feu.
+---
+--- Ce recensement pose la question et journalise la reponse. Il ne construit
+--- rien : batir un module de terrain avant de savoir couterait un essai de
+--- plus, et ce projet en a deja perdu trois de cette facon.
+function PROBE:census_terrain()
+    self:log("--- recensement du terrain ---")
+
+    for index = 1, #TERRAIN_METHODS do
+        local name = TERRAIN_METHODS[index]
+        if type(bm[name]) == "function" then
+            self:log("  bm:" .. name .. " : presente")
+        end
+    end
+
+    if type(v) ~= "function" or type(v_to_ground) ~= "function" then
+        self:log("  v / v_to_ground : ABSENT — pas de sonde d'altitude possible")
+        self:log("--- fin du recensement ---")
+        return
+    end
+    self:log("  v_to_ground : presente")
+
+    -- Origine : une unite a nous, dont on connait deja l'altitude par une autre
+    -- voie. Comparer les deux dira si la projection au sol raconte la meme
+    -- chose que la position d'une unite.
+    local unit = self:find_controllable_unit()
+    local origine = { x = 0, z = 0 }
+    if unit then
+        local ok, position = pcall(function() return unit:position() end)
+        if ok and position then
+            origine.x = position:get_x()
+            origine.z = position:get_z()
+            self:log("  altitude sous l'unite : " .. describe(position:get_y()))
+        end
+    end
+
+    -- Une croix autour de l'origine. Des altitudes qui **different** prouvent
+    -- que la sonde lit le relief ; des valeurs toutes identiques diraient
+    -- qu'elle ne renvoie qu'une constante, et ne servirait a rien.
+    local ecarts = { { 0, 0 }, { 150, 0 }, { -150, 0 }, { 0, 150 }, { 0, -150 } }
+    for index = 1, #ecarts do
+        local dx, dz = ecarts[index][1], ecarts[index][2]
+        local x, z = origine.x + dx, origine.z + dz
+        local ok, altitude = pcall(function()
+            return v_to_ground(v(x, 0, z)):get_y()
+        end)
+        self:log(
+            "  sol en (" .. json_number(x) .. ", " .. json_number(z) .. ") : "
+                .. (ok and describe(altitude) or "ERREUR " .. tostring(altitude))
+        )
     end
     self:log("--- fin du recensement ---")
 end
@@ -1645,6 +1728,7 @@ function PROBE:start()
     self:census_alliances()
     self:guarded("census_planner_api")
     self:guarded("census_army_api")
+    self:guarded("census_terrain")
     if unit then
         local ok, err = pcall(function() self:census_unit_accessors(unit, "premiere unite") end)
         if not ok then

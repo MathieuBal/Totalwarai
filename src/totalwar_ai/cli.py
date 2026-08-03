@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import re
 import sys
@@ -38,11 +39,13 @@ from totalwar_ai.learning.evaluation import (
 from totalwar_ai.memory.replay_buffer import ReplayBuffer
 from totalwar_ai.memory.repository import MemoryRepository
 from totalwar_ai.simulation.runner import run_battle
-from totalwar_ai.simulation.scenarios import ScenarioCatalog
+from totalwar_ai.simulation.scenarios import Scenario, ScenarioCatalog
 from totalwar_ai.telemetry.battle_logger import configure_logging
 
 if TYPE_CHECKING:
     from totalwar_ai.bridge.live import LiveStep
+    from totalwar_ai.domain.battle_state import BattleState
+    from totalwar_ai.learning.corpus import Corpus
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,6 +88,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("doctrine", help="afficher les doctrines apprises")
 
+    learn = subparsers.add_parser(
+        "learn", help="apprendre des batailles enregistrees en regardant jouer l'IA du jeu"
+    )
+    learn.add_argument(
+        "--check",
+        action="store_true",
+        help="verifier ce que valent les batailles enregistrees, sans rien apprendre",
+    )
+    learn.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="etalonner l'instrument sur la doublure, dont la politique est connue",
+    )
+    learn.add_argument(
+        "--targets",
+        action="store_true",
+        help="apprendre le ciblage des batailles enregistrees et le mesurer",
+    )
+
     bench = subparsers.add_parser(
         "bench", help="rejouer le banc de scenarios et detecter les regressions"
     )
@@ -96,6 +118,12 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--label", default="", help="etiquette libre pour la reference")
     bench.add_argument(
         "--no-compare", action="store_true", help="ne pas comparer a la reference enregistree"
+    )
+    bench.add_argument(
+        "--supervised",
+        action="store_true",
+        help="mesurer la supervision : doublure de l'IA du moteur seule, "
+        "puis la meme doublure avec nos regles",
     )
 
     probe = subparsers.add_parser("probe", help="piloter la sonde d'integration au jeu (prototype)")
@@ -190,6 +218,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_simulate(args, config)
     if args.command == "history":
         return _cmd_history(args, config)
+    if args.command == "learn":
+        return _cmd_learn(args, config)
     if args.command == "doctrine":
         return _cmd_doctrine(config)
     if args.command == "bench":
@@ -457,11 +487,23 @@ def _supervise(
     from totalwar_ai.bridge.supervision import DEFAULT_RULES, Supervisor
 
     config = load_config()
+    # L'agent decide **dans le vide**, en parallele de l'IA du moteur : rien ne
+    # part vers le jeu, et chaque tour devient un couple etiquete « elle a fait
+    # ceci, nous aurions fait cela ». C'est la matiere premiere de
+    # l'apprentissage par observation, obtenue sans jouer une bataille de plus.
+    #
+    # Les regles sont evaluees a part, pour savoir enfin a quelle frequence
+    # chacune se declencherait en vraie bataille.
     session = SupervisedSession(
         bridge=bridge,
         supervisor=Supervisor(rules=DEFAULT_RULES if supervised else ()),
+        shadow_agent=DeterministicTacticalAgent.from_config(config),
+        shadow_rules=Supervisor(rules=DEFAULT_RULES),
     )
-    recorder = BattleRecorder(directory=config.path("telemetry", "battles_dir") if record else None)
+    recorder = BattleRecorder(
+        directory=config.path("telemetry", "battles_dir") if record else None,
+        record_units=bool(config.telemetry.get("record_units", True)),
+    )
 
     print("Attente d'un etat du jeu (30 s)...")
     state = None
@@ -624,7 +666,10 @@ def _play(
     if posture is not None:
         agent.planner.forced_posture = posture
     session = LiveSession(bridge=bridge, agent=agent)
-    recorder = BattleRecorder(directory=config.path("telemetry", "battles_dir") if record else None)
+    recorder = BattleRecorder(
+        directory=config.path("telemetry", "battles_dir") if record else None,
+        record_units=bool(config.telemetry.get("record_units", True)),
+    )
 
     print(f"Pilotage pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.")
     if posture is not None:
@@ -878,6 +923,185 @@ def _print_probe_status(bridge: FileBridge) -> None:
         print(f"Dernier accuse : sequence {dernier.sequence}, statut {dernier.status.value}")
 
 
+def _bench_supervised(
+    scenarios: Sequence[Scenario], seeds: tuple[int, ...], config: AppConfig
+) -> int:
+    """La doublure de l'IA du moteur, seule puis supervisee.
+
+    Repond a la seule question qui vaille pour la supervision : **nos regles
+    ameliorent-elles une bataille que l'IA menait deja ?** Le CLI ne compare pas
+    a une reference enregistree mais aux deux moities du meme banc, jouees a
+    graines identiques — la difference est donc imputable aux regles et a rien
+    d'autre.
+    """
+    from totalwar_ai.bridge.supervision import Supervisor
+    from totalwar_ai.simulation.runner import run_supervised_battle
+
+    print(
+        f"Banc supervise : {len(scenarios)} scenarios x {len(seeds)} graines {seeds}\n"
+        "  ATTENTION : la doublure n'est pas l'IA du jeu. Elle ignore le terrain,\n"
+        "  les formations et le pathfinding. C'est un filtre rapide, pas un juge —\n"
+        "  un gain constate ici reste a confirmer en bataille reelle.\n"
+    )
+
+    seule = run_benchmark(
+        scenarios,
+        seeds=seeds,
+        config=config,
+        label="doublure seule",
+        battle_runner=lambda scenario, **kw: run_supervised_battle(scenario, **kw),
+    )
+    supervisee = run_benchmark(
+        scenarios,
+        seeds=seeds,
+        config=config,
+        label="doublure supervisee",
+        # Un superviseur neuf par bataille : il retient les unites reprises, et
+        # le partager ferait deteindre une bataille sur la suivante.
+        battle_runner=lambda scenario, **kw: run_supervised_battle(
+            scenario, supervisor=Supervisor(), **kw
+        ),
+    )
+
+    print("--- l'IA du moteur seule (reference) ---")
+    print(render_table(seule))
+    print("\n--- la meme, avec nos regles ---")
+    print(render_table(supervisee))
+
+    verdict = compare(seule, supervisee)
+    print("\n--- verdict ---")
+    print(verdict.summary_line())
+    for ecart in verdict.regressions:
+        print(f"  - {ecart.scenario} {ecart.metric} : {ecart.before:.0%} -> {ecart.after:.0%}")
+    for ecart in verdict.improvements:
+        print(f"  + {ecart.scenario} {ecart.metric} : {ecart.before:.0%} -> {ecart.after:.0%}")
+    if verdict.acceptable and not verdict.improvements:
+        print("  Nos regles ne changent rien de mesurable sur ce banc.")
+    return 0 if verdict.acceptable else 1
+
+
+def _cmd_learn(args: argparse.Namespace, config: AppConfig) -> int:
+    """Apprendre de l'IA du moteur, ou verifier de quoi on dispose pour le faire.
+
+    `--check` d'abord, toujours : constituer un corpus demande des dizaines de
+    parties, et une bataille trouee ne se voit pas a l'oeil nu dans un fichier
+    de deux mega-octets.
+    """
+    from totalwar_ai.learning.corpus import Corpus
+
+    if args.calibrate:
+        return _learn_calibrate()
+
+    corpus = Corpus.load(Path(config.path("telemetry", "battles_dir")))
+    print(corpus.render())
+
+    if args.targets:
+        return _learn_targets(corpus)
+    if not args.check:
+        print(
+            "\n`--check` dit ce que valent les batailles enregistrees, "
+            "`--targets` apprend le ciblage, `--calibrate` etalonne l'instrument."
+        )
+    return 0 if corpus.usable or not corpus.battles else 1
+
+
+def _learn_targets(corpus: Corpus) -> int:
+    """Apprend le ciblage et la formation des batailles reelles exploitables.
+
+    N'apprend **que** des batailles exploitables : une bataille trouee ferait
+    entrer des changements de cible imaginaires — l'unite a change d'adversaire
+    entre deux etats parce qu'il en manque un au milieu, pas parce qu'elle l'a
+    voulu.
+    """
+    from totalwar_ai.learning.geometry import learn_formation
+    from totalwar_ai.learning.observation import infer
+    from totalwar_ai.learning.replay import iter_states, read_states
+    from totalwar_ai.learning.targeting import evaluate, learn
+
+    if not corpus.usable:
+        print(
+            "\nAucune bataille exploitable : rien a apprendre.\n"
+            "  `totalwar-ai probe --observe 2400` pendant une escarmouche en cree une."
+        )
+        return 1
+
+    # Deux passes sur le disque plutot qu'un corpus entier en memoire : trente
+    # batailles a deux hertz font des centaines de milliers d'etats d'unite, et
+    # relire un fichier coute bien moins cher que de les garder tous ouverts.
+    observations = []
+    for battle in corpus.usable:
+        etats = read_states(battle.path)
+        if len(etats) >= 2:
+            observations += infer(etats).observations
+
+    print(f"\n--- ciblage appris sur {len(corpus.usable)} bataille(s) ---\n")
+    print(learn(observations).render())
+    print()
+    print(evaluate(observations).explain())
+
+    print("\n--- formation observee ---\n")
+    print(
+        learn_formation(
+            itertools.chain.from_iterable(iter_states(battle.path) for battle in corpus.usable)
+        ).render()
+    )
+    return 0
+
+
+def _learn_calibrate() -> int:
+    """Etalonne l'inference et le ciblage sur la doublure, politique connue.
+
+    **Aucune bataille n'est jouee.** La doublure de `simulation/native_ai.py`
+    envoie sa cavalerie sur les tireurs et son infanterie sur le plus proche :
+    on sait donc ce que l'instrument doit trouver. S'il echoue ici, il ne dira
+    rien de bon sur l'IA du jeu.
+
+    Cette commande existe pour que les chiffres publies dans l'ADR 0007 se
+    reproduisent d'une seule ligne, au lieu d'etre repris de memoire.
+    """
+    from totalwar_ai.learning.observation import TARGETED_MOVES, infer
+    from totalwar_ai.learning.targeting import evaluate, learn
+    from totalwar_ai.simulation.environment import SimulationEnvironment
+    from totalwar_ai.simulation.scenarios import SCENARIOS
+
+    lots: list[list[BattleState]] = []
+    for nom, fabrique in SCENARIOS.items():
+        scenario = fabrique()
+        env = SimulationEnvironment(nom, scenario.units, seed=7, ally_autopilot=True)
+        etats = [env.state()]
+        for _ in range(400):
+            if env.finished:
+                break
+            etats.append(env.step().state)
+        lots.append(etats)
+
+    print(f"--- etalonnage sur {len(lots)} scenarios menes par la doublure ---\n")
+    print("ambiguite des decisions ciblees :")
+    for continuite in (False, True):
+        cibles = ambigues = 0
+        for etats in lots:
+            resultat = infer(etats, use_continuity=continuite)
+            vises = [item for item in resultat.observations if item.move in TARGETED_MOVES]
+            cibles += len(vises)
+            ambigues += sum(1 for item in vises if item.ambiguous)
+        etiquette = "avec continuite" if continuite else "sans continuite"
+        part = ambigues / cibles if cibles else 0.0
+        print(f"  {etiquette:<18} {cibles:5d} decisions  {part:5.1%} ambigues")
+
+    observations = [item for etats in lots for item in infer(etats).observations]
+    print(f"\n{learn(observations).render()}\n")
+    print(evaluate(observations).explain())
+
+    # La formation ne s'etalonne pas contre la doublure : elle n'en a aucune, et
+    # ce qu'on lit ici est surtout le deploiement que nous avons ecrit nous-memes
+    # dans les scenarios. C'est un controle de bon fonctionnement, pas une mesure.
+    from totalwar_ai.learning.geometry import learn_formation
+
+    print("\n--- formation (controle de fonctionnement, non etalonne) ---\n")
+    print(learn_formation([etat for etats in lots for etat in etats]).render())
+    return 0
+
+
 def _cmd_bench(args: argparse.Namespace, config: AppConfig) -> int:
     """Rejoue le banc, l'affiche, et le compare a la reference enregistree.
 
@@ -899,6 +1123,9 @@ def _cmd_bench(args: argparse.Namespace, config: AppConfig) -> int:
         seeds = tuple(DEFAULT_SEEDS) + tuple(
             101 + index for index in range(args.seeds - len(DEFAULT_SEEDS))
         )
+
+    if args.supervised:
+        return _bench_supervised(scenarios, seeds, config)
 
     print(f"Banc : {len(scenarios)} scenarios x {len(seeds)} graines {seeds}\n")
     report = run_benchmark(scenarios, seeds=seeds, config=config, label=args.label)

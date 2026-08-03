@@ -29,6 +29,7 @@ def _unite(
     x: float = 0.0,
     z: float = 0.0,
     side: Side = Side.ALLY,
+    ammo: float = 1.0,
 ) -> UnitState:
     return UnitState(
         id=unit_id,
@@ -37,6 +38,7 @@ def _unite(
         position=Vector3(x, 0.0, z),
         is_engaged=engaged,
         health_ratio=health,
+        ammo_ratio=ammo,
     )
 
 
@@ -299,3 +301,47 @@ def test_une_unite_retiree_du_perimetre_n_est_plus_examinee() -> None:
     superviseur.forget(["art"])
 
     assert superviseur.review(etat, _confiees()) == []
+
+
+# --- ce que la mesure a impose -------------------------------------------------
+
+
+def test_un_tireur_sans_munitions_reste_dans_la_melee() -> None:
+    """Le degager ne lui rend aucune valeur et ouvre un trou dans la ligne.
+
+    Mesure au banc supervise, onze scenarios et trois graines : sans cette
+    condition, la regle faisait tomber l'ensemble de 30/33 victoires a 27/33.
+    Ni la distance de repli, ni la sante, ni le nombre d'assaillants n'y
+    changeaient rien — les munitions expliquent tout l'ecart.
+    """
+    etat = _etat(
+        UnitState(
+            id="arc",
+            side=Side.ALLY,
+            role=UnitRole.RANGED_INFANTRY,
+            position=Vector3(0.0, 0.0, 0.0),
+            is_engaged=True,
+            ammo_ratio=0.0,
+        ),
+        _unite("e1", UnitRole.MELEE_INFANTRY, x=10.0, side=Side.ENEMY),
+    )
+
+    assert Supervisor().review(etat, _confiees("arc")) == []
+
+
+def test_un_tireur_avec_munitions_est_toujours_degage() -> None:
+    """La condition ne doit pas desarmer la regle qu'elle borne."""
+    etat = _etat(
+        UnitState(
+            id="arc",
+            side=Side.ALLY,
+            role=UnitRole.RANGED_INFANTRY,
+            position=Vector3(0.0, 0.0, 0.0),
+            is_engaged=True,
+            ammo_ratio=0.4,
+        ),
+        _unite("e1", UnitRole.MELEE_INFANTRY, x=10.0, side=Side.ENEMY),
+    )
+    reprises = Supervisor().review(etat, _confiees("arc"))
+
+    assert [item.rule for item in reprises] == ["tireur_au_contact"]

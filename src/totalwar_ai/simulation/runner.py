@@ -19,7 +19,7 @@ from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
 from totalwar_ai.bridge.protocol import PROTOCOL_VERSION
 from totalwar_ai.config import AppConfig, load_config
 from totalwar_ai.domain.battle_state import BattleOutcomeKind, BattleState
-from totalwar_ai.domain.unit_state import RANGED_ROLES, Side
+from totalwar_ai.domain.unit_state import RANGED_ROLES, Side, UnitRole
 from totalwar_ai.learning.adaptation import DEFAULT_MIN_SAMPLES, DoctrineProfile, derive_profile
 from totalwar_ai.learning.checkpoints import CheckpointStore
 from totalwar_ai.learning.rewards import RewardBreakdown, RewardCalculator
@@ -266,6 +266,119 @@ def run_battle(
         )
     finally:
         logger.close()
+
+
+@dataclass(frozen=True, slots=True)
+class SupervisedResult:
+    """Ce que retourne une bataille menee par la doublure, sous supervision.
+
+    Expose `.summary` comme :class:`BattleResult`, pour que le banc existant la
+    consomme sans rien savoir de la difference.
+    """
+
+    summary: BattleSummary
+    interventions: tuple[str, ...] = ()
+
+    @property
+    def outcome(self) -> BattleOutcomeKind:
+        return self.summary.outcome
+
+
+def run_supervised_battle(
+    scenario: Scenario,
+    *,
+    supervisor: Any | None = None,
+    config: AppConfig | None = None,
+    seed: int | None = None,
+    battle_id: str | None = None,
+    review_interval: float = 1.0,
+    **_ignored: Any,
+) -> SupervisedResult:
+    """Bataille menee par la doublure de l'IA du moteur, que l'on supervise.
+
+    `supervisor=None` mesure la doublure **seule** : c'est la reference a
+    laquelle comparer. Avec un superviseur, ses reprises s'appliquent et l'on
+    mesure ce qu'elles changent.
+
+    Volontairement maigre — ni memoire, ni rapport, ni recompense. Ce n'est pas
+    une bataille de l'agent : c'est une mesure, et elle doit tenir en quelques
+    secondes pour qu'une regle se juge avant d'etre gardee.
+
+    **La doublure n'est pas l'IA du jeu** (voir
+    :mod:`totalwar_ai.simulation.native_ai`) : un gain constate ici reste a
+    confirmer en bataille reelle.
+    """
+    from totalwar_ai.simulation.environment import Order, OrderKind
+
+    resolved_config = config or load_config()
+    simulation_cfg = resolved_config.simulation
+    resolved_seed = scenario.seed if seed is None else seed
+
+    environment = SimulationEnvironment(
+        battle_id=battle_id or str(uuid.uuid4()),
+        specs=scenario.units,
+        seed=resolved_seed,
+        parameters=SimulationParameters.load(),
+        tick_seconds=float(simulation_cfg.get("tick_seconds", 0.5)),
+        max_battle_seconds=min(
+            float(simulation_cfg.get("max_battle_seconds", 900.0)),
+            scenario.max_battle_seconds,
+        ),
+        field_radius=float(simulation_cfg.get("field_width", 400.0)),
+        enemy_waits=scenario.enemy_waits,
+        ally_autopilot=True,
+    )
+
+    motifs: list[str] = []
+    prochaine_revue = 0.0
+
+    while not environment.finished:
+        state = environment.state()
+        if supervisor is not None and state.game_time >= prochaine_revue:
+            prochaine_revue = state.game_time + review_interval
+            confiees = {unit.id for unit in state.allies() if unit.id not in environment.manual}
+            for reprise in supervisor.review(state, confiees):
+                environment.manual.add(reprise.unit_id)
+                motifs.append(reprise.rule)
+                unite = environment.units.get(reprise.unit_id)
+                if unite is None:
+                    continue
+                if getattr(reprise, "target_id", None):
+                    unite.order = Order(kind=OrderKind.ATTACK, target_id=reprise.target_id)
+                elif reprise.destination is not None:
+                    unite.order = Order(kind=OrderKind.MOVE, destination=reprise.destination)
+            rendues = supervisor.ready_to_return(state)
+            for unit_id in rendues:
+                environment.manual.discard(unit_id)
+            supervisor.forget(rendues)
+        environment.step()
+
+    duree = environment.game_time
+    minutes = max(duree, 60.0) / 60.0
+    perdues = sum(1 for unit in environment.units.values() if unit.side is Side.ALLY and unit.dead)
+    seigneur = [unit for unit in environment.units.values() if unit.role is UnitRole.LORD]
+    summary = BattleSummary(
+        battle_id=environment.battle_id,
+        scenario=scenario.name,
+        seed=resolved_seed,
+        outcome=environment.outcome,
+        duration=duree,
+        ally_remaining=environment.remaining_share(Side.ALLY),
+        enemy_remaining=environment.remaining_share(Side.ENEMY),
+        actions_sent=len(motifs),
+        agent_mode="native-ai" if supervisor is None else "native-ai-supervised",
+        protocol_version=PROTOCOL_VERSION,
+        army_fingerprint=scenario.fingerprint(),
+        metrics={
+            "orders_per_minute": round(len(motifs) / minutes, 2),
+            "blocked_ratio": 0.0,
+            "allied_units_lost": perdues,
+            "lord_survived": all(not unit.dead for unit in seigneur),
+            "source": "native_ai_stand_in",
+            "interventions": len(motifs),
+        },
+    )
+    return SupervisedResult(summary=summary, interventions=tuple(motifs))
 
 
 def _prepare_doctrine(

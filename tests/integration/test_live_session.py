@@ -363,10 +363,19 @@ def test_une_bataille_pilotee_est_enregistree(
 
     assert recorder.turns == 3
     assert recorder.path is not None
-    lignes = recorder.path.read_text(encoding="utf-8").splitlines()
-    assert len(lignes) == 3
+    # L'inventaire des unites occupe ses propres lignes : on ne compte que les
+    # tours.
+    lignes = [json.loads(ligne) for ligne in recorder.path.read_text(encoding="utf-8").splitlines()]
+    # Le jeu publie plus souvent que la boucle ne decide : on compte les tours
+    # de decision, et l'on verifie au passage qu'aucun etat n'a ete jete.
+    tours = [ligne for ligne in lignes if ligne.get("decision")]
+    assert len(tours) == 3
+    # L'en-tete de format et les inventaires occupent leurs propres lignes.
+    observations = [ligne for ligne in lignes if "turn" in ligne and "roster" not in ligne]
+    assert len(observations) >= len(tours)
+    assert recorder.observations == len(observations)
 
-    premier = json.loads(lignes[0])
+    premier = tours[0]
     assert premier["allies"] == len(ARMEE)
     assert premier["enemies"] == len(ENNEMIS)
     assert premier["phase"] == "Deployed"
@@ -386,7 +395,7 @@ def test_les_ordres_reellement_emis_sont_traces(session: LiveSession, tmp_path: 
     recorder.observe(etape)
     recorder.close()
 
-    entree = recorder.entries[0]
+    entree = next(item for item in recorder.entries if item.get("decision"))
     ordres = entree["orders"]
     total = len(ordres["moves"]) + len(ordres["attacks"]) + len(ordres["halts"])
     assert total == etape.sent
@@ -643,3 +652,103 @@ def test_la_fin_de_bataille_est_publiee_et_enregistree(tmp_path: Path) -> None:
 
     recorder.observe(LiveStep(state=final))
     assert recorder.outcome is not BattleOutcomeKind.UNKNOWN, "l'issue reste inconnue"
+
+
+def test_la_boucle_rend_compte_de_tous_les_etats_publies(
+    session: LiveSession, bataille: Probe
+) -> None:
+    """Le jeu publie plus souvent que la boucle ne decide.
+
+    `latest_battle_state()` vidait le flux et ne rendait que le dernier : les
+    autres etaient jetes sans trace. En supervision, l'attente d'un accuse peut
+    durer deux secondes — autant d'etats perdus, et le corpus d'apprentissage
+    ampute d'autant.
+    """
+    session.step()  # premier tour : on part d'un flux vide
+    bataille.advance(3000)  # le jeu publie trois etats de plus
+
+    etape = session.step()
+
+    assert etape.state is not None
+    assert len(etape.observed) >= 3, f"{len(etape.observed)} etat(s) retenu(s) sur trois publies"
+    assert etape.observed[-1] is etape.state, "on decide bien sur le plus recent"
+    sequences = [state.sequence for state in etape.observed]
+    assert sequences == sorted(sequences), "les etats ne sont pas dans l'ordre"
+
+
+# --- la decision fantome ------------------------------------------------------
+#
+# L'IA du moteur mene la bataille ; notre agent decide en parallele, dans le
+# vide. Chaque tour devient un couple etiquete « elle a fait ceci, nous aurions
+# fait cela » — la matiere premiere de l'apprentissage par observation, obtenue
+# sans jouer une bataille de plus.
+
+
+def _session_observante(tmp_path: Path, probe: Probe) -> object:
+    from totalwar_ai.bridge.live import SupervisedSession
+    from totalwar_ai.bridge.supervision import DEFAULT_RULES, Supervisor
+
+    return SupervisedSession(
+        bridge=FileBridge.open(tmp_path).tail(),
+        supervisor=Supervisor(rules=()),  # observation pure : aucune regle n'agit
+        shadow_agent=DeterministicTacticalAgent.from_config(load_config()),
+        shadow_rules=Supervisor(rules=DEFAULT_RULES),
+        wait=lambda _: probe.advance(600),
+    )
+
+
+def test_l_agent_decide_dans_le_vide_pendant_l_observation(bataille: Probe, tmp_path: Path) -> None:
+    session = _session_observante(tmp_path, bataille)
+    bataille.advance(1200)
+
+    etape = session.step()  # type: ignore[attr-defined]
+
+    assert etape.shadow is not None, "aucune decision fantome enregistree"
+    assert etape.shadow.decisions, "l'agent n'a rien decide"
+    assert etape.shadow.translation.moves or etape.shadow.translation.attacks
+
+
+def test_l_observation_n_envoie_rien_au_jeu(bataille: Probe, tmp_path: Path) -> None:
+    """Contrainte absolue : `--observe` observe, il ne joue pas.
+
+    La garantie tient par construction — ni l'agent ni la traduction ne touchent
+    au pont — mais elle est trop importante pour n'etre garantie que par
+    lecture du code.
+    """
+    session = _session_observante(tmp_path, bataille)
+
+    for _ in range(4):
+        bataille.advance(1200)
+        session.step()  # type: ignore[attr-defined]
+    bataille.advance(2000)
+
+    manoeuvres = [
+        order for order in bataille.orders() if order["kind"] in {"goto", "attack", "halt"}
+    ]
+    assert not manoeuvres, f"l'observation a donne des ordres : {manoeuvres}"
+
+
+def test_les_regles_qui_se_seraient_declenchees_sont_comptees(
+    bataille: Probe, tmp_path: Path
+) -> None:
+    """`artillerie_au_contact` n'a jamais rien declenche au banc.
+
+    Le fantome dira si c'est le banc qui manque de cas, ou la regle qui ne sert
+    a rien — sans qu'il faille jouer une bataille de plus pour le savoir.
+    """
+    bataille.runtime.execute(
+        "local units = bm:alliances():item(1):armies():item(1):units()\n"
+        "for i = 1, units:count() do\n"
+        "  local u = units:item(i)\n"
+        "  if tostring(u:unique_ui_id()) == '1001' then u.men_alive = 10 end\n"
+        "end\n"
+    )
+    session = _session_observante(tmp_path, bataille)
+    bataille.advance(1200)
+
+    etape = session.step()  # type: ignore[attr-defined]
+
+    assert etape.shadow is not None
+    regles = {rule for _, rule in etape.shadow.rules}
+    assert "seigneur_en_danger" in regles, f"regles vues : {etape.shadow.rules}"
+    assert not etape.interventions, "l'observation a repris une unite"

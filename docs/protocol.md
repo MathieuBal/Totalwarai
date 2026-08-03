@@ -185,7 +185,7 @@ partagée. Tout passe donc par `<dossier du jeu>/totalwar_ai/` :
 
 | Fichier | Sens | Mode | Écrit par |
 | --- | --- | --- | --- |
-| `totalwar_ai_state.jsonl` | jeu → Python | ajout | Lua, toutes les 1000 ms |
+| `totalwar_ai_state.jsonl` | jeu → Python | ajout | Lua, toutes les **500 ms** |
 | `totalwar_ai_command.json` | Python → jeu | **remplacé** | Python, à chaque ordre |
 | `totalwar_ai_ack.jsonl` | jeu → Python | ajout | Lua, à chaque commande lue |
 | `totalwar_ai_stop` | Python → jeu | sentinelle | Python, arrêt d'urgence |
@@ -215,7 +215,7 @@ entier incrémenté à chaque changement de comportement du script.
 
 - Lua : `TOTALWAR_AI_PROBE_REVISION` dans `totalwar_ai_probe.lua` ;
 - Python : `EXPECTED_PROBE_REVISION` dans `bridge/paths.py` ;
-- révision courante : **12**.
+- révision courante : **13**.
 
 Les deux ne peuvent pas diverger en silence :
 `tests/integration/test_lua_protocol.py` lit le script Lua et compare. Côté

@@ -58,10 +58,13 @@ def test_chaque_tour_est_ecrit_au_fil_de_l_eau(tmp_path: Path) -> None:
     recorder.observe(_tour(_etat(5, 4, ms=2000)))
 
     assert recorder.path is not None
-    lignes = recorder.path.read_text(encoding="utf-8").splitlines()
-    assert len(lignes) == 2  # ecrit avant meme d'avoir ferme
-    assert json.loads(lignes[0])["allies"] == 5
-    assert json.loads(lignes[1])["enemies"] == 4
+    # Ecrit avant meme d'avoir ferme. L'inventaire des unites occupe ses propres
+    # lignes : on ne compte donc que les tours.
+    lignes = [json.loads(ligne) for ligne in recorder.path.read_text(encoding="utf-8").splitlines()]
+    tours = [ligne for ligne in lignes if "turn" in ligne and "roster" not in ligne]
+    assert len(tours) == 2
+    assert tours[0]["allies"] == 5
+    assert tours[1]["enemies"] == 4
     recorder.close()
 
 
@@ -253,3 +256,195 @@ def test_une_unite_detruite_mais_encore_listee_ne_sauve_pas_l_adversaire() -> No
     )
 
     assert recorder.outcome is BattleOutcomeKind.VICTORY
+
+
+# --- ce qu'il faut pour apprendre en regardant jouer l'IA du moteur -------------
+#
+# Un enregistrement qui ne garde que des comptes — dix-huit allies, quatorze de
+# force — permet de comparer deux issues et rien de plus. Pour apprendre les
+# decisions de l'IA, il faut voir chaque unite, a chaque tour.
+
+
+def _observation(
+    unit_id: str,
+    *,
+    x: float = 0.0,
+    z: float = 0.0,
+    unit_type: str = "wh3_main_cth_inf_jade_warriors",
+    in_melee: bool = False,
+    alive: bool = True,
+    ammo: int | None = None,
+    missile_range: float | None = None,
+) -> ProbeUnitObservation:
+    return ProbeUnitObservation(
+        unit_id=unit_id,
+        position=Vector3(x, 0.0, z),
+        unit_type=unit_type,
+        in_melee=in_melee,
+        alive=alive,
+        hitpoints=0.8712,
+        men_alive=90,
+        bearing=134.523,
+        ammo=ammo,
+        missile_range=missile_range,
+    )
+
+
+def _lignes(chemin: Path) -> list[dict[str, object]]:
+    return [json.loads(ligne) for ligne in chemin.read_text(encoding="utf-8").splitlines()]
+
+
+def test_chaque_unite_est_enregistree_a_chaque_tour(tmp_path: Path) -> None:
+    """Sans cela, on ne voit pas ce que l'IA du jeu a fait."""
+    recorder = BattleRecorder(directory=tmp_path)
+    etat = ProbeBattleState(
+        allies=(_observation("a1", x=10.0),),
+        enemies=(_observation("e1", x=200.0),),
+        phase="Deployed",
+    )
+    recorder.observe(LiveStep(state=etat))
+    recorder.close()
+
+    assert recorder.path is not None
+    tours = [ligne for ligne in _lignes(recorder.path) if "units" in ligne]
+    assert len(tours) == 1
+    identifiants = {unite["id"] for unite in tours[0]["units"]}  # type: ignore[union-attr,index]
+    assert identifiants == {"a1", "e1"}
+
+
+def test_ce_qui_ne_change_jamais_est_ecrit_une_seule_fois(tmp_path: Path) -> None:
+    """Repeter type, camp et portee a chaque tour doublait le poids du corpus."""
+    recorder = BattleRecorder(directory=tmp_path)
+    etat = ProbeBattleState(
+        allies=(_observation("a1", missile_range=90.0, ammo=120),),
+        enemies=(_observation("e1", x=200.0),),
+        phase="Deployed",
+    )
+    for _ in range(5):
+        recorder.observe(LiveStep(state=etat))
+    recorder.close()
+
+    assert recorder.path is not None
+    lignes = _lignes(recorder.path)
+    inventaires = [ligne for ligne in lignes if "roster" in ligne]
+    assert len(inventaires) == 1, "l'inventaire a ete republie sans nouvelle unite"
+    assert inventaires[0]["roster"]["a1"]["missile_range"] == 90.0  # type: ignore[index]
+
+    tours = [ligne for ligne in lignes if "units" in ligne]
+    assert "type" not in tours[0]["units"][0]  # type: ignore[index]
+    # Les munitions, elles, varient : elles restent dans le tour.
+    assert tours[0]["units"][0]["ammo"] == 120  # type: ignore[index]
+
+
+def test_une_unite_qui_arrive_en_cours_de_bataille_est_inventoriee(tmp_path: Path) -> None:
+    """Les renforts d'une bataille de campagne resteraient sans type ni camp."""
+    recorder = BattleRecorder(directory=tmp_path)
+    premier = ProbeBattleState(allies=(_observation("a1"),), phase="Deployed")
+    recorder.observe(LiveStep(state=premier))
+    renfort = ProbeBattleState(
+        allies=(_observation("a1"), _observation("a2", unit_type="wh3_main_cth_art_grand_cannon")),
+        phase="Deployed",
+    )
+    recorder.observe(LiveStep(state=renfort))
+    recorder.close()
+
+    assert recorder.path is not None
+    inventaires = [ligne for ligne in _lignes(recorder.path) if "roster" in ligne]
+    assert len(inventaires) == 2, "le renfort n'a pas ete inventorie"
+    assert "a2" in inventaires[1]["roster"]  # type: ignore[operator]
+
+
+def test_un_faux_ne_prend_pas_de_place(tmp_path: Path) -> None:
+    """Quarante unites sur deux cent quarante tours : chaque champ inutile compte."""
+    recorder = BattleRecorder(directory=tmp_path)
+    recorder.observe(
+        LiveStep(state=ProbeBattleState(allies=(_observation("a1"),), phase="Deployed"))
+    )
+    recorder.close()
+
+    assert recorder.path is not None
+    tour = next(ligne for ligne in _lignes(recorder.path) if "units" in ligne)
+    unite = tour["units"][0]  # type: ignore[index]
+    assert "in_melee" not in unite, "un booleen faux a ete ecrit"
+    assert "dead" not in unite
+    assert "routing" not in unite
+
+
+def test_l_enregistrement_par_unite_peut_etre_coupe(tmp_path: Path) -> None:
+    """Un retour en arriere doit rester possible sans toucher au code."""
+    recorder = BattleRecorder(directory=tmp_path, record_units=False)
+    recorder.observe(
+        LiveStep(state=ProbeBattleState(allies=(_observation("a1"),), phase="Deployed"))
+    )
+    recorder.close()
+
+    assert recorder.path is not None
+    assert all("units" not in ligne for ligne in _lignes(recorder.path))
+
+
+def test_aucun_etat_publie_n_est_jete(tmp_path: Path) -> None:
+    """Le jeu publie plus souvent que la boucle ne decide.
+
+    `latest_battle_state()` vidait le flux et ne rendait que le dernier : les
+    autres disparaissaient definitivement. A 2 Hz de publication pour 1 Hz de
+    decision, c'etait la moitie du corpus d'apprentissage perdue en silence, et
+    rien ne permettait de s'en apercevoir.
+    """
+    recorder = BattleRecorder(directory=tmp_path)
+    etats = tuple(
+        ProbeBattleState(
+            allies=(_observation("a1", x=float(index)),),
+            sequence=index,
+            game_time_ms=index * 500,
+            phase="Deployed",
+        )
+        for index in range(1, 4)
+    )
+    recorder.observe(LiveStep(state=etats[-1], observed=etats))
+    recorder.close()
+
+    assert recorder.turns == 1, "un seul tour de decision"
+    assert recorder.observations == 3, "des etats publies ont ete jetes"
+
+    assert recorder.path is not None
+    tours = [ligne for ligne in _lignes(recorder.path) if "units" in ligne]
+    assert [ligne["sequence"] for ligne in tours] == [1, 2, 3]
+    # Seul l'etat de decision porte les ordres.
+    assert [bool(ligne.get("decision")) for ligne in tours] == [False, False, True]
+
+
+def test_un_trou_dans_le_flux_devient_visible(tmp_path: Path) -> None:
+    """Sans la sequence de la sonde, rien ne distingue une bataille trouee."""
+    recorder = BattleRecorder(directory=tmp_path)
+    for sequence in (1, 2, 7):  # quatre etats manquants
+        recorder.observe(
+            LiveStep(
+                state=ProbeBattleState(
+                    allies=(_observation("a1"),), sequence=sequence, phase="Deployed"
+                )
+            )
+        )
+    recorder.close()
+
+    assert recorder.path is not None
+    sequences = [ligne["sequence"] for ligne in _lignes(recorder.path) if "units" in ligne]
+    assert sequences == [1, 2, 7]
+    assert max(sequences) - min(sequences) + 1 != len(sequences), "le trou est indetectable"
+
+
+def test_l_altitude_est_conservee(tmp_path: Path) -> None:
+    """C'est la seule donnee de terrain que le jeu nous donne, et on la jetait.
+
+    `position():get_y()` repond en bataille — entre 21 et 33 releves. Elle dit
+    qui tient la hauteur, ce que reclame toute doctrine d'artillerie.
+    """
+    recorder = BattleRecorder(directory=tmp_path)
+    haut = ProbeUnitObservation(unit_id="a1", position=Vector3(10.0, 33.4, -20.0))
+    bas = ProbeUnitObservation(unit_id="e1", position=Vector3(10.0, 21.1, 200.0))
+    recorder.observe(LiveStep(state=ProbeBattleState(allies=(haut,), enemies=(bas,))))
+    recorder.close()
+
+    assert recorder.path is not None
+    tour = next(ligne for ligne in _lignes(recorder.path) if "units" in ligne)
+    altitudes = {unite["id"]: unite["y"] for unite in tour["units"]}  # type: ignore[index,union-attr]
+    assert altitudes == {"a1": 33.4, "e1": 21.1}

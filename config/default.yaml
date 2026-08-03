@@ -50,6 +50,11 @@ telemetry:
   generate_report: true
   battles_dir: data/battles
   reports_dir: data/reports
+  # Conserver l'etat de chaque unite a chaque tour dans les batailles jouees
+  # en jeu. Indispensable pour apprendre en regardant jouer l'IA du moteur :
+  # sans cela l'enregistrement ne garde que des comptes, et l'on ne voit pas
+  # ce que les unites ont fait. Environ 600 Ko par bataille.
+  record_units: true
 
 simulation:
   tick_seconds: 0.5

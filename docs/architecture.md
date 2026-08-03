@@ -47,7 +47,7 @@ appauvri que le moteur accepte.
 | `simulation` | Simulateur abstrait, scénarios, boucle de bataille. | tout le reste |
 | `telemetry` | Événements structurés, journal JSONL, rapport Markdown. | `domain`, `agent` |
 | `memory` | Persistance SQLite, transitions, tampon de rejeu. | `domain`, `telemetry` |
-| `learning` | Barème de récompense, adaptation de la doctrine, checkpoints et banc d'évaluation. L'entraînement de modèles viendra en Phase 6. | `domain`, `telemetry`, `memory` |
+| `learning` | Barème de récompense, adaptation de la doctrine, checkpoints, banc d'évaluation, **et l'observation de l'IA du moteur** : santé du corpus (`corpus.py`) et inférence des décisions (`observation.py`). L'entraînement de modèles viendra en Phase 6. | `domain`, `telemetry`, `memory` |
 
 Règle de dépendance : `domain` ne dépend de rien, et rien dans `domain`,
 `bridge` ou `agent` ne connaît le simulateur. L'adaptateur vers le jeu réel s'est
@@ -250,6 +250,56 @@ appliqué, et `--no-adapt` restaure le comportement de référence.
 `SafetyEngine.reset()` remet à zéro le compteur d'ordres mais **ne lève pas**
 l'arrêt d'urgence. Reprendre la main est une décision du joueur ; elle ne doit
 pas disparaître parce qu'une nouvelle bataille commence.
+
+### Apprendre en regardant jouer l'IA du moteur
+
+Notre agent ne verra jamais le terrain, le moral ni la fatigue — le recensement
+l'a établi accesseur par accesseur. Écrire des règles à la main contre un
+adversaire qui y voit a donc un plafond. La voie retenue est de **l'observer et
+d'apprendre ses décisions**.
+
+Trois pièces sont en place, aucune n'ayant encore vu une vraie bataille :
+
+- **l'enregistrement par unité** (`bridge/recording.py`) — position, altitude,
+  contact, effectif, munitions, à chaque état publié. Un méga-octet par
+  bataille, l'inventaire des unités écrit à part pour ne pas répéter ce qui ne
+  change jamais ;
+- **la décision fantôme** (`bridge/live.py`) — l'agent décide dans le vide
+  pendant l'observation, sans rien envoyer au jeu. Chaque tour devient un couple
+  étiqueté « elle a fait ceci, nous aurions fait cela » ;
+- **l'inférence des décisions** (`learning/observation.py`) — le jeu ne dit pas
+  quel ordre porte une unité ; on le conclut de deux états successifs, et l'on
+  compte les cas où l'on n'y arrive pas ;
+- **la relecture** (`learning/replay.py`) — un enregistrement redevient la suite
+  d'états que la boucle avait sous les yeux, ratios et rôles compris ;
+- **l'apprentissage du ciblage** (`learning/targeting.py`) — qui l'IA attaque,
+  et avec quoi, normalisé par **ce qui lui était offert** : sans ce
+  dénominateur on apprendrait la composition des armées rencontrées, pas une
+  préférence ;
+- **l'apprentissage de la formation** (`learning/geometry.py`) — où chaque rôle
+  se tient dans sa propre armée : profondeur le long de l'axe vers l'ennemi,
+  écart au centre, espacement. Tout est relatif à l'armée, donc transportable
+  d'une carte à l'autre.
+
+**Les deux s'étalonnent sans jouer.** La doublure a une politique connue
+exactement : si l'instrument ne la retrouve pas, il ne dira rien de bon sur
+l'IA du jeu. `totalwar-ai learn --calibrate` reproduit la mesure d'une seule
+ligne — c'est ainsi qu'a été trouvé, avant tout essai, que la mêlée n'est pas un
+choix de cible et faussait la table entière.
+
+**Deux constats se recoupent, et ils tiennent tout le reste.** La mêlée n'est
+pas un choix de cible — une unité au contact subit celui qui l'a rattrapée — et
+la mêlée n'est pas une formation — les lignes s'y interpénètrent. *Une bataille
+se lit dans les instants qui précèdent le choc.*
+
+La formation, elle, ne s'étalonne pas contre la doublure : celle-ci n'en a
+aucune. Seul l'instrument est vérifié, contre des états construits dont la
+géométrie est connue au mètre près.
+
+Le raisonnement complet est dans
+[`decisions/0007`](decisions/0007-observer-pour-apprendre.md),
+[`decisions/0008`](decisions/0008-apprendre-le-ciblage.md) et
+[`decisions/0009`](decisions/0009-apprendre-la-formation.md).
 
 ## Ce qui est vérifié en jeu, et ce qui ne l'est pas
 

@@ -107,6 +107,8 @@ données existent et sont lisibles par un script de bataille** :
 | unité cachée | `unit:is_hidden()` | inconnu | **accessible** — `false` |
 | unités ennemies | `bm:alliances()` | probable | **accessible** — 2 alliances, la 2ᵉ aligne 11 unités (essai n° 6) |
 | vitesse, largeur de front | `speed`, `width` | inconnu | **inaccessible** — absents |
+| altitude du sol | `unit:position():get_y()` | inconnu | **accessible** — 21 à 33 relevés (essai n° 3), désormais enregistrée |
+| altitude en un point quelconque | `v_to_ground(v(x,0,z)):get_y()` | inconnu | **non testée** — recensée par la révision 13 |
 | nom affichable | `unit:name()` | inconnu | **inutilisable** — renvoie `"1"`, un identifiant de script |
 
 Relevé par le recensement automatique de l'essai n° 6, qui appelle chaque
@@ -190,6 +192,34 @@ n'ont aucune donnée sur quoi s'appuyer.
 Ces deux manques ne sont pas des bogues à corriger : ce sont des contraintes du
 terrain. Ils devront être reportés dans les règles de l'agent avant tout
 pilotage réel, faute de quoi il déciderait sur des champs constamment vides.
+
+### Le terrain n'est pas une case fermée
+
+Ce document a longtemps porté « aucune donnée de terrain ». C'est vrai des
+accesseurs d'unité recensés, et **faux du reste** : deux voies n'avaient jamais
+été testées.
+
+**L'altitude répond déjà.** `unit:position():get_y()` rend le relief sous chaque
+unité — entre 21 et 33 relevés en bataille dès l'essai n° 3. Elle était lue puis
+jetée à l'enregistrement ; elle y est désormais conservée. Elle dit qui tient la
+hauteur, ce que réclame toute doctrine d'artillerie, et accumulée sur des
+dizaines de batailles elle dessine le relief des cartes déjà jouées.
+
+**`v_to_ground` reste à trancher.** Notre propre code l'appelle à chaque ordre de
+déplacement pour poser une destination au sol. Si le vecteur qu'elle rend expose
+son `get_y()`, alors nous tenons une sonde d'altitude en **tout point de la
+carte**, et un relief complet devient calculable avant le premier coup de feu.
+
+La révision 13 pose la question : elle échantillonne une croix de cinq points
+autour d'une de nos unités et journalise les altitudes. **Des valeurs qui
+diffèrent prouveraient que la sonde lit le relief** ; des valeurs toutes
+identiques diraient qu'elle rend une constante, et ne servirait à rien. Contre
+le faux jeu elle rend zéro partout, ce qui est attendu — il ne modélise aucun
+relief.
+
+Ce que cela ne donnerait pas, même au mieux : ni obstacles, ni forêts, ni terrain
+infranchissable, ni lignes de vue. Le relief permet de les approcher, pas de les
+connaître.
 
 ## Commande — ce que le Lua permet d'ordonner
 

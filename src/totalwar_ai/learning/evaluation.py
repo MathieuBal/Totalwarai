@@ -166,14 +166,22 @@ def run_benchmark(
     config: AppConfig | None = None,
     label: str = "",
     on_battle: Callable[[str, int], None] | None = None,
+    battle_runner: Callable[..., Any] | None = None,
 ) -> BenchmarkReport:
     """Rejoue le banc et agrege les metriques.
 
     Import local de `run_battle` : `simulation` depend de `learning`, l'inverse
     ne doit exister qu'au moment de l'appel.
+
+    `battle_runner` remplace la fonction qui joue une bataille. C'est ce qui
+    permet de mesurer autre chose que notre agent — la doublure de l'IA du
+    moteur, supervisee ou non — **avec la meme agregation et la meme detection
+    de regression**. Deux chemins de mesure differents ne produiraient pas deux
+    chiffres comparables.
     """
     from totalwar_ai.simulation.runner import run_battle
 
+    jouer = battle_runner or run_battle
     resolved_config = config or load_config()
     catalog = list(scenarios) if scenarios is not None else ScenarioCatalog().all()
     results: list[ScenarioResult] = []
@@ -192,7 +200,7 @@ def run_benchmark(
         for seed in seeds:
             if on_battle is not None:
                 on_battle(scenario.name, seed)
-            result = run_battle(
+            result = jouer(
                 scenario,
                 config=resolved_config,
                 seed=seed,
