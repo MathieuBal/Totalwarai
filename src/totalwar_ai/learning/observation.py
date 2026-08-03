@@ -80,6 +80,14 @@ class Observation:
     ambiguous: bool = False
     #: Distance a la cible au moment de la decision, en metres.
     distance: float = 0.0
+    #: Roles adverses vivants a cet instant — ce qui etait offert au choix.
+    #:
+    #: **Sans cela on n'apprend pas une preference, on apprend une composition
+    #: d'armee.** Une cavalerie qui frappe des lanciers neuf fois sur dix n'aime
+    #: pas les lanciers : elle affronte une armee qui n'a que cela. Le
+    #: denombrement de ce qui etait disponible est ce qui permet de faire la
+    #: difference (voir :mod:`totalwar_ai.learning.targeting`).
+    available: tuple[UnitRole, ...] = ()
 
     def explain(self) -> str:
         cible = self.target_id or "—"
@@ -99,7 +107,7 @@ class Inference:
     @property
     def ambiguity(self) -> float:
         """Part des decisions ou la cible n'a pas pu etre designee."""
-        avec_cible = [item for item in self.observations if item.move in _TARGETED]
+        avec_cible = [item for item in self.observations if item.move in TARGETED_MOVES]
         if not avec_cible:
             return 0.0
         return sum(1 for item in avec_cible if item.ambiguous) / len(avec_cible)
@@ -120,7 +128,7 @@ class Inference:
 
 
 #: Mouvements qui designent une cible. Les autres n'en ont pas a designer.
-_TARGETED = frozenset({Move.ENGAGE, Move.CLOSE, Move.FIRE})
+TARGETED_MOVES = frozenset({Move.ENGAGE, Move.CLOSE, Move.FIRE})
 
 
 def infer(
@@ -143,7 +151,13 @@ def infer(
     memoire: dict[str, str] = {}
     for avant, apres in itertools.pairwise(states):
         precedentes = {unit.id: unit for unit in avant.side_units(side)}
-        adversaires = apres.side_units(Side.ENEMY if side is Side.ALLY else Side.ALLY)
+        # Un cadavre n'est pas une cible : le laisser candidat fausserait a la
+        # fois la designation et le denombrement de ce qui etait offert au choix.
+        adversaires = [
+            unit
+            for unit in apres.side_units(Side.ENEMY if side is Side.ALLY else Side.ALLY)
+            if unit.is_alive
+        ]
         if not adversaires:
             continue
         anciens = {unit.id: unit for unit in avant.units}
@@ -187,7 +201,7 @@ def _resolve_by_continuity(
     tient au tir en melee compacte, ou plusieurs ennemis sont a distance egale
     et ou nos donnees ne permettent pas de trancher.
     """
-    if not observation.ambiguous or observation.move not in _TARGETED:
+    if not observation.ambiguous or observation.move not in TARGETED_MOVES:
         return observation
     ancienne = memoire.get(observation.unit_id)
     if ancienne is None:
@@ -207,6 +221,7 @@ def _resolve_by_continuity(
             target_role=adversaire.role,
             ambiguous=False,
             distance=observation.distance,
+            available=observation.available,
         )
     return observation
 
@@ -219,11 +234,15 @@ def _observe(
     anciens: dict[str, UnitState],
 ) -> Observation:
     """Ce qu'une unite faisait entre deux etats."""
+    # Ce qui etait offert au choix, quel que soit le mouvement finalement
+    # conclu : c'est le denominateur de toute mesure de preference.
+    offert = tuple(item.role for item in adversaires)
+
     if apres.is_engaged:
         cible, ambigu, distance = _closest(apres, [item for item in adversaires if item.is_engaged])
         if cible is None:
             cible, ambigu, distance = _closest(apres, adversaires)
-        return _rendu(game_time, apres, Move.ENGAGE, cible, ambigu, distance)
+        return _rendu(game_time, apres, Move.ENGAGE, cible, ambigu, distance, offert)
 
     if _has_fired(avant, apres):
         portee = _missile_range(apres)
@@ -231,16 +250,16 @@ def _observe(
             item for item in adversaires if apres.position.distance_2d(item.position) <= portee
         ]
         cible, ambigu, distance = _closest(apres, a_portee or adversaires)
-        return _rendu(game_time, apres, Move.FIRE, cible, ambigu, distance)
+        return _rendu(game_time, apres, Move.FIRE, cible, ambigu, distance, offert)
 
     deplacement = avant.position.distance_2d(apres.position)
     if deplacement < STILL_DISTANCE:
-        return _rendu(game_time, apres, Move.HOLD, None, False, 0.0)
+        return _rendu(game_time, apres, Move.HOLD, None, False, 0.0, offert)
 
     cible, ambigu, distance = _approached(avant, apres, adversaires, anciens, deplacement)
     if cible is not None:
-        return _rendu(game_time, apres, Move.CLOSE, cible, ambigu, distance)
-    return _rendu(game_time, apres, Move.WITHDRAW, None, False, 0.0)
+        return _rendu(game_time, apres, Move.CLOSE, cible, ambigu, distance, offert)
+    return _rendu(game_time, apres, Move.WITHDRAW, None, False, 0.0, offert)
 
 
 def _approached(
@@ -299,6 +318,7 @@ def _rendu(
     cible: UnitState | None,
     ambigu: bool,
     distance: float,
+    offert: tuple[UnitRole, ...] = (),
 ) -> Observation:
     return Observation(
         game_time=game_time,
@@ -311,6 +331,7 @@ def _rendu(
         target_role=None if (cible is None or ambigu) else cible.role,
         ambiguous=ambigu,
         distance=distance,
+        available=offert,
     )
 
 

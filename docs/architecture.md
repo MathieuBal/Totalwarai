@@ -269,12 +269,23 @@ Trois pièces sont en place, aucune n'ayant encore vu une vraie bataille :
   étiqueté « elle a fait ceci, nous aurions fait cela » ;
 - **l'inférence des décisions** (`learning/observation.py`) — le jeu ne dit pas
   quel ordre porte une unité ; on le conclut de deux états successifs, et l'on
-  compte les cas où l'on n'y arrive pas.
+  compte les cas où l'on n'y arrive pas ;
+- **la relecture** (`learning/replay.py`) — un enregistrement redevient la suite
+  d'états que la boucle avait sous les yeux, ratios et rôles compris ;
+- **l'apprentissage du ciblage** (`learning/targeting.py`) — qui l'IA attaque,
+  et avec quoi, normalisé par **ce qui lui était offert** : sans ce
+  dénominateur on apprendrait la composition des armées rencontrées, pas une
+  préférence.
 
-**L'inférence s'étalonne sans jouer.** La doublure a une politique connue
-exactement : si l'inférence ne la retrouve pas, elle ne dira rien de bon sur
-l'IA du jeu. Le raisonnement complet est dans
-[`decisions/0007`](decisions/0007-observer-pour-apprendre.md).
+**Les deux s'étalonnent sans jouer.** La doublure a une politique connue
+exactement : si l'instrument ne la retrouve pas, il ne dira rien de bon sur
+l'IA du jeu. `totalwar-ai learn --calibrate` reproduit la mesure d'une seule
+ligne — c'est ainsi qu'a été trouvé, avant tout essai, que la mêlée n'est pas un
+choix de cible et faussait la table entière.
+
+Le raisonnement complet est dans
+[`decisions/0007`](decisions/0007-observer-pour-apprendre.md) et
+[`decisions/0008`](decisions/0008-apprendre-le-ciblage.md).
 
 ## Ce qui est vérifié en jeu, et ce qui ne l'est pas
 

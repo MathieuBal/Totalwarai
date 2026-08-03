@@ -43,6 +43,8 @@ from totalwar_ai.telemetry.battle_logger import configure_logging
 
 if TYPE_CHECKING:
     from totalwar_ai.bridge.live import LiveStep
+    from totalwar_ai.domain.battle_state import BattleState
+    from totalwar_ai.learning.corpus import Corpus
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -92,6 +94,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--check",
         action="store_true",
         help="verifier ce que valent les batailles enregistrees, sans rien apprendre",
+    )
+    learn.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="etalonner l'instrument sur la doublure, dont la politique est connue",
+    )
+    learn.add_argument(
+        "--targets",
+        action="store_true",
+        help="apprendre le ciblage des batailles enregistrees et le mesurer",
     )
 
     bench = subparsers.add_parser(
@@ -976,15 +988,98 @@ def _cmd_learn(args: argparse.Namespace, config: AppConfig) -> int:
     """
     from totalwar_ai.learning.corpus import Corpus
 
+    if args.calibrate:
+        return _learn_calibrate()
+
     corpus = Corpus.load(Path(config.path("telemetry", "battles_dir")))
     print(corpus.render())
 
+    if args.targets:
+        return _learn_targets(corpus)
     if not args.check:
         print(
-            "\nL'apprentissage lui-meme n'est pas encore ecrit. "
-            "`totalwar-ai learn --check` dit ce dont il disposera."
+            "\n`--check` dit ce que valent les batailles enregistrees, "
+            "`--targets` apprend le ciblage, `--calibrate` etalonne l'instrument."
         )
     return 0 if corpus.usable or not corpus.battles else 1
+
+
+def _learn_targets(corpus: Corpus) -> int:
+    """Apprend le ciblage des batailles reelles exploitables, et le mesure.
+
+    N'apprend **que** des batailles exploitables : une bataille trouee ferait
+    entrer des changements de cible imaginaires — l'unite a change d'adversaire
+    entre deux etats parce qu'il en manque un au milieu, pas parce qu'elle l'a
+    voulu.
+    """
+    from totalwar_ai.learning.observation import infer
+    from totalwar_ai.learning.replay import read_states
+    from totalwar_ai.learning.targeting import evaluate, learn
+
+    if not corpus.usable:
+        print(
+            "\nAucune bataille exploitable : rien a apprendre.\n"
+            "  `totalwar-ai probe --observe 2400` pendant une escarmouche en cree une."
+        )
+        return 1
+
+    observations = []
+    for battle in corpus.usable:
+        etats = read_states(battle.path)
+        if len(etats) >= 2:
+            observations += infer(etats).observations
+
+    print(f"\n--- ciblage appris sur {len(corpus.usable)} bataille(s) ---\n")
+    print(learn(observations).render())
+    print()
+    print(evaluate(observations).explain())
+    return 0
+
+
+def _learn_calibrate() -> int:
+    """Etalonne l'inference et le ciblage sur la doublure, politique connue.
+
+    **Aucune bataille n'est jouee.** La doublure de `simulation/native_ai.py`
+    envoie sa cavalerie sur les tireurs et son infanterie sur le plus proche :
+    on sait donc ce que l'instrument doit trouver. S'il echoue ici, il ne dira
+    rien de bon sur l'IA du jeu.
+
+    Cette commande existe pour que les chiffres publies dans l'ADR 0007 se
+    reproduisent d'une seule ligne, au lieu d'etre repris de memoire.
+    """
+    from totalwar_ai.learning.observation import TARGETED_MOVES, infer
+    from totalwar_ai.learning.targeting import evaluate, learn
+    from totalwar_ai.simulation.environment import SimulationEnvironment
+    from totalwar_ai.simulation.scenarios import SCENARIOS
+
+    lots: list[list[BattleState]] = []
+    for nom, fabrique in SCENARIOS.items():
+        scenario = fabrique()
+        env = SimulationEnvironment(nom, scenario.units, seed=7, ally_autopilot=True)
+        etats = [env.state()]
+        for _ in range(400):
+            if env.finished:
+                break
+            etats.append(env.step().state)
+        lots.append(etats)
+
+    print(f"--- etalonnage sur {len(lots)} scenarios menes par la doublure ---\n")
+    print("ambiguite des decisions ciblees :")
+    for continuite in (False, True):
+        cibles = ambigues = 0
+        for etats in lots:
+            resultat = infer(etats, use_continuity=continuite)
+            vises = [item for item in resultat.observations if item.move in TARGETED_MOVES]
+            cibles += len(vises)
+            ambigues += sum(1 for item in vises if item.ambiguous)
+        etiquette = "avec continuite" if continuite else "sans continuite"
+        part = ambigues / cibles if cibles else 0.0
+        print(f"  {etiquette:<18} {cibles:5d} decisions  {part:5.1%} ambigues")
+
+    observations = [item for etats in lots for item in infer(etats).observations]
+    print(f"\n{learn(observations).render()}\n")
+    print(evaluate(observations).explain())
+    return 0
 
 
 def _cmd_bench(args: argparse.Namespace, config: AppConfig) -> int:

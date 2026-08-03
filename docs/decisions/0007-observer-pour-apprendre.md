@@ -100,10 +100,16 @@ doublure, on étalonne l'instrument.
 
 ### Ce que la mesure donne
 
+`totalwar-ai learn --calibrate` reproduit cette mesure d'une seule ligne. Les
+chiffres ci-dessous en sortent ; ceux publiés d'abord ici — 27 % et 21 % —
+venaient d'un script jeté après usage, ce que la conduite adoptée en ADR 0006
+interdit. L'écart tient à la durée des scénarios rejoués, pas à un changement
+d'algorithme.
+
 | | Décisions ciblées | Ambiguës |
 | --- | --- | --- |
-| sans continuité | 2291 | **27 %** |
-| avec continuité | 2291 | **21 %** |
+| sans continuité | 2200 | **29,9 %** |
+| avec continuité | 2200 | **22,6 %** |
 
 La continuité — une unité qui frappait un ennemi et l'a toujours au contact le
 frappe encore — n'est pas une supposition mais la propriété la plus stable d'un

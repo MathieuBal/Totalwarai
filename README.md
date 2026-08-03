@@ -169,6 +169,7 @@ totalwar-ai history                                  # consulter les batailles p
 totalwar-ai doctrine                                 # voir ce que l'agent a appris
 totalwar-ai report <identifiant>                     # relire un rapport
 totalwar-ai bench                                    # rejouer le banc de scénarios
+totalwar-ai learn --calibrate                        # étalonner l'observation sans jouer
 totalwar-ai probe --status                           # état du pont vers le jeu
 ```
 
@@ -224,7 +225,17 @@ totalwar-ai probe --delegate      # confier l'armee, sans rien enregistrer
 totalwar-ai probe --play 120      # notre agent joue seul
 totalwar-ai probe --reclaim       # vous reprenez la main
 totalwar-ai probe --abort         # arret d'urgence, tout est libere
+
+totalwar-ai learn --check         # ce que vaut chaque bataille enregistree
+totalwar-ai learn --targets       # qui l'IA du jeu attaque, et avec quoi
 ```
+
+`learn --targets` n'apprend que des batailles **exploitables** : une bataille
+trouée ferait entrer des changements de cible imaginaires — l'unité a changé
+d'adversaire parce qu'un état manque au milieu, pas parce qu'elle l'a voulu.
+`learn --calibrate`, lui, ne demande aucune partie : il vérifie que l'instrument
+retrouve la politique connue de la doublure
+([`docs/decisions/0008`](docs/decisions/0008-apprendre-le-ciblage.md)).
 
 **Essayer en escarmouche, pas dans une bataille de campagne scriptée.** Les
 batailles du prologue donnent leurs propres ordres, prennent et rendent le
