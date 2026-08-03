@@ -1005,13 +1005,14 @@ def _cmd_learn(args: argparse.Namespace, config: AppConfig) -> int:
 
 
 def _learn_targets(corpus: Corpus) -> int:
-    """Apprend le ciblage des batailles reelles exploitables, et le mesure.
+    """Apprend le ciblage et la formation des batailles reelles exploitables.
 
     N'apprend **que** des batailles exploitables : une bataille trouee ferait
     entrer des changements de cible imaginaires — l'unite a change d'adversaire
     entre deux etats parce qu'il en manque un au milieu, pas parce qu'elle l'a
     voulu.
     """
+    from totalwar_ai.learning.geometry import learn_formation
     from totalwar_ai.learning.observation import infer
     from totalwar_ai.learning.replay import read_states
     from totalwar_ai.learning.targeting import evaluate, learn
@@ -1024,15 +1025,19 @@ def _learn_targets(corpus: Corpus) -> int:
         return 1
 
     observations = []
+    etats_vus = []
     for battle in corpus.usable:
         etats = read_states(battle.path)
         if len(etats) >= 2:
             observations += infer(etats).observations
+            etats_vus += etats
 
     print(f"\n--- ciblage appris sur {len(corpus.usable)} bataille(s) ---\n")
     print(learn(observations).render())
     print()
     print(evaluate(observations).explain())
+    print("\n--- formation observee ---\n")
+    print(learn_formation(etats_vus).render())
     return 0
 
 
@@ -1079,6 +1084,14 @@ def _learn_calibrate() -> int:
     observations = [item for etats in lots for item in infer(etats).observations]
     print(f"\n{learn(observations).render()}\n")
     print(evaluate(observations).explain())
+
+    # La formation ne s'etalonne pas contre la doublure : elle n'en a aucune, et
+    # ce qu'on lit ici est surtout le deploiement que nous avons ecrit nous-memes
+    # dans les scenarios. C'est un controle de bon fonctionnement, pas une mesure.
+    from totalwar_ai.learning.geometry import learn_formation
+
+    print("\n--- formation (controle de fonctionnement, non etalonne) ---\n")
+    print(learn_formation([etat for etats in lots for etat in etats]).render())
     return 0
 
 

@@ -275,7 +275,11 @@ Trois pièces sont en place, aucune n'ayant encore vu une vraie bataille :
 - **l'apprentissage du ciblage** (`learning/targeting.py`) — qui l'IA attaque,
   et avec quoi, normalisé par **ce qui lui était offert** : sans ce
   dénominateur on apprendrait la composition des armées rencontrées, pas une
-  préférence.
+  préférence ;
+- **l'apprentissage de la formation** (`learning/geometry.py`) — où chaque rôle
+  se tient dans sa propre armée : profondeur le long de l'axe vers l'ennemi,
+  écart au centre, espacement. Tout est relatif à l'armée, donc transportable
+  d'une carte à l'autre.
 
 **Les deux s'étalonnent sans jouer.** La doublure a une politique connue
 exactement : si l'instrument ne la retrouve pas, il ne dira rien de bon sur
@@ -283,9 +287,19 @@ l'IA du jeu. `totalwar-ai learn --calibrate` reproduit la mesure d'une seule
 ligne — c'est ainsi qu'a été trouvé, avant tout essai, que la mêlée n'est pas un
 choix de cible et faussait la table entière.
 
+**Deux constats se recoupent, et ils tiennent tout le reste.** La mêlée n'est
+pas un choix de cible — une unité au contact subit celui qui l'a rattrapée — et
+la mêlée n'est pas une formation — les lignes s'y interpénètrent. *Une bataille
+se lit dans les instants qui précèdent le choc.*
+
+La formation, elle, ne s'étalonne pas contre la doublure : celle-ci n'en a
+aucune. Seul l'instrument est vérifié, contre des états construits dont la
+géométrie est connue au mètre près.
+
 Le raisonnement complet est dans
-[`decisions/0007`](decisions/0007-observer-pour-apprendre.md) et
-[`decisions/0008`](decisions/0008-apprendre-le-ciblage.md).
+[`decisions/0007`](decisions/0007-observer-pour-apprendre.md),
+[`decisions/0008`](decisions/0008-apprendre-le-ciblage.md) et
+[`decisions/0009`](decisions/0009-apprendre-la-formation.md).
 
 ## Ce qui est vérifié en jeu, et ce qui ne l'est pas
 
