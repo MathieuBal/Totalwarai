@@ -36,6 +36,13 @@ from totalwar_ai.memory.models import BattleSummary, Episode
 #: les deux sources : `totalwar-ai history --scenario live` les isole.
 LIVE_SCENARIO = "live"
 
+#: Marqueur en tete de chaque enregistrement de bataille reelle.
+#:
+#: `data/battles/` recoit aussi les journaux du simulateur, au format tout
+#: different. Un fichier qui se nomme lui-meme evite au corpus d'apprentissage
+#: de melanger les deux, et restera lisible dans six mois.
+RECORDING_FORMAT = "totalwar_ai.live.v1"
+
 
 @dataclass
 class BattleRecorder:
@@ -82,6 +89,17 @@ class BattleRecorder:
             base.mkdir(parents=True, exist_ok=True)
             self.path: Path | None = base / f"{self.battle_id}.jsonl"
             self._handle = self.path.open("w", encoding="utf-8")
+            # En-tete d'identification. Le meme repertoire recoit les journaux
+            # du simulateur, au format tout different : sans cette ligne, le
+            # corpus d'apprentissage les prendrait pour des batailles reelles —
+            # quatre cent quinze d'un coup, constate en developpant.
+            self._handle.write(
+                json.dumps(
+                    {"format": RECORDING_FORMAT, "battle_id": self.battle_id},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
         else:
             self.path = None
 

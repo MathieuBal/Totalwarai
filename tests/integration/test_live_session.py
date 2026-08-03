@@ -370,7 +370,8 @@ def test_une_bataille_pilotee_est_enregistree(
     # de decision, et l'on verifie au passage qu'aucun etat n'a ete jete.
     tours = [ligne for ligne in lignes if ligne.get("decision")]
     assert len(tours) == 3
-    observations = [ligne for ligne in lignes if "roster" not in ligne]
+    # L'en-tete de format et les inventaires occupent leurs propres lignes.
+    observations = [ligne for ligne in lignes if "turn" in ligne and "roster" not in ligne]
     assert len(observations) >= len(tours)
     assert recorder.observations == len(observations)
 

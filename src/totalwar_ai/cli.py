@@ -85,6 +85,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("doctrine", help="afficher les doctrines apprises")
 
+    learn = subparsers.add_parser(
+        "learn", help="apprendre des batailles enregistrees en regardant jouer l'IA du jeu"
+    )
+    learn.add_argument(
+        "--check",
+        action="store_true",
+        help="verifier ce que valent les batailles enregistrees, sans rien apprendre",
+    )
+
     bench = subparsers.add_parser(
         "bench", help="rejouer le banc de scenarios et detecter les regressions"
     )
@@ -196,6 +205,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_simulate(args, config)
     if args.command == "history":
         return _cmd_history(args, config)
+    if args.command == "learn":
+        return _cmd_learn(args, config)
     if args.command == "doctrine":
         return _cmd_doctrine(config)
     if args.command == "bench":
@@ -954,6 +965,26 @@ def _bench_supervised(
     if verdict.acceptable and not verdict.improvements:
         print("  Nos regles ne changent rien de mesurable sur ce banc.")
     return 0 if verdict.acceptable else 1
+
+
+def _cmd_learn(args: argparse.Namespace, config: AppConfig) -> int:
+    """Apprendre de l'IA du moteur, ou verifier de quoi on dispose pour le faire.
+
+    `--check` d'abord, toujours : constituer un corpus demande des dizaines de
+    parties, et une bataille trouee ne se voit pas a l'oeil nu dans un fichier
+    de deux mega-octets.
+    """
+    from totalwar_ai.learning.corpus import Corpus
+
+    corpus = Corpus.load(Path(config.path("telemetry", "battles_dir")))
+    print(corpus.render())
+
+    if not args.check:
+        print(
+            "\nL'apprentissage lui-meme n'est pas encore ecrit. "
+            "`totalwar-ai learn --check` dit ce dont il disposera."
+        )
+    return 0 if corpus.usable or not corpus.battles else 1
 
 
 def _cmd_bench(args: argparse.Namespace, config: AppConfig) -> int:
