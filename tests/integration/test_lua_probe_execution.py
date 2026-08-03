@@ -20,6 +20,7 @@ mal nommee, un chemin de code qui ne journalise rien.
 
 from __future__ import annotations
 
+import itertools
 import json
 from pathlib import Path
 from typing import Any
@@ -1253,3 +1254,50 @@ def test_la_difficulte_de_bataille_est_relevee_des_deux_cotes(workdir: Path) -> 
     assert probe.grep("recensement de l'armee"), "l'armee n'a pas ete recensee"
     assert probe.grep("army_handicap"), "la difficulte de bataille n'est pas mentionnee"
     assert not probe.grep("ERREUR dans census_army_api")
+
+
+# --- le terrain : poser la question au jeu --------------------------------------
+#
+# La fiche de faisabilite a longtemps porte « aucune donnee de terrain ». C'etait
+# vrai des accesseurs d'unite recenses, et faux du reste : `position():get_y()`
+# repond, et `v_to_ground` projette un point sur le sol. Deux voies jamais
+# testees, et le recensement pose enfin la question.
+
+
+def test_le_terrain_est_recense(probe: Probe) -> None:
+    """Presente ou absente, la sonde d'altitude doit etre nommee."""
+    probe.advance(2000)
+
+    assert probe.grep("recensement du terrain"), "le terrain n'a pas ete recense"
+    assert probe.grep("  v_to_ground : presente")
+    # Une croix de cinq points : des altitudes qui different prouveraient que la
+    # sonde lit le relief. Le faux jeu rend toujours zero — c'est le vrai qui
+    # tranchera.
+    assert len(probe.grep("  sol en (")) == 5
+
+
+def test_le_recensement_du_terrain_ne_deplace_rien(probe: Probe) -> None:
+    """Sonder le sol ne doit pas donner d'ordre : `v_to_ground` sert aux deux."""
+    probe.advance(2000)
+
+    assert not probe.orders(), "le recensement a produit un ordre"
+
+
+def test_la_sonde_publie_deux_etats_par_seconde(probe: Probe) -> None:
+    """Observer plus finement que l'on ne decide rend l'inference plus sure.
+
+    La boucle Python decide une fois par seconde ; le jeu publie deux fois. Un
+    etat sur deux serait perdu si la boucle n'en gardait qu'un, ce qui etait le
+    cas avant que `LiveStep.observed` n'existe.
+    """
+    # La sonde ne demarre qu'a t=1000 ms : elle vit donc deux secondes ici.
+    probe.advance(3000)
+    bridge = FileBridge.open(probe.workdir)
+
+    etats = bridge.read_battle_states()
+    assert len(etats) >= 4, f"{len(etats)} etat(s) en deux secondes, deux par seconde attendus"
+    ecarts = [
+        seconde.game_time_ms - premiere.game_time_ms
+        for premiere, seconde in itertools.pairwise(etats)
+    ]
+    assert max(ecarts) <= 500, f"ecarts de publication : {ecarts}"
