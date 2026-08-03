@@ -31,6 +31,12 @@ from totalwar_ai.domain.unit_state import RANGED_ROLES, Side, UnitRole
 #: Assez pour voir une bascule, assez peu pour tenir dans un terminal.
 SLICES = 12
 
+#: Part de la pire chute a partir de laquelle une tranche marque le debut.
+#:
+#: Un quart suffit a distinguer le choc de la deroute qui suit : la bataille
+#: reelle analysee perdait 14 points au contact, puis 16 en pleine fuite.
+ONSET_SHARE = 0.25
+
 
 @dataclass(frozen=True, slots=True)
 class Slice:
@@ -38,7 +44,10 @@ class Slice:
 
     start: float
     end: float
-    #: Force alliee restante, en part de la force initiale.
+    #: Unites alliees **encore au combat**, en part de l'effectif de depart.
+    #:
+    #: Ni detruites, ni en deroute : une unite qui fuit ne pese plus rien dans
+    #: la bataille, et la compter ferait passer un effondrement pour une usure.
     ally_strength: float
     enemy_strength: float
     #: Unites alliees au contact, en part des vivantes.
@@ -75,35 +84,70 @@ class Timeline:
 
     @property
     def turning_point(self) -> Slice | None:
-        """La tranche ou l'avantage s'est le plus vite degrade.
+        """La tranche ou la bataille a commence a basculer.
 
-        Ce n'est pas « le moment ou l'on a perdu » : c'est le moment ou l'ecart
-        s'est creuse le plus vite, ce qui est mesurable et souvent revelateur.
+        **Le pire moment n'est pas le moment decisif.** Sur la premiere bataille
+        reelle analysee, la plus forte chute tombait a 490-524 s — l'armee etait
+        alors deja en pleine deroute, sans une seule unite au contact, et rien
+        d'interessant ne s'y passait. La bataille s'etait perdue cent secondes
+        plus tot, au choc.
+
+        On cherche donc le **debut** de la degradation : la premiere tranche
+        dont la chute atteint une part notable de la pire.
         """
-        if len(self.slices) < 2:
+        chutes = self._drops()
+        if not chutes:
             return None
-        pires = [
+        pire = max(chute for chute, _ in chutes)
+        if pire <= 0:
+            return None
+        for chute, tranche in chutes:
+            if chute >= pire * ONSET_SHARE:
+                return tranche
+        return None
+
+    @property
+    def collapse(self) -> Slice | None:
+        """La tranche ou l'ecart s'est creuse le plus vite."""
+        chutes = self._drops()
+        if not chutes:
+            return None
+        chute, tranche = max(chutes, key=lambda item: item[0])
+        return tranche if chute > 0 else None
+
+    def _drops(self) -> list[tuple[float, Slice]]:
+        if len(self.slices) < 2:
+            return []
+        return [
             (self.slices[index - 1].edge - self.slices[index].edge, self.slices[index])
             for index in range(1, len(self.slices))
         ]
-        chute, tranche = max(pires, key=lambda item: item[0])
-        return tranche if chute > 0 else None
 
     def render(self) -> str:
         if not self.slices:
             return "Bataille trop courte pour un deroule."
         bascule = self.turning_point
-        lignes = ["  " + item.explain() for item in self.slices]
-        if bascule is not None:
-            lignes += [
-                "",
-                f"Bascule vers {bascule.start:.0f}-{bascule.end:.0f} s : "
-                f"c'est la que l'ecart s'est creuse le plus vite.",
-            ]
-            observations = _read_slice(bascule)
-            lignes += [f"  {ligne}" for ligne in observations]
-        else:
+        lignes = [
+            "  (« encore au combat » : ni detruites, ni en deroute)",
+            "",
+        ]
+        lignes += ["  " + item.explain() for item in self.slices]
+        if bascule is None:
             lignes += ["", "Aucune bascule : l'ecart n'a jamais recule d'une tranche a l'autre."]
+            return "\n".join(lignes)
+
+        lignes += [
+            "",
+            f"Bascule vers {bascule.start:.0f}-{bascule.end:.0f} s : "
+            "c'est la que la degradation commence.",
+        ]
+        lignes += [f"  {ligne}" for ligne in _read_slice(bascule)]
+        effondrement = self.collapse
+        if effondrement is not None and effondrement is not bascule:
+            lignes.append(
+                f"  Le pire passe a {effondrement.start:.0f}-{effondrement.end:.0f} s, "
+                "mais tout y etait deja joue."
+            )
         return "\n".join(lignes)
 
 

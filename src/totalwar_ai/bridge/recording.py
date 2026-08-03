@@ -252,6 +252,19 @@ class BattleRecorder:
             return BattleOutcomeKind.VICTORY
         if not allies and enemies:
             return BattleOutcomeKind.DEFEAT
+
+        # **Une armee entierement en deroute a perdu.** Ce n'est pas une
+        # supposition tiree des forces restantes : c'est l'etat que le jeu
+        # publie a la phase `Complete`. Constate sur les trois premieres
+        # batailles reelles — neuf unites alliees toutes en deroute, quatorze
+        # unites adverses dont aucune, et l'issue annoncee « match nul » quand
+        # l'operateur avait vu trois defaites a l'ecran.
+        nos_deroutes = allies and all(unite.routing or unite.shattered for unite in allies)
+        leurs_deroutes = enemies and all(unite.routing or unite.shattered for unite in enemies)
+        if nos_deroutes and not leurs_deroutes:
+            return BattleOutcomeKind.DEFEAT
+        if leurs_deroutes and not nos_deroutes:
+            return BattleOutcomeKind.VICTORY
         return BattleOutcomeKind.DRAW
 
     def summary(self) -> BattleSummary:

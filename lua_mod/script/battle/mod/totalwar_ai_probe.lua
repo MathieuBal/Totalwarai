@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 13
+TOTALWAR_AI_PROBE_REVISION = 14
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -494,7 +494,13 @@ function PROBE:unit_snapshot(unit)
     add_bool("controllable", "is_controllable")
     add_bool("commanding", "is_commanding_unit")
     add_bool("idle", "is_idle")
-    add_bool("alive", "is_valid_target")
+    -- `is_valid_target` repond « peut-on lui tirer dessus en ce moment », et
+    -- **pas** « est-elle en vie ». Sur 21 057 observations en bataille reelle,
+    -- il valait faux 1 942 fois sur des unites bien vivantes -- trois unites de
+    -- tir sont restees marquees mortes six minutes durant, soixante-huit hommes
+    -- debout et le carquois plein, et n'ont jamais ete confiees a l'IA du jeu.
+    -- On le publie donc sous son vrai nom, et la vie se lit au compte d'hommes.
+    add_bool("targetable", "is_valid_target")
     add_bool("routing", "is_routing")
     add_bool("shattered", "is_shattered")
     add_bool("in_melee", "is_in_melee")

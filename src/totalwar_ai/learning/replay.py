@@ -30,7 +30,11 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from totalwar_ai.bridge.command_models import ProbeBattleState, ProbeUnitObservation
+from totalwar_ai.bridge.command_models import (
+    ProbeBattleState,
+    ProbeUnitObservation,
+    alive_from,
+)
 from totalwar_ai.bridge.roster import RosterMemory
 from totalwar_ai.domain.battle_state import BattleState
 from totalwar_ai.domain.geometry import Vector3
@@ -119,7 +123,10 @@ def _observation(brut: dict[str, Any], fiche: dict[str, Any]) -> ProbeUnitObserv
         controllable=fiche.get("side") == "ally",
         commanding=bool(fiche.get("commanding", False)),
         idle=bool(brut.get("idle", False)),
-        alive=not bool(brut.get("dead", False)),
+        # Meme regle qu'en direct : des hommes debout suffisent a etre vivant.
+        # Sans cela, les trois batailles enregistrees avant la correction
+        # resteraient amputees du quart de l'armee a chaque relecture.
+        alive=alive_from(not bool(brut.get("dead", False)), _optional_int(brut.get("men_alive"))),
         in_melee=bool(brut.get("in_melee", False)),
         routing=bool(brut.get("routing", False)),
         hidden=bool(brut.get("hidden", False)),

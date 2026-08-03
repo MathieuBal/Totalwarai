@@ -116,14 +116,33 @@ class Probe:
         )
 
     def kill_unit(self, unit_id: str) -> None:
-        """Rend une unite invalide, comme le jeu le fait pour une unite detruite."""
+        """Detruit une unite : plus un homme debout.
+
+        **C'est ainsi que le jeu marque une unite detruite**, et non par
+        `is_valid_target`. Mesure en bataille reelle : `number_of_men_alive == 0`
+        n'apparait jamais — le jeu retire l'unite de ses listes — tandis que
+        `is_valid_target() == false` apparait 1 942 fois sur des unites bien
+        vivantes. Le faux jeu encodait auparavant notre erreur, et c'est ce qui
+        a laisse passer le defaut.
+        """
+        self._patch_unit(unit_id, "u.men_alive = 0")
+
+    def make_untargetable(self, unit_id: str) -> None:
+        """Rend une unite non ciblable **sans la tuer**, comme le jeu le fait.
+
+        Trois unites de tir sont restees ainsi pendant six minutes de bataille,
+        avec soixante-huit hommes et un carquois plein.
+        """
+        self._patch_unit(unit_id, "u.is_valid_target = function() return false end")
+
+    def _patch_unit(self, unit_id: str, mutation: str) -> None:
         self.runtime.execute(
             "for _, alliance in ipairs({bm:alliances():item(1)}) do\n"
             "  local units = alliance:armies():item(1):units()\n"
             "  for i = 1, units:count() do\n"
             "    local u = units:item(i)\n"
             f"    if tostring(u:unique_ui_id()) == {json.dumps(unit_id)} then\n"
-            "      u.is_valid_target = function() return false end\n"
+            f"      {mutation}\n"
             "    end\n"
             "  end\n"
             "end\n"
@@ -824,6 +843,27 @@ def test_une_unite_morte_est_ecartee(workdir: Path) -> None:
     assert etat is not None
     assert len(etat.allies) == 2  # publiees telles quelles
     assert [u.id for u in etat.to_battle_state().allies()] == ["1001"]  # filtrees ici
+
+
+def test_une_unite_non_ciblable_n_est_pas_une_unite_morte(workdir: Path) -> None:
+    """`is_valid_target` dit « peut-on lui tirer dessus », pas « est-elle en vie ».
+
+    Trois unites de tir sont restees marquees mortes pendant six minutes de
+    bataille reelle, avec soixante-huit hommes et un carquois plein. Elles n'ont
+    jamais ete confiees a l'IA du jeu, et l'armee a attaque sans elles.
+    """
+    probe = Probe(
+        workdir,
+        units=[("1001", "unite", 0.0, 0.0, True), ("1002", "unite", 10.0, 0.0, True)],
+    )
+    probe.make_untargetable("1002")
+    probe.advance(2000)
+
+    etat = FileBridge.open(workdir).latest_battle_state()
+    assert etat is not None
+    vivantes = [unite.unit_id for unite in etat.allies if unite.alive]
+    assert vivantes == ["1001", "1002"], "une unite bien vivante a ete comptee morte"
+    assert [u.id for u in etat.to_battle_state().allies()] == ["1001", "1002"]
 
 
 def test_le_flux_mixte_sert_les_deux_lecteurs(bataille: Probe, workdir: Path) -> None:

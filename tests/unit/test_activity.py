@@ -106,7 +106,7 @@ def test_le_rapport_nomme_les_unites_sans_ordre() -> None:
     rapport = summarise(etats)
     assert [item.unit_id for item in rapport.inert] == ["arc"]
     assert "INERTE" in rapport.render()
-    assert "1 unite(s) n'ont ni manoeuvre" in rapport.render()
+    assert "1 unite(s) n'ont pas suivi l'armee" in rapport.render()
 
 
 def test_une_armee_entierement_active_le_dit() -> None:
@@ -115,7 +115,7 @@ def test_une_armee_entierement_active_le_dit() -> None:
         (_unite("inf", UnitRole.MELEE_INFANTRY, 100.0),),
     )
 
-    assert "Toutes les unites ont agi" in summarise(etats).render()
+    assert "Toutes les unites ont manoeuvre" in summarise(etats).render()
 
 
 def test_une_unite_detruite_est_signalee() -> None:
@@ -127,3 +127,59 @@ def test_une_unite_detruite_est_signalee() -> None:
     fiche = summarise(etats).units[0]
     assert not fiche.survived
     assert "detruite" in fiche.explain()
+
+
+def test_une_unite_qui_tire_sans_jamais_suivre_est_signalee() -> None:
+    """Le seuil absolu ne suffisait pas.
+
+    Sur la premiere bataille reelle, trois unites de tir ont parcouru 4, 21 et
+    21 metres pendant que le reste de l'armee en faisait entre 850 et 2 220.
+    Elles n'etaient pas inertes -- elles ont tire un cinquieme de leur carquois
+    quand l'ennemi est arrive sur elles -- mais elles n'ont jamais manoeuvre.
+    """
+    etats = []
+    for index in range(20):
+        etats.append(
+            (
+                # Le gros de l'armee marche.
+                _unite("inf1", UnitRole.MELEE_INFANTRY, index * 50.0),
+                _unite("inf2", UnitRole.MELEE_INFANTRY, index * 45.0),
+                _unite("inf3", UnitRole.MELEE_INFANTRY, index * 55.0),
+                # Les tireurs tiennent leur place et vident leur carquois.
+                _unite("arc", UnitRole.RANGED_INFANTRY, 0.0, ammo=1.0 - index * 0.04),
+            )
+        )
+    rapport = summarise(_etats(*etats))
+
+    tireur = next(item for item in rapport.units if item.unit_id == "arc")
+    assert not tireur.inert, "elle a tire : ce n'est pas de l'inertie"
+    assert tireur.left_behind, "elle n'a jamais suivi l'armee"
+    assert "RESTEE EN ARRIERE" in tireur.explain()
+    assert [item.unit_id for item in rapport.left_behind] == ["arc"]
+
+
+def test_une_armee_qui_avance_groupee_ne_declenche_rien() -> None:
+    etats = [
+        (
+            _unite("a", UnitRole.MELEE_INFANTRY, index * 50.0),
+            _unite("b", UnitRole.MELEE_INFANTRY, index * 45.0),
+            _unite("c", UnitRole.MELEE_INFANTRY, index * 55.0),
+        )
+        for index in range(20)
+    ]
+    rapport = summarise(_etats(*etats))
+    assert rapport.left_behind == []
+    assert "Toutes les unites ont manoeuvre" in rapport.render()
+
+
+def test_une_armee_immobile_ne_declenche_pas_de_faux_retardataire() -> None:
+    """Sans trajet median, la comparaison n'a pas de sens."""
+    etats = [
+        (
+            _unite("a", UnitRole.MELEE_INFANTRY, 0.0, melee=True),
+            _unite("b", UnitRole.MELEE_INFANTRY, 0.0, melee=True),
+        )
+        for _ in range(10)
+    ]
+    rapport = summarise(_etats(*etats))
+    assert rapport.left_behind == []

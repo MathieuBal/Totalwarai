@@ -40,6 +40,15 @@ IDLE_DISTANCE = 30.0
 #: Part de munitions en deca de laquelle une unite de tir n'a pas tire.
 IDLE_AMMO = 0.05
 
+#: Part du trajet median de l'armee sous laquelle une unite est restee en arriere.
+#:
+#: **Le seuil absolu ne suffisait pas.** Sur la premiere bataille reelle, trois
+#: unites de tir ont parcouru 4, 21 et 21 metres pendant que le reste de l'armee
+#: en faisait entre 850 et 2 220 : elles n'etaient pas inertes — elles ont tire
+#: un cinquieme de leur carquois quand l'ennemi est enfin arrive sur elles —
+#: mais elles n'ont manifestement jamais recu d'ordre de manoeuvre.
+LEFT_BEHIND_SHARE = 0.1
+
 
 @dataclass(frozen=True, slots=True)
 class UnitActivity:
@@ -57,6 +66,8 @@ class UnitActivity:
     seen: int = 0
     #: L'unite a-t-elle fini la bataille debout ?
     survived: bool = True
+    #: Trajet median de l'armee, pour situer celui de cette unite.
+    army_travel: float = 0.0
 
     @property
     def inert(self) -> bool:
@@ -68,9 +79,26 @@ class UnitActivity:
             self.travelled < IDLE_DISTANCE and self.ammo_spent < IDLE_AMMO and self.melee_share <= 0
         )
 
+    @property
+    def left_behind(self) -> bool:
+        """A tenu sa place pendant que l'armee manoeuvrait.
+
+        Distinct de :attr:`inert` : une unite laissee en arriere peut tirer et
+        finir au contact — quand l'ennemi arrive jusqu'a elle. Ce qu'elle n'a
+        jamais fait, c'est **suivre**.
+        """
+        if self.army_travel <= 0.0 or self.inert:
+            return False
+        return self.travelled < self.army_travel * LEFT_BEHIND_SHARE
+
     def explain(self) -> str:
         munitions = f"{self.ammo_spent:5.0%}" if self.role in RANGED_ROLES else "    —"
-        verdict = "  INERTE : aucun ordre recu" if self.inert else ""
+        if self.inert:
+            verdict = "  INERTE : aucun ordre recu"
+        elif self.left_behind:
+            verdict = f"  RESTEE EN ARRIERE : l'armee a parcouru {self.army_travel:.0f} m"
+        else:
+            verdict = ""
         mort = "" if self.survived else "  (detruite)"
         return (
             f"{self.unit_id:>6}  {self.role.value:<16} "
@@ -91,6 +119,10 @@ class ActivityReport:
     def inert(self) -> list[UnitActivity]:
         return [unit for unit in self.units if unit.inert]
 
+    @property
+    def left_behind(self) -> list[UnitActivity]:
+        return [unit for unit in self.units if unit.left_behind]
+
     def render(self) -> str:
         if not self.units:
             return "Aucune unite alliee dans cet enregistrement."
@@ -102,15 +134,16 @@ class ActivityReport:
         lignes += [
             f"  {unit.explain()}" for unit in sorted(self.units, key=lambda item: item.travelled)
         ]
-        if self.inert:
+        sans_ordre = self.inert + self.left_behind
+        if sans_ordre:
             lignes += [
                 "",
-                f"{len(self.inert)} unite(s) n'ont ni manoeuvre, ni tire, ni combattu.",
-                "  Une unite inerte n'a pas choisi la retenue : elle n'a recu aucun ordre.",
-                "  Verifier qu'elle figurait bien parmi les unites confiees au demarrage.",
+                f"{len(sans_ordre)} unite(s) n'ont pas suivi l'armee.",
+                "  Ce n'est pas de la prudence : verifier qu'elles figuraient bien",
+                "  parmi les unites confiees au demarrage.",
             ]
         else:
-            lignes += ["", "Toutes les unites ont agi : aucune n'est restee sans ordre."]
+            lignes += ["", "Toutes les unites ont manoeuvre avec l'armee."]
         return "\n".join(lignes)
 
 
@@ -160,6 +193,7 @@ def summarise(states: Iterable[BattleState], *, side: Side = Side.ALLY) -> Activ
                         trajets[unit.id] = trajets.get(unit.id, 0.0) + pas
         dernier = etat
 
+    trajet_median = _median([trajets.get(unit_id, 0.0) for unit_id in roles])
     return ActivityReport(
         units=[
             UnitActivity(
@@ -172,9 +206,25 @@ def summarise(states: Iterable[BattleState], *, side: Side = Side.ALLY) -> Activ
                 melee_share=contacts.get(unit_id, 0) / vus[unit_id] if vus.get(unit_id) else 0.0,
                 seen=vus.get(unit_id, 0),
                 survived=vivantes.get(unit_id, False),
+                army_travel=trajet_median,
             )
             for unit_id, role in sorted(roles.items())
         ],
         states=compte,
         duration=max(0.0, fin - debut),
     )
+
+
+def _median(valeurs: list[float]) -> float:
+    """Mediane, insensible aux extremes.
+
+    La moyenne serait tiree vers le haut par la cavalerie, qui parcourt deux a
+    trois fois le trajet de l'infanterie sans que cela dise rien des autres.
+    """
+    if not valeurs:
+        return 0.0
+    ordonnees = sorted(valeurs)
+    milieu = len(ordonnees) // 2
+    if len(ordonnees) % 2:
+        return ordonnees[milieu]
+    return (ordonnees[milieu - 1] + ordonnees[milieu]) / 2.0

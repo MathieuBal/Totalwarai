@@ -26,6 +26,57 @@
 > Les essais n° 7 et 8 n'ont pas de compte rendu détaillé ci-dessous : seuls
 > leurs enseignements ont été reportés dans les tableaux.
 
+## `is_valid_target` n'est pas une mesure de vie
+
+**Corrigé en révision 14, après trois batailles perdues à cause de cela.**
+
+La sonde publiait `alive` depuis `unit:is_valid_target()`. Le nom trompe : la
+fonction répond « peut-on lui tirer dessus **en ce moment** », pas « est-elle
+en vie ». Mesure sur le flux réel d'une bataille entière — 21 057 observations
+d'unités :
+
+| Observation | Occurrences |
+| --- | --- |
+| `number_of_men_alive == 0` | **0** |
+| `alive == false` avec des hommes debout | **1 942** |
+
+Le jeu **retire** une unité détruite de ses listes ; elle cesse simplement de
+figurer. Aucune unité n'a jamais été vue avec zéro homme.
+
+### Ce que cela a coûté
+
+Trois unités de tir — deux arbalétriers Jade et un canonnier-grue — sont restées
+marquées mortes de la 184ᵉ à la 570ᵉ seconde, avec **68 hommes debout et
+1 496 munitions intactes**. Conséquences en chaîne :
+
+1. elles ont été exclues de la délégation (`controllable and alive`) — neuf
+   unités confiées sur douze ;
+2. elles ont donc reçu **zéro ordre** et n'ont pas bougé de plus de 21 m pendant
+   que le reste de l'armée en parcourait 850 à 2 220 ;
+3. `to_battle_state` écarte les unités mortes : elles étaient **absentes de tous
+   les états** consommés par l'agent et par l'apprentissage.
+
+L'opérateur a vu son armée « pousser, mais pas avec toutes les unités ». C'était
+exactement cela.
+
+### La règle retenue
+
+**Des hommes debout suffisent à être vivant**, quel que soit le drapeau. La
+révision 14 publie `is_valid_target` sous son vrai nom, `targetable` — c'est un
+signal réel (qui n'est pas ciblable n'est pas encore dans la bataille) mais
+aucun compte de vie n'en dépend plus.
+
+La correction est appliquée **aussi à la relecture** : les batailles
+enregistrées avant elle retrouvent leurs unités manquantes.
+
+### Pourquoi aucun test ne l'a vu
+
+Le faux jeu encodait notre erreur. Sa fonction `kill_unit` mettait
+`is_valid_target = false` en laissant les hommes debout — c'est-à-dire qu'elle
+reproduisait fidèlement le cas que nous lisions de travers. Le fixture détruit
+désormais une unité en mettant son effectif à zéro, et un test distinct vérifie
+qu'une unité non ciblable **n'est pas** comptée morte.
+
 ## Ce que le jeu permet, en une phrase
 
 Un script de bataille peut **observer toute la bataille et donner des ordres**,
@@ -108,7 +159,7 @@ données existent et sont lisibles par un script de bataille** :
 | unités ennemies | `bm:alliances()` | probable | **accessible** — 2 alliances, la 2ᵉ aligne 11 unités (essai n° 6) |
 | vitesse, largeur de front | `speed`, `width` | inconnu | **inaccessible** — absents |
 | altitude du sol | `unit:position():get_y()` | inconnu | **accessible** — 21 à 33 relevés (essai n° 3), désormais enregistrée |
-| altitude en un point quelconque | `v_to_ground(v(x,0,z)):get_y()` | inconnu | **non testée** — recensée par la révision 13 |
+| altitude en un point quelconque | `v_to_ground(v(x,0,z)):get_y()` | **oui** | **vérifié** — 14,9 à 40,9 m relevés sur une croix de 300 m |
 | nom affichable | `unit:name()` | inconnu | **inutilisable** — renvoie `"1"`, un identifiant de script |
 
 Relevé par le recensement automatique de l'essai n° 6, qui appelle chaque

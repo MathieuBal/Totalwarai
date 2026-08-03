@@ -155,6 +155,29 @@ class ProbeUnitState:
         )
 
 
+def alive_from(reported: bool, men_alive: int | None) -> bool:
+    """Une unite est-elle vivante ? **Le compte d'hommes tranche, pas le drapeau.**
+
+    Le drapeau `alive` publie par la sonde vient de `unit:is_valid_target()`, et
+    ce n'est pas une mesure de vie : c'est « peut-on lui tirer dessus en ce
+    moment ». Mesure en bataille reelle, sur 21 057 observations :
+
+    * `men_alive == 0` n'apparait **jamais** — le jeu retire une unite detruite
+      de ses listes, elle cesse simplement de figurer ;
+    * `alive == false` apparait **1 942 fois**, toujours avec des hommes debout.
+
+    Trois unites de tir sont ainsi restees marquees mortes pendant six minutes,
+    avec soixante-huit hommes et un carquois plein. Elles n'ont jamais ete
+    confiees a l'IA du jeu, et l'operateur a vu son armee attaquer sans elles.
+
+    D'ou la regle : **des hommes debout suffisent a etre vivant**, quel que soit
+    le drapeau. Sans compte d'hommes, on s'en remet au drapeau, faute de mieux.
+    """
+    if men_alive is not None:
+        return men_alive > 0
+    return reported
+
+
 @dataclass(frozen=True, slots=True)
 class ProbeUnitObservation:
     """Une unite vue par la sonde, au sein d'un etat de bataille.
@@ -174,6 +197,14 @@ class ProbeUnitObservation:
     #: L'unite n'execute aucun ordre. `unit:is_idle()`.
     idle: bool = True
     alive: bool = True
+    #: L'unite peut-elle etre prise pour cible **en ce moment** ?
+    #:
+    #: `unit:is_valid_target()`, publie sous son vrai nom depuis la revision 14.
+    #: Ce n'est pas une mesure de vie : une unite hors de portee ou hors de vue
+    #: repond faux en ayant tous ses hommes debout. Conserve parce que c'est un
+    #: signal reel — qui n'est pas ciblable n'est pas encore dans la bataille —
+    #: mais aucun compte de vie ne doit plus en dependre.
+    targetable: bool = True
     routing: bool = False
     shattered: bool = False
     in_melee: bool = False
@@ -263,7 +294,10 @@ class ProbeUnitObservation:
             controllable=as_bool(data, "controllable", default=False),
             commanding=as_bool(data, "commanding", default=False),
             idle=as_bool(data, "idle", default=True),
-            alive=as_bool(data, "alive", default=True),
+            alive=alive_from(
+                as_bool(data, "alive", default=True), _optional_int(data, "men_alive")
+            ),
+            targetable=as_bool(data, "targetable", default=True),
             routing=as_bool(data, "routing", default=False),
             shattered=as_bool(data, "shattered", default=False),
             in_melee=as_bool(data, "in_melee", default=False),
