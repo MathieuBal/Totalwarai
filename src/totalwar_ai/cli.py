@@ -106,6 +106,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="apprendre le ciblage des batailles enregistrees et le mesurer",
     )
+    learn.add_argument(
+        "--units",
+        nargs="?",
+        const="",
+        metavar="IDENTIFIANT",
+        help="ce que chaque unite a fait de sa bataille "
+        "(defaut : la derniere bataille exploitable)",
+    )
 
     bench = subparsers.add_parser(
         "bench", help="rejouer le banc de scenarios et detecter les regressions"
@@ -1016,6 +1024,9 @@ def _cmd_learn(args: argparse.Namespace, config: AppConfig) -> int:
         return _learn_calibrate()
 
     corpus = Corpus.load(Path(config.path("telemetry", "battles_dir")))
+    if args.units is not None:
+        return _learn_units(corpus, args.units)
+
     print(corpus.render())
 
     if args.targets:
@@ -1026,6 +1037,37 @@ def _cmd_learn(args: argparse.Namespace, config: AppConfig) -> int:
             "`--targets` apprend le ciblage, `--calibrate` etalonne l'instrument."
         )
     return 0 if corpus.usable or not corpus.battles else 1
+
+
+def _learn_units(corpus: Corpus, wanted: str) -> int:
+    """Ce que chaque unite a fait de sa bataille.
+
+    Sert a trancher une question qu'aucun compte global ne tranche : une unite
+    restee en arriere a-t-elle **tenu son role** — tirer de loin — ou n'a-t-elle
+    simplement **recu aucun ordre** ?
+    """
+    from totalwar_ai.learning.activity import summarise
+    from totalwar_ai.learning.replay import iter_states
+
+    if not corpus.battles:
+        print(corpus.render())
+        return 1
+
+    if wanted:
+        choisies = [item for item in corpus.battles if item.battle_id.startswith(wanted)]
+        if not choisies:
+            print(f"Aucune bataille dont l'identifiant commence par « {wanted} ».", file=sys.stderr)
+            return 2
+        bataille = choisies[0]
+    else:
+        # La derniere exploitable, ou la derniere tout court : l'operateur vient
+        # de jouer, c'est celle-la qu'il regarde.
+        candidates = corpus.usable or corpus.battles
+        bataille = max(candidates, key=lambda item: item.path.stat().st_mtime)
+
+    print(f"--- activite par unite : {bataille.battle_id[:8]} ---\n")
+    print(summarise(iter_states(bataille.path)).render())
+    return 0
 
 
 def _learn_targets(corpus: Corpus) -> int:

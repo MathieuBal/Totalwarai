@@ -228,6 +228,7 @@ totalwar-ai probe --abort         # arret d'urgence, tout est libere
 
 totalwar-ai learn --check         # ce que vaut chaque bataille enregistree
 totalwar-ai learn --targets       # qui l'IA attaque, et ou elle place ses unites
+totalwar-ai learn --units         # ce que chaque unite a fait de sa bataille
 ```
 
 `learn --targets` n'apprend que des batailles **exploitables** : une bataille
