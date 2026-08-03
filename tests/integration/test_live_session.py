@@ -366,8 +366,13 @@ def test_une_bataille_pilotee_est_enregistree(
     # L'inventaire des unites occupe ses propres lignes : on ne compte que les
     # tours.
     lignes = [json.loads(ligne) for ligne in recorder.path.read_text(encoding="utf-8").splitlines()]
-    tours = [ligne for ligne in lignes if "roster" not in ligne]
+    # Le jeu publie plus souvent que la boucle ne decide : on compte les tours
+    # de decision, et l'on verifie au passage qu'aucun etat n'a ete jete.
+    tours = [ligne for ligne in lignes if ligne.get("decision")]
     assert len(tours) == 3
+    observations = [ligne for ligne in lignes if "roster" not in ligne]
+    assert len(observations) >= len(tours)
+    assert recorder.observations == len(observations)
 
     premier = tours[0]
     assert premier["allies"] == len(ARMEE)
@@ -389,7 +394,7 @@ def test_les_ordres_reellement_emis_sont_traces(session: LiveSession, tmp_path: 
     recorder.observe(etape)
     recorder.close()
 
-    entree = recorder.entries[0]
+    entree = next(item for item in recorder.entries if item.get("decision"))
     ordres = entree["orders"]
     total = len(ordres["moves"]) + len(ordres["attacks"]) + len(ordres["halts"])
     assert total == etape.sent
@@ -646,3 +651,25 @@ def test_la_fin_de_bataille_est_publiee_et_enregistree(tmp_path: Path) -> None:
 
     recorder.observe(LiveStep(state=final))
     assert recorder.outcome is not BattleOutcomeKind.UNKNOWN, "l'issue reste inconnue"
+
+
+def test_la_boucle_rend_compte_de_tous_les_etats_publies(
+    session: LiveSession, bataille: Probe
+) -> None:
+    """Le jeu publie plus souvent que la boucle ne decide.
+
+    `latest_battle_state()` vidait le flux et ne rendait que le dernier : les
+    autres etaient jetes sans trace. En supervision, l'attente d'un accuse peut
+    durer deux secondes — autant d'etats perdus, et le corpus d'apprentissage
+    ampute d'autant.
+    """
+    session.step()  # premier tour : on part d'un flux vide
+    bataille.advance(3000)  # le jeu publie trois etats de plus
+
+    etape = session.step()
+
+    assert etape.state is not None
+    assert len(etape.observed) >= 3, f"{len(etape.observed)} etat(s) retenu(s) sur trois publies"
+    assert etape.observed[-1] is etape.state, "on decide bien sur le plus recent"
+    sequences = [state.sequence for state in etape.observed]
+    assert sequences == sorted(sequences), "les etats ne sont pas dans l'ordre"

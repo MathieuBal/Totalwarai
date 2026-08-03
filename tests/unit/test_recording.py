@@ -380,3 +380,71 @@ def test_l_enregistrement_par_unite_peut_etre_coupe(tmp_path: Path) -> None:
 
     assert recorder.path is not None
     assert all("units" not in ligne for ligne in _lignes(recorder.path))
+
+
+def test_aucun_etat_publie_n_est_jete(tmp_path: Path) -> None:
+    """Le jeu publie plus souvent que la boucle ne decide.
+
+    `latest_battle_state()` vidait le flux et ne rendait que le dernier : les
+    autres disparaissaient definitivement. A 2 Hz de publication pour 1 Hz de
+    decision, c'etait la moitie du corpus d'apprentissage perdue en silence, et
+    rien ne permettait de s'en apercevoir.
+    """
+    recorder = BattleRecorder(directory=tmp_path)
+    etats = tuple(
+        ProbeBattleState(
+            allies=(_observation("a1", x=float(index)),),
+            sequence=index,
+            game_time_ms=index * 500,
+            phase="Deployed",
+        )
+        for index in range(1, 4)
+    )
+    recorder.observe(LiveStep(state=etats[-1], observed=etats))
+    recorder.close()
+
+    assert recorder.turns == 1, "un seul tour de decision"
+    assert recorder.observations == 3, "des etats publies ont ete jetes"
+
+    assert recorder.path is not None
+    tours = [ligne for ligne in _lignes(recorder.path) if "units" in ligne]
+    assert [ligne["sequence"] for ligne in tours] == [1, 2, 3]
+    # Seul l'etat de decision porte les ordres.
+    assert [bool(ligne.get("decision")) for ligne in tours] == [False, False, True]
+
+
+def test_un_trou_dans_le_flux_devient_visible(tmp_path: Path) -> None:
+    """Sans la sequence de la sonde, rien ne distingue une bataille trouee."""
+    recorder = BattleRecorder(directory=tmp_path)
+    for sequence in (1, 2, 7):  # quatre etats manquants
+        recorder.observe(
+            LiveStep(
+                state=ProbeBattleState(
+                    allies=(_observation("a1"),), sequence=sequence, phase="Deployed"
+                )
+            )
+        )
+    recorder.close()
+
+    assert recorder.path is not None
+    sequences = [ligne["sequence"] for ligne in _lignes(recorder.path) if "units" in ligne]
+    assert sequences == [1, 2, 7]
+    assert max(sequences) - min(sequences) + 1 != len(sequences), "le trou est indetectable"
+
+
+def test_l_altitude_est_conservee(tmp_path: Path) -> None:
+    """C'est la seule donnee de terrain que le jeu nous donne, et on la jetait.
+
+    `position():get_y()` repond en bataille — entre 21 et 33 releves. Elle dit
+    qui tient la hauteur, ce que reclame toute doctrine d'artillerie.
+    """
+    recorder = BattleRecorder(directory=tmp_path)
+    haut = ProbeUnitObservation(unit_id="a1", position=Vector3(10.0, 33.4, -20.0))
+    bas = ProbeUnitObservation(unit_id="e1", position=Vector3(10.0, 21.1, 200.0))
+    recorder.observe(LiveStep(state=ProbeBattleState(allies=(haut,), enemies=(bas,))))
+    recorder.close()
+
+    assert recorder.path is not None
+    tour = next(ligne for ligne in _lignes(recorder.path) if "units" in ligne)
+    altitudes = {unite["id"]: unite["y"] for unite in tour["units"]}  # type: ignore[index,union-attr]
+    assert altitudes == {"a1": 33.4, "e1": 21.1}

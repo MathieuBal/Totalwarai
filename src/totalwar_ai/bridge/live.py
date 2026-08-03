@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
 from totalwar_ai.bridge.command_models import ProbeBattleState, ProbeUnitObservation
@@ -69,6 +69,11 @@ class LiveStep:
     interventions: tuple[Intervention, ...] = ()
     #: Unites rendues a l'IA du jeu ce tour-ci.
     returned: tuple[str, ...] = ()
+    #: **Tous** les etats publies par le jeu pendant ce tour, le dernier etant
+    #: `state`. La boucle decide sur le plus recent, mais l'enregistrement les
+    #: garde tous : la frequence d'observation n'est pas celle de decision, et
+    #: un etat jete est une donnee d'apprentissage perdue pour toujours.
+    observed: tuple[ProbeBattleState, ...] = ()
     #: Unites que le jeu a **refuse** de rendre ou de reprendre, avec le motif.
     #:
     #: Une supervision qui ne lit pas les accuses croit avoir agi : constate en
@@ -146,10 +151,16 @@ class LiveSession:
 
     def step(self) -> LiveStep:
         """Un tour complet. Ne leve pas : un tour rate ne doit pas tout arreter."""
-        state = self.bridge.latest_battle_state()
-        if state is None:
+        states = self.bridge.read_battle_states()
+        if not states:
             return LiveStep()
+        # On decide sur le dernier etat, mais on rend compte de **tous** ceux
+        # publies depuis le tour precedent : voir coute moins cher qu'agir, et
+        # un etat jete ne se retrouve jamais.
+        return replace(self._decide(states[-1]), observed=tuple(states))
 
+    def _decide(self, state: ProbeBattleState) -> LiveStep:
+        """Le tour proprement dit, sur l'etat le plus recent."""
         self.roster.observe(state)
 
         if self.bridge.stop_requested:
@@ -348,10 +359,15 @@ class SupervisedSession:
 
     def step(self) -> LiveStep:
         """Un tour de surveillance. Ne leve pas."""
-        state = self.bridge.latest_battle_state()
-        if state is None:
+        states = self.bridge.read_battle_states()
+        if not states:
             return LiveStep()
+        # L'attente d'un accuse peut durer deux secondes, pendant lesquelles le
+        # jeu publie plusieurs etats. Les jeter etait une perte silencieuse.
+        return replace(self._surveille(states[-1]), observed=tuple(states))
 
+    def _surveille(self, state: ProbeBattleState) -> LiveStep:
+        """La surveillance proprement dite, sur l'etat le plus recent."""
         self.roster.observe(state)
         if self.bridge.stop_requested:
             return LiveStep(state=state, skipped="arret d'urgence demande")
