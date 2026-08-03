@@ -39,7 +39,6 @@ la hauteur. La moyenne d'un module n'est pas une explication.
 
 from __future__ import annotations
 
-import statistics
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
@@ -131,10 +130,16 @@ def learn_formation(
     *,
     side: Side = Side.ALLY,
 ) -> GeometryModel:
-    """Mesure la place de chaque role, etat d'approche apres etat d'approche."""
-    releves: dict[UnitRole, list[tuple[float, float, float]]] = {}
+    """Mesure la place de chaque role, etat d'approche apres etat d'approche.
+
+    **Consomme les etats a la volee, sans jamais les garder.** Trente batailles
+    a deux hertz font plusieurs centaines de milliers d'etats d'unite ; les
+    empiler pour en prendre la moyenne a la fin couterait des centaines de
+    mega-octets pour quatre nombres par role. On accumule des sommes.
+    """
+    tallies: dict[UnitRole, _Tally] = {}
     retenus = ecartes = 0
-    separations: list[float] = []
+    separation = 0.0
 
     for state in states:
         mesure = _measure(state, side)
@@ -142,34 +147,67 @@ def learn_formation(
             ecartes += 1
             continue
         retenus += 1
-        separations.append(mesure.separation)
-        for role, valeurs in mesure.per_role.items():
-            releves.setdefault(role, []).extend(valeurs)
+        separation += mesure.separation
+        for role, valeurs in mesure.per_role:
+            tallies.setdefault(role, _Tally()).add(*valeurs)
 
     return GeometryModel(
-        placements={
-            role: RolePlacement(
-                role=role,
-                samples=len(valeurs),
-                depth=statistics.fmean(item[0] for item in valeurs),
-                depth_spread=_spread([item[0] for item in valeurs]),
-                flank=statistics.fmean(item[1] for item in valeurs),
-                spacing=statistics.fmean(item[2] for item in valeurs),
-            )
-            for role, valeurs in releves.items()
-            if valeurs
-        },
+        placements={role: tally.placement(role) for role, tally in tallies.items() if tally.count},
         samples=retenus,
         skipped=ecartes,
-        separation=statistics.fmean(separations) if separations else 0.0,
+        separation=separation / retenus if retenus else 0.0,
     )
+
+
+@dataclass
+class _Tally:
+    """Sommes courantes pour un role. Memoire constante, quel que soit le corpus."""
+
+    count: int = 0
+    depth: float = 0.0
+    depth_squared: float = 0.0
+    flank: float = 0.0
+    spacing: float = 0.0
+
+    def add(self, depth: float, flank: float, spacing: float) -> None:
+        self.count += 1
+        self.depth += depth
+        self.depth_squared += depth * depth
+        self.flank += flank
+        self.spacing += spacing
+
+    def placement(self, role: UnitRole) -> RolePlacement:
+        moyenne = self.depth / self.count
+        return RolePlacement(
+            role=role,
+            samples=self.count,
+            depth=moyenne,
+            depth_spread=self._spread(moyenne),
+            flank=self.flank / self.count,
+            spacing=self.spacing / self.count,
+        )
+
+    def _spread(self, moyenne: float) -> float:
+        """Ecart-type d'echantillon, ou zero quand il n'y a qu'un releve.
+
+        Une dispersion large dit qu'un role n'a **pas** de place fixe. C'est une
+        information a part entiere : une moyenne publiee sans elle ferait passer
+        une unite qui va partout pour une unite qui se tient quelque part.
+        """
+        if self.count < 2:
+            return 0.0
+        # `max(0, ...)` : la somme des carres moins le carre de la somme peut
+        # devenir infiniment negative en virgule flottante quand la dispersion
+        # est nulle. Une variance negative ferait lever la racine.
+        variance = max(0.0, self.depth_squared - self.count * moyenne * moyenne) / (self.count - 1)
+        return float(variance**0.5)
 
 
 @dataclass(frozen=True, slots=True)
 class _Measure:
     separation: float
-    #: role -> [(profondeur, ecart au centre, espacement)]
-    per_role: dict[UnitRole, list[tuple[float, float, float]]]
+    #: (role, (profondeur, ecart au centre, espacement)) pour chaque unite.
+    per_role: list[tuple[UnitRole, tuple[float, float, float]]]
 
 
 def _measure(state: BattleState, side: Side) -> _Measure | None:
@@ -190,11 +228,11 @@ def _measure(state: BattleState, side: Side) -> _Measure | None:
         return None
 
     axe = notre_centre.direction_to(leur_centre)
-    par_role: dict[UnitRole, list[tuple[float, float, float]]] = {}
+    par_role: list[tuple[UnitRole, tuple[float, float, float]]] = []
     for unit in amis:
         profondeur, ecart = _project(unit.position - notre_centre, axe)
         espacement = _nearest_ally(unit, amis)
-        par_role.setdefault(unit.role, []).append((profondeur, ecart, espacement))
+        par_role.append((unit.role, (profondeur, ecart, espacement)))
     return _Measure(separation=separation, per_role=par_role)
 
 
@@ -215,13 +253,3 @@ def _project(offset: Vector3, axis: Vector3) -> tuple[float, float]:
 def _nearest_ally(unit: UnitState, amis: Sequence[UnitState]) -> float:
     distances = [unit.position.distance_2d(autre.position) for autre in amis if autre.id != unit.id]
     return min(distances) if distances else 0.0
-
-
-def _spread(valeurs: Sequence[float]) -> float:
-    """Ecart-type, ou zero quand il n'y a qu'un releve.
-
-    Une dispersion large dit qu'un role n'a **pas** de place fixe. C'est une
-    information a part entiere : une moyenne publiee sans elle ferait passer une
-    unite qui va partout pour une unite qui se tient quelque part.
-    """
-    return statistics.stdev(valeurs) if len(valeurs) > 1 else 0.0

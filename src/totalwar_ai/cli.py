@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import re
 import sys
@@ -1014,7 +1015,7 @@ def _learn_targets(corpus: Corpus) -> int:
     """
     from totalwar_ai.learning.geometry import learn_formation
     from totalwar_ai.learning.observation import infer
-    from totalwar_ai.learning.replay import read_states
+    from totalwar_ai.learning.replay import iter_states, read_states
     from totalwar_ai.learning.targeting import evaluate, learn
 
     if not corpus.usable:
@@ -1024,20 +1025,26 @@ def _learn_targets(corpus: Corpus) -> int:
         )
         return 1
 
+    # Deux passes sur le disque plutot qu'un corpus entier en memoire : trente
+    # batailles a deux hertz font des centaines de milliers d'etats d'unite, et
+    # relire un fichier coute bien moins cher que de les garder tous ouverts.
     observations = []
-    etats_vus = []
     for battle in corpus.usable:
         etats = read_states(battle.path)
         if len(etats) >= 2:
             observations += infer(etats).observations
-            etats_vus += etats
 
     print(f"\n--- ciblage appris sur {len(corpus.usable)} bataille(s) ---\n")
     print(learn(observations).render())
     print()
     print(evaluate(observations).explain())
+
     print("\n--- formation observee ---\n")
-    print(learn_formation(etats_vus).render())
+    print(
+        learn_formation(
+            itertools.chain.from_iterable(iter_states(battle.path) for battle in corpus.usable)
+        ).render()
+    )
     return 0
 
 
