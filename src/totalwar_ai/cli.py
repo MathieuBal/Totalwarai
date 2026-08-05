@@ -106,6 +106,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="apprendre le ciblage des batailles enregistrees et le mesurer",
     )
+    learn.add_argument(
+        "--save",
+        action="store_true",
+        help="enregistrer le ciblage appris pour que l'agent s'en serve en bataille",
+    )
+    learn.add_argument(
+        "--units",
+        nargs="?",
+        const="",
+        metavar="IDENTIFIANT",
+        help="ce que chaque unite a fait de sa bataille "
+        "(defaut : la derniere bataille exploitable)",
+    )
 
     bench = subparsers.add_parser(
         "bench", help="rejouer le banc de scenarios et detecter les regressions"
@@ -519,7 +532,18 @@ def _supervise(
     demandees = [unite.unit_id for unite in state.allies if unite.controllable and unite.alive]
     confiees = session.delegate_all(state)
     if not confiees:
+        # Le motif vient du Lua. Sans lui, « le jeu a refuse » ne distingue pas
+        # un refus d'un accuse jamais recu, et ne se diagnostique pas.
         print("Aucune unite confiee : le jeu a refuse la delegation.", file=sys.stderr)
+        print(f"  motif : {session.last_refusal or 'inconnu'}", file=sys.stderr)
+        print(
+            f"  {len(demandees)} unite(s) demandee(s), phase du jeu : {state.phase or 'inconnue'}",
+            file=sys.stderr,
+        )
+        print(
+            "  `totalwar-ai probe --log 30` affiche l'accuse complet cote jeu.",
+            file=sys.stderr,
+        )
         return 1
     # Le compte annonce est celui du jeu. En annoncer un autre s'est produit en
     # bataille : dix-huit demandees, six confiees, et la difference passee sous
@@ -531,6 +555,18 @@ def _supervise(
             f"  {len(manquantes)} unite(s) refusees par le jeu et laissees de cote : "
             + ", ".join(manquantes)
         )
+    # Une armee menee en partie est une armee qui perd. Neuf unites confiees sur
+    # douze allies passait inapercu : seules les unites *demandees* etaient
+    # comptees, et une unite non controlable ne l'etait meme pas.
+    vivantes = [unite for unite in state.allies if unite.alive]
+    if len(demandees) < len(vivantes):
+        ecartees = [unite for unite in vivantes if unite.unit_id not in set(demandees)]
+        print(
+            f"  {len(ecartees)} unite(s) alliee(s) non pilotables a cet instant, "
+            "elles seront reprises des qu'elles le deviendront :"
+        )
+        for unite in ecartees[:8]:
+            print(f"      {unite.unit_id}  {unite.unit_type or 'type inconnu'}")
     quoi = "Supervision" if supervised else "Observation (aucune regle : l'IA du jeu joue seule)"
     print(f"{quoi} pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.")
     if recorder.path is not None:
@@ -993,10 +1029,13 @@ def _cmd_learn(args: argparse.Namespace, config: AppConfig) -> int:
         return _learn_calibrate()
 
     corpus = Corpus.load(Path(config.path("telemetry", "battles_dir")))
+    if args.units is not None:
+        return _learn_units(corpus, args.units)
+
     print(corpus.render())
 
     if args.targets:
-        return _learn_targets(corpus)
+        return _learn_targets(corpus, save_to=_model_path(config) if args.save else None)
     if not args.check:
         print(
             "\n`--check` dit ce que valent les batailles enregistrees, "
@@ -1005,7 +1044,48 @@ def _cmd_learn(args: argparse.Namespace, config: AppConfig) -> int:
     return 0 if corpus.usable or not corpus.battles else 1
 
 
-def _learn_targets(corpus: Corpus) -> int:
+def _learn_units(corpus: Corpus, wanted: str) -> int:
+    """Ce que chaque unite a fait de sa bataille.
+
+    Sert a trancher une question qu'aucun compte global ne tranche : une unite
+    restee en arriere a-t-elle **tenu son role** — tirer de loin — ou n'a-t-elle
+    simplement **recu aucun ordre** ?
+    """
+    from totalwar_ai.learning.activity import summarise
+    from totalwar_ai.learning.replay import iter_states
+    from totalwar_ai.learning.timeline import summarise as deroule
+
+    if not corpus.battles:
+        print(corpus.render())
+        return 1
+
+    if wanted:
+        choisies = [item for item in corpus.battles if item.battle_id.startswith(wanted)]
+        if not choisies:
+            print(f"Aucune bataille dont l'identifiant commence par « {wanted} ».", file=sys.stderr)
+            return 2
+        bataille = choisies[0]
+    else:
+        # La derniere exploitable, ou la derniere tout court : l'operateur vient
+        # de jouer, c'est celle-la qu'il regarde.
+        candidates = corpus.usable or corpus.battles
+        bataille = max(candidates, key=lambda item: item.path.stat().st_mtime)
+
+    print(f"--- activite par unite : {bataille.battle_id[:8]} ---\n")
+    print(summarise(iter_states(bataille.path)).render())
+
+    # Le deroule demande une seconde lecture du fichier plutot qu'un corpus en
+    # memoire : relire coute moins cher que de tout garder ouvert.
+    print(f"\n--- deroule de la bataille : {bataille.battle_id[:8]} ---\n")
+    print(deroule(iter_states(bataille.path)).render())
+    return 0
+
+
+def _model_path(config: AppConfig) -> Path:
+    return config.path("memory", "models_dir") / "targeting.json"
+
+
+def _learn_targets(corpus: Corpus, *, save_to: Path | None = None) -> int:
     """Apprend le ciblage et la formation des batailles reelles exploitables.
 
     N'apprend **que** des batailles exploitables : une bataille trouee ferait
@@ -1034,10 +1114,12 @@ def _learn_targets(corpus: Corpus) -> int:
         if len(etats) >= 2:
             observations += infer(etats).observations
 
+    modele = learn(observations)
+    mesure = evaluate(observations)
     print(f"\n--- ciblage appris sur {len(corpus.usable)} bataille(s) ---\n")
-    print(learn(observations).render())
+    print(modele.render())
     print()
-    print(evaluate(observations).explain())
+    print(mesure.explain())
 
     print("\n--- formation observee ---\n")
     print(
@@ -1045,6 +1127,51 @@ def _learn_targets(corpus: Corpus) -> int:
             itertools.chain.from_iterable(iter_states(battle.path) for battle in corpus.usable)
         ).render()
     )
+
+    if save_to is not None:
+        return _save_targeting(modele, mesure, save_to)
+    print(
+        "\n`totalwar-ai learn --targets --save` mettra ce ciblage entre les mains "
+        "de l'agent.\n  Rien n'est enregistre tant qu'on ne le demande pas."
+    )
+    return 0
+
+
+def _save_targeting(modele: object, mesure: object, path: Path) -> int:
+    """Met le ciblage appris entre les mains de l'agent, s'il vaut mieux que la table.
+
+    **Un modele qui ne bat pas la table ecrite a la main n'est pas enregistre.**
+    Il aurait l'autorite d'une mesure et la valeur d'une supposition, et la
+    prochaine bataille en dependrait sans que personne ne l'ait decide.
+    """
+    from totalwar_ai.learning.targeting import Accuracy, TargetingModel
+
+    assert isinstance(modele, TargetingModel) and isinstance(mesure, Accuracy)
+    if not mesure.beats_random:
+        print(
+            "\nRefus d'enregistrer : le modele ne bat pas le hasard "
+            f"({mesure.learned:.1%} contre {mesure.random:.1%}).\n"
+            "  Il n'a rien appris ; l'agent garde sa table ecrite a la main."
+        )
+        return 1
+    if not mesure.beats_handwritten:
+        print(
+            "\nRefus d'enregistrer : le modele ne bat pas TARGET_PRIORITY "
+            f"({mesure.learned:.1%} contre {mesure.handwritten:.1%}).\n"
+            "  Il n'apprend rien que nous ne sachions deja."
+        )
+        return 1
+
+    modele.save(path)
+    exploitables = sorted(
+        {item.attacker for item in modele.affinities.values() if modele.usable(item.attacker)}
+    )
+    print(f"\nCiblage enregistre : {path}")
+    print(
+        f"  {len(exploitables)} role(s) assez observes pour que l'agent s'y fie : "
+        + (", ".join(role.value for role in exploitables) or "aucun")
+    )
+    print("  Les autres roles gardent TARGET_PRIORITY : le remplacement se fait role par role.")
     return 0
 
 

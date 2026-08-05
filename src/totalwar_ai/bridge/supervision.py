@@ -205,6 +205,15 @@ class Supervisor:
             pretes.append(unit_id)
         return pretes
 
+    @property
+    def held(self) -> set[str]:
+        """Unites que la supervision tient en ce moment.
+
+        Une unite reprise est a nous **volontairement** : la reconfier a l'IA du
+        jeu annulerait la correction dans le tour meme ou elle est donnee.
+        """
+        return set(self.reclaimed)
+
     def forget(self, unit_ids: list[str]) -> None:
         """Oublie des unites rendues a l'IA du jeu."""
         for unit_id in unit_ids:

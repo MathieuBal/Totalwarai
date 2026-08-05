@@ -84,24 +84,32 @@ class BattleRecorder:
     _handle: Any = None
 
     def __post_init__(self) -> None:
-        if self.directory is not None:
-            base = Path(self.directory)
-            base.mkdir(parents=True, exist_ok=True)
-            self.path: Path | None = base / f"{self.battle_id}.jsonl"
-            self._handle = self.path.open("w", encoding="utf-8")
-            # En-tete d'identification. Le meme repertoire recoit les journaux
-            # du simulateur, au format tout different : sans cette ligne, le
-            # corpus d'apprentissage les prendrait pour des batailles reelles —
-            # quatre cent quinze d'un coup, constate en developpant.
-            self._handle.write(
-                json.dumps(
-                    {"format": RECORDING_FORMAT, "battle_id": self.battle_id},
-                    ensure_ascii=False,
-                )
-                + "\n"
+        # Le fichier n'est **ouvert qu'a la premiere ecriture**. Une session qui
+        # n'a jamais commence — delegation refusee par le jeu, bataille pas
+        # encore lancee — laissait sinon un enregistrement vide derriere elle :
+        # neuf fichiers `aucun tour enregistre` pour trois vraies batailles, au
+        # premier soir de corpus.
+        self.path: Path | None = (
+            Path(self.directory) / f"{self.battle_id}.jsonl" if self.directory is not None else None
+        )
+
+    def _open(self) -> None:
+        """Ouvre l'enregistrement, en-tete comprise. Sans effet si deja ouvert."""
+        if self._handle is not None or self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self.path.open("w", encoding="utf-8")
+        # En-tete d'identification. Le meme repertoire recoit les journaux
+        # du simulateur, au format tout different : sans cette ligne, le
+        # corpus d'apprentissage les prendrait pour des batailles reelles —
+        # quatre cent quinze d'un coup, constate en developpant.
+        self._handle.write(
+            json.dumps(
+                {"format": RECORDING_FORMAT, "battle_id": self.battle_id},
+                ensure_ascii=False,
             )
-        else:
-            self.path = None
+            + "\n"
+        )
 
     # --- collecte ------------------------------------------------------------
 
@@ -131,6 +139,7 @@ class BattleRecorder:
 
     def _record(self, state: ProbeBattleState, step: LiveStep | None) -> None:
         """Un etat publie. `step` n'est fourni que pour l'etat de decision."""
+        self._open()
         self.observations += 1
         if self._first_state is None:
             self._first_state = state
@@ -243,6 +252,19 @@ class BattleRecorder:
             return BattleOutcomeKind.VICTORY
         if not allies and enemies:
             return BattleOutcomeKind.DEFEAT
+
+        # **Une armee entierement en deroute a perdu.** Ce n'est pas une
+        # supposition tiree des forces restantes : c'est l'etat que le jeu
+        # publie a la phase `Complete`. Constate sur les trois premieres
+        # batailles reelles — neuf unites alliees toutes en deroute, quatorze
+        # unites adverses dont aucune, et l'issue annoncee « match nul » quand
+        # l'operateur avait vu trois defaites a l'ecran.
+        nos_deroutes = allies and all(unite.routing or unite.shattered for unite in allies)
+        leurs_deroutes = enemies and all(unite.routing or unite.shattered for unite in enemies)
+        if nos_deroutes and not leurs_deroutes:
+            return BattleOutcomeKind.DEFEAT
+        if leurs_deroutes and not nos_deroutes:
+            return BattleOutcomeKind.VICTORY
         return BattleOutcomeKind.DRAW
 
     def summary(self) -> BattleSummary:

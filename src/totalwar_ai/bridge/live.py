@@ -388,6 +388,13 @@ class SupervisedSession:
     #: mesurer, et son etat interne n'influence jamais la bataille.
     shadow_rules: Supervisor | None = None
     translator: OrderTranslator = field(default_factory=OrderTranslator)
+    #: Pourquoi la derniere delegation a echoue, dans les mots du jeu.
+    #:
+    #: **Un echec sans motif n'est pas diagnosticable.** Le Lua nomme la cause —
+    #: unite introuvable, non controlable, `script_ai_planner` impossible — et
+    #: nous la jetions : l'operateur ne lisait que « le jeu a refuse », ce qui ne
+    #: distingue pas un refus d'un accuse jamais recu.
+    last_refusal: str = ""
 
     def delegate_all(self, state: ProbeBattleState) -> list[str]:
         """Confie a l'IA du jeu toutes les unites controlables.
@@ -397,12 +404,24 @@ class SupervisedSession:
         bataille : l'accuse portait `accepted` et le vrai compte dans son
         detail, que personne ne lisait.
         """
+        self.last_refusal = ""
         unit_ids = [unite.unit_id for unite in state.allies if unite.controllable and unite.alive]
         if not unit_ids:
+            self.last_refusal = "aucune unite controlable et vivante dans l'etat recu"
             return []
         commande = self.bridge.delegate(unit_ids)
         ack = self.bridge.wait_for_ack(commande.sequence, timeout=self.ack_timeout, sleep=self.wait)
-        if ack is None or not ack.accepted:
+        if ack is None:
+            # Silence et refus ne se soignent pas pareil : l'un dit que le Lua
+            # n'a pas repondu a temps, l'autre qu'il a repondu non.
+            self.last_refusal = (
+                f"aucun accuse en {self.ack_timeout:.0f} s "
+                f"(sequence {commande.sequence}) : la sonde repond-elle ?"
+            )
+            self.delegated = set()
+            return []
+        if not ack.accepted:
+            self.last_refusal = ack.error or f"refus sans motif (statut {ack.status.value})"
             self.delegated = set()
             return []
         self.unreachable.update(ack.refused_ids)
@@ -458,6 +477,10 @@ class SupervisedSession:
             self.delegated.update(rendues)
             self.supervisor.forget(rendues)
 
+        adoptees = self._adopt(state, exclues={item.unit_id for item in interventions})
+        if adoptees:
+            rendues = [*rendues, *adoptees]
+
         return LiveStep(
             state=state,
             decisions=tuple(item.explain() for item in interventions),
@@ -467,6 +490,40 @@ class SupervisedSession:
             shadow=ombre,
             sent=len(interventions) + len(rendues),
         )
+
+    def _adopt(self, state: ProbeBattleState, *, exclues: set[str]) -> list[str]:
+        """Confie a l'IA du jeu les unites qui lui echappent encore.
+
+        **Une delegation faite une fois au depart ne couvre pas une bataille.**
+        Constate au premier soir de corpus : neuf unites confiees sur douze
+        allies, et l'operateur voyant son armee « pousser, mais pas avec toutes
+        les unites ». Une unite peut n'etre pas encore controlable au moment ou
+        l'on delegue, arriver en renfort, ou etre relachee par le planificateur
+        du jeu — dans les trois cas elle reste plantee jusqu'a la fin.
+
+        Ne touche pas aux unites que la supervision vient de reprendre : elles
+        sont a nous **volontairement**, et les reconfier annulerait la correction
+        dans le tour meme ou elle est donnee.
+        """
+        candidates = [
+            unite.unit_id
+            for unite in state.allies
+            if unite.controllable
+            and unite.alive
+            and unite.unit_id not in self.delegated
+            and unite.unit_id not in self.unreachable
+            and unite.unit_id not in exclues
+            and unite.unit_id not in self.supervisor.held
+        ]
+        if not candidates:
+            return []
+        refuses = self._confirm(self.bridge.delegate(candidates).sequence, candidates, "adoption")
+        adoptees = [unit_id for unit_id in candidates if unit_id not in self.unreachable]
+        self.delegated.update(adoptees)
+        # Les refus alimentent `unreachable` dans `_confirm` : on ne redemandera
+        # pas la meme unite a chaque tour jusqu'a la fin de la bataille.
+        del refuses
+        return adoptees
 
     def _shadow(self, domaine: BattleState) -> ShadowDecision | None:
         """Ce que nous aurions fait, calcule sans rien envoyer au jeu.

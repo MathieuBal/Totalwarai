@@ -228,7 +228,14 @@ totalwar-ai probe --abort         # arret d'urgence, tout est libere
 
 totalwar-ai learn --check         # ce que vaut chaque bataille enregistree
 totalwar-ai learn --targets       # qui l'IA attaque, et ou elle place ses unites
+totalwar-ai learn --units         # activite par unite + deroule de la bataille
+totalwar-ai learn --targets --save  # mettre le ciblage appris entre les mains de l'agent
 ```
+
+`--save` **refuse d'enregistrer** un modele qui ne bat pas `TARGET_PRIORITY` :
+il aurait l'autorite d'une mesure et la valeur d'une supposition. Une fois
+enregistre, l'agent s'en sert **role par role** — les roles trop peu observes
+gardent la table ecrite a la main.
 
 `learn --targets` n'apprend que des batailles **exploitables** : une bataille
 trouée ferait entrer des changements de cible imaginaires — l'unité a changé
