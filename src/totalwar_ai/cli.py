@@ -1052,6 +1052,7 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
     simplement **recu aucun ordre** ?
     """
     from totalwar_ai.learning.activity import summarise
+    from totalwar_ai.learning.rehearsal import rehearse, render_cascade, rout_cascade
     from totalwar_ai.learning.replay import iter_states
     from totalwar_ai.learning.timeline import summarise as deroule
 
@@ -1078,6 +1079,12 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
     # memoire : relire coute moins cher que de tout garder ouvert.
     print(f"\n--- deroule de la bataille : {bataille.battle_id[:8]} ---\n")
     print(deroule(iter_states(bataille.path)).render())
+
+    print(f"\n--- qui a rompu, et dans quel etat : {bataille.battle_id[:8]} ---\n")
+    print(render_cascade(rout_cascade(iter_states(bataille.path))))
+
+    print(f"\n--- ce que nos regles auraient fait : {bataille.battle_id[:8]} ---\n")
+    print(rehearse(iter_states(bataille.path)).render())
     return 0
 
 
