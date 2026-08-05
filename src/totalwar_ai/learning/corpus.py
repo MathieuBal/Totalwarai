@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import itertools
 import json
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -220,9 +221,11 @@ def _gaps(sequences: list[int]) -> int:
     du flux perdue : les trois premieres batailles reelles sont ressorties a
     « 782 etats manquants » sur 784, alors que rien ne manquait.
 
-    Le pas normal est donc le **plus petit ecart observe** : c'est la cadence
-    que la sonde tient quand elle ne perd rien. Tout ecart plus grand est un
-    trou, et sa taille dit combien d'etats y sont passes.
+    Le pas normal est donc le **plus frequent**, et surtout pas le plus petit.
+    Premiere correction, prise en defaut aussitot : sur une bataille de 817
+    etats, 815 ecarts valaient 2 et **un seul valait 1**. Le minimum a pris ce
+    cas isole pour la cadence, et declare manquant chacun des 815 autres. Une
+    statistique sensible a un point unique n'est pas une mesure.
     """
     if len(sequences) < 3:
         # Trop court pour deduire une cadence. Ne rien affirmer vaut mieux
@@ -233,7 +236,7 @@ def _gaps(sequences: list[int]) -> int:
     positifs = [ecart for ecart in ecarts if ecart > 0]
     if not positifs:
         return 0
-    pas = min(positifs)
+    pas = Counter(positifs).most_common(1)[0][0]
     return sum(round(ecart / pas) - 1 for ecart in positifs if ecart > pas)
 
 

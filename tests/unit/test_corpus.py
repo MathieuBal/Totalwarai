@@ -149,3 +149,27 @@ def test_un_vrai_trou_reste_visible(tmp_path: Path) -> None:
 def test_un_flux_au_pas_de_un_se_lit_aussi(tmp_path: Path) -> None:
     fiche = inspect(_enregistrement(tmp_path, [1, 2, 3, 6, 7, 8]))
     assert fiche.gaps == 2
+
+
+def test_un_seul_ecart_isole_ne_redefinit_pas_la_cadence(tmp_path: Path) -> None:
+    """Une statistique sensible a un point unique n'est pas une mesure.
+
+    Mesure sur une bataille reelle de 817 etats : 815 ecarts valaient 2 et un
+    seul valait 1. Le minimum a pris ce cas isole pour la cadence normale, et
+    declare manquant chacun des 815 autres.
+    """
+    sequences = [1 + 2 * index for index in range(40)]
+    # Une seule publication ou la sonde n'a emis qu'un message.
+    sequences += [sequences[-1] + 1]
+    sequences += [sequences[-1] + 2 * index for index in range(1, 40)]
+
+    assert inspect(_enregistrement(tmp_path, sequences)).gaps == 0
+
+
+def test_un_trou_reste_visible_malgre_un_ecart_isole(tmp_path: Path) -> None:
+    sequences = [1 + 2 * index for index in range(20)]
+    sequences += [sequences[-1] + 1]  # l'anomalie isolee
+    sequences += [sequences[-1] + 8]  # un vrai trou : trois publications sautees
+    sequences += [sequences[-1] + 2 * index for index in range(1, 20)]
+
+    assert inspect(_enregistrement(tmp_path, sequences)).gaps == 3
