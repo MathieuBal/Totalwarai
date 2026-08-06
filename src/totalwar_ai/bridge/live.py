@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
@@ -377,9 +377,20 @@ class SupervisedSession:
     #: faire avancer sa fausse sonde. Injecter l'attente est ce qui permet de
     #: tester la boucle fermee sans horloge reelle.
     wait: Callable[[float], None] = time.sleep
-    #: Unites que le jeu refuse d'atteindre. On cesse de les compter comme
-    #: notres : insister produit un ordre refuse par seconde, sans fin.
-    unreachable: set[str] = field(default_factory=set)
+    #: Unites que le jeu refuse d'atteindre, et l'instant ou les redemander.
+    #:
+    #: **Le refus est temporaire, et le croire definitif coute des unites.**
+    #: Constate en bataille : quatre unites de tir reprises puis rendues ont ete
+    #: refusees d'affilee — « unite non controlable » — parce qu'elles etaient
+    #: en deroute a cet instant. Ecartees pour de bon, elles ont fini la bataille
+    #: sans pilote, ni a nous ni a l'IA du jeu. Une unite qui rompt peut se
+    #: rallier ; il faut lui laisser cette chance.
+    #:
+    #: Insister a chaque tour reste exclu : cela produirait un ordre refuse par
+    #: seconde. D'ou le delai.
+    unreachable: dict[str, float] = field(default_factory=dict)
+    #: Delai avant de redemander une unite refusee, en secondes de jeu.
+    retry_after: float = 30.0
     #: Agent qui decide **dans le vide**, pour comparaison. Voir `ShadowDecision`.
     shadow_agent: DeterministicTacticalAgent | None = None
     #: Superviseur d'ombre : quelles regles se seraient declenchees ?
@@ -424,7 +435,7 @@ class SupervisedSession:
             self.last_refusal = ack.error or f"refus sans motif (statut {ack.status.value})"
             self.delegated = set()
             return []
-        self.unreachable.update(ack.refused_ids)
+        self._reject(ack.refused_ids, 0.0)
         confiees = [unit_id for unit_id in unit_ids if unit_id not in self.unreachable]
         self.delegated = set(confiees)
         return confiees
@@ -438,9 +449,23 @@ class SupervisedSession:
         # jeu publie plusieurs etats. Les jeter etait une perte silencieuse.
         return replace(self._surveille(states[-1]), observed=tuple(states))
 
+    def _reject(self, unit_ids: Iterable[str], now: float) -> list[str]:
+        """Ecarte des unites pour un temps, et rend celles qui viennent de l'etre."""
+        nouvelles = [unit_id for unit_id in unit_ids if unit_id not in self.unreachable]
+        for unit_id in nouvelles:
+            self.unreachable[unit_id] = now + self.retry_after
+        return nouvelles
+
+    def _forget_expired(self, now: float) -> None:
+        """Rend leur chance aux unites ecartees il y a assez longtemps."""
+        for unit_id in [uid for uid, quand in self.unreachable.items() if now >= quand]:
+            del self.unreachable[unit_id]
+
     def _surveille(self, state: ProbeBattleState) -> LiveStep:
         """La surveillance proprement dite, sur l'etat le plus recent."""
         self.roster.observe(state)
+        maintenant = state.game_time_ms / 1000.0
+        self._forget_expired(maintenant)
         if self.bridge.stop_requested:
             return LiveStep(state=state, skipped="arret d'urgence demande")
 
@@ -459,7 +484,9 @@ class SupervisedSession:
         if interventions:
             # Reprise partielle : l'IA du jeu continue de mener le reste.
             demandees = [item.unit_id for item in interventions]
-            refuses += self._confirm(self.bridge.reclaim(demandees).sequence, demandees, "reprise")
+            refuses += self._confirm(
+                self.bridge.reclaim(demandees).sequence, demandees, "reprise", maintenant
+            )
             interventions = [item for item in interventions if item.unit_id not in self.unreachable]
             for intervention in interventions:
                 self.delegated.discard(intervention.unit_id)
@@ -472,7 +499,9 @@ class SupervisedSession:
                 self.bridge.send_orders(moves, release_after_ms=self.release_after_ms)
 
         if rendues:
-            refuses += self._confirm(self.bridge.delegate(rendues).sequence, rendues, "restitution")
+            refuses += self._confirm(
+                self.bridge.delegate(rendues).sequence, rendues, "restitution", maintenant
+            )
             rendues = [unit_id for unit_id in rendues if unit_id not in self.unreachable]
             self.delegated.update(rendues)
             self.supervisor.forget(rendues)
@@ -517,7 +546,12 @@ class SupervisedSession:
         ]
         if not candidates:
             return []
-        refuses = self._confirm(self.bridge.delegate(candidates).sequence, candidates, "adoption")
+        refuses = self._confirm(
+            self.bridge.delegate(candidates).sequence,
+            candidates,
+            "adoption",
+            state.game_time_ms / 1000.0,
+        )
         adoptees = [unit_id for unit_id in candidates if unit_id not in self.unreachable]
         self.delegated.update(adoptees)
         # Les refus alimentent `unreachable` dans `_confirm` : on ne redemandera
@@ -560,7 +594,9 @@ class SupervisedSession:
             decisions=decisions, blocked=refusees, translation=traduction, rules=regles
         )
 
-    def _confirm(self, sequence: int, demandees: Sequence[str], quoi: str) -> list[tuple[str, str]]:
+    def _confirm(
+        self, sequence: int, demandees: Sequence[str], quoi: str, now: float = 0.0
+    ) -> list[tuple[str, str]]:
         """Attend l'accuse et retient les unites que le jeu refuse d'atteindre.
 
         **Sans cette confirmation la supervision tourne a vide.** Constate en
@@ -568,22 +604,20 @@ class SupervisedSession:
         ne le lisait, la regle se redeclenchait au tour suivant — vingt-trois
         interventions, aucune appliquee, la meme unite reprise quatre fois.
 
-        Une unite refusee est retenue dans `unreachable` et cesse d'etre
-        supervisee. Insister ne la ramenerait pas et produirait un ordre refuse
-        par seconde jusqu'a la fin de la bataille.
+        Une unite refusee est ecartee **pour un temps** : insister a chaque tour
+        produirait un ordre refuse par seconde, mais l'ecarter pour de bon a deja
+        coute quatre unites de tir sur une bataille entiere.
         """
         ack = self.bridge.wait_for_ack(sequence, timeout=self.ack_timeout, sleep=self.wait)
         if ack is None:
-            perdues = [item for item in demandees if item not in self.unreachable]
-            self.unreachable.update(perdues)
+            perdues = self._reject(demandees, now)
             self.supervisor.forget(list(perdues))
             return [(item, f"{quoi} sans accuse du jeu") for item in perdues]
 
         motif = ack.error or f"{quoi} refusee par le jeu"
         # Un accuse peut etre accepte **et** partiel : la liste prime sur le statut.
         rejetees = list(ack.refused_ids) if ack.accepted else list(demandees)
-        nouvelles = [item for item in rejetees if item not in self.unreachable]
-        self.unreachable.update(nouvelles)
+        nouvelles = self._reject(rejetees, now)
         self.supervisor.forget(list(nouvelles))
         for unit_id in nouvelles:
             self.delegated.discard(unit_id)

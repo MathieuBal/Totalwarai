@@ -816,3 +816,75 @@ def test_une_unite_reprise_par_la_supervision_n_est_pas_reconfiee(
     session.step()
 
     assert tenue not in session.delegated, "l'unite tenue par la supervision a ete reconfiee"
+
+
+def test_une_unite_refusee_retrouve_sa_chance(bataille: Probe, tmp_path: Path) -> None:
+    """Le refus est temporaire, et le croire definitif coute des unites.
+
+    Constate en bataille : quatre unites de tir reprises puis rendues ont ete
+    refusees d'affilee — « unite non controlable » — parce qu'elles etaient en
+    deroute a cet instant. Ecartees pour de bon, elles ont fini la bataille sans
+    pilote, ni a nous ni a l'IA du jeu.
+    """
+    from totalwar_ai.bridge.live import SupervisedSession
+    from totalwar_ai.bridge.supervision import Supervisor
+
+    session = SupervisedSession(
+        bridge=FileBridge.open(tmp_path).tail(),
+        supervisor=Supervisor(rules=()),
+        wait=lambda _: bataille.advance(600),
+        retry_after=30.0,
+    )
+    bataille.advance(1200)
+    etat = session.bridge.latest_battle_state()
+    assert etat is not None
+    ecartee = etat.allies[0].unit_id
+
+    # Le jeu l'a refusee a l'instant zero : elle est mise de cote.
+    session._reject([ecartee], 0.0)
+    assert ecartee in session.unreachable
+
+    # Vingt secondes plus tard, elle l'est toujours.
+    session._forget_expired(20.0)
+    assert ecartee in session.unreachable
+
+    # Passe le delai, on lui redonne sa chance.
+    session._forget_expired(31.0)
+    assert ecartee not in session.unreachable
+
+
+def test_la_prise_en_main_insiste_jusqu_a_obtenir_le_controle(
+    bataille: Probe, tmp_path: Path
+) -> None:
+    """L'operateur relançait la commande jusqu'a dix fois pendant que la
+    bataille avancait sans nous : la derniere session supervisee n'a pris la
+    main qu'a la 179e seconde, armees deja au contact."""
+    from totalwar_ai.bridge.live import SupervisedSession
+    from totalwar_ai.bridge.supervision import Supervisor
+    from totalwar_ai.cli import _take_command
+
+    bridge = FileBridge.open(tmp_path).tail()
+    session = SupervisedSession(
+        bridge=bridge,
+        supervisor=Supervisor(rules=()),
+        wait=lambda _: bataille.advance(600),
+    )
+
+    essais = {"n": 0}
+    vraie_delegation = session.delegate_all
+
+    def refuse_deux_fois(state: object) -> list[str]:
+        essais["n"] += 1
+        if essais["n"] <= 2:
+            session.last_refusal = "la bataille n'a pas commence"
+            return []
+        return vraie_delegation(state)  # type: ignore[arg-type]
+
+    session.delegate_all = refuse_deux_fois  # type: ignore[method-assign]
+    bataille.advance(1200)
+
+    resultat = _take_command(session, bridge, patience=30.0, sleep=lambda _: bataille.advance(1200))
+
+    assert resultat is not None, "la prise en main a renonce trop tot"
+    assert essais["n"] >= 3, "elle n'a pas insiste"
+    assert resultat[2], "aucune unite confiee alors que la delegation a fini par passer"

@@ -16,7 +16,7 @@ import json
 import re
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,7 +43,8 @@ from totalwar_ai.simulation.scenarios import Scenario, ScenarioCatalog
 from totalwar_ai.telemetry.battle_logger import configure_logging
 
 if TYPE_CHECKING:
-    from totalwar_ai.bridge.live import LiveStep
+    from totalwar_ai.bridge.command_models import ProbeBattleState
+    from totalwar_ai.bridge.live import LiveStep, SupervisedSession
     from totalwar_ai.domain.battle_state import BattleState
     from totalwar_ai.learning.corpus import Corpus
 
@@ -175,6 +176,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="l'IA du jeu joue seule, on enregistre sans intervenir : "
         "c'est la mesure de reference a laquelle comparer les autres modes "
         "(defaut 300 s)",
+    )
+    probe.add_argument(
+        "--wait",
+        type=float,
+        default=DEFAULT_PATIENCE,
+        metavar="SECONDES",
+        help="temps d'attente avant de renoncer a prendre la main "
+        f"(defaut {DEFAULT_PATIENCE:.0f} s : lancer la commande, puis la bataille)",
     )
     probe.add_argument(
         "--delegate",
@@ -383,9 +392,15 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         bridge.tail()
 
     if args.supervise:
-        return _supervise(bridge, args.supervise, record=not args.no_record)
+        return _supervise(bridge, args.supervise, record=not args.no_record, patience=args.wait)
     if args.observe:
-        return _supervise(bridge, args.observe, record=not args.no_record, supervised=False)
+        return _supervise(
+            bridge,
+            args.observe,
+            record=not args.no_record,
+            supervised=False,
+            patience=args.wait,
+        )
     if args.delegate:
         return _delegate(bridge)
     if args.reclaim:
@@ -474,12 +489,73 @@ def _battle_over(etape: LiveStep) -> bool:
     return etape.state is not None and etape.state.phase == "Complete"
 
 
+#: Temps pendant lequel on rattrape une bataille pas encore commencee.
+#:
+#: **Ce n'est pas du confort.** La delegation echoue tant que le jeu n'est pas
+#: pret, et l'operateur relançait la commande a la main — jusqu'a dix fois de
+#: suite, pendant que la bataille avancait sans nous. La derniere session
+#: supervisee n'a pris la main qu'a la 179e seconde, armees deja au contact :
+#: elle n'est comparable a aucune reference.
+DEFAULT_PATIENCE = 600.0
+
+
+def _take_command(
+    session: SupervisedSession,
+    bridge: FileBridge,
+    *,
+    patience: float,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[ProbeBattleState, list[str], list[str]] | None:
+    """Attend le jeu, puis insiste jusqu'a obtenir la main.
+
+    Renvoie `None` si l'on n'y arrive pas dans le temps imparti — et dit alors
+    la derniere raison donnee par le jeu, pas un echec anonyme.
+    """
+    fin = time.monotonic() + max(0.0, patience)
+    annonce = False
+    dernier_motif = ""
+    while time.monotonic() < fin:
+        state = bridge.latest_battle_state()
+        if state is None:
+            if not annonce:
+                print("En attente du jeu... (lancez la bataille, on s'accroche tout seul)")
+                annonce = True
+            sleep(1.0)
+            continue
+
+        demandees = [unite.unit_id for unite in state.allies if unite.controllable and unite.alive]
+        confiees = session.delegate_all(state)
+        if confiees:
+            return state, demandees, confiees
+
+        motif = session.last_refusal or "inconnu"
+        if motif != dernier_motif:
+            # On ne repete pas la meme raison a chaque seconde : seul un
+            # changement apprend quelque chose a qui regarde defiler.
+            restant = fin - time.monotonic()
+            print(f"  pas encore la main ({motif}) — encore {restant:.0f} s d'essais")
+            dernier_motif = motif
+        # Une unite refusee a un instant ne l'est pas pour toujours : la
+        # bataille n'a peut-etre simplement pas commence.
+        session.unreachable.clear()
+        sleep(1.5)
+
+    print(
+        f"Main non obtenue en {patience:.0f} s. Derniere raison du jeu : "
+        f"{dernier_motif or 'aucun etat recu'}",
+        file=sys.stderr,
+    )
+    print("  `totalwar-ai probe --log 30` affiche l'accuse complet cote jeu.", file=sys.stderr)
+    return None
+
+
 def _supervise(
     bridge: FileBridge,
     duration: float,
     *,
     record: bool = True,
     supervised: bool = True,
+    patience: float = DEFAULT_PATIENCE,
 ) -> int:
     """L'IA du jeu mene la bataille ; nos regles corrigent ses angles morts.
 
@@ -518,33 +594,10 @@ def _supervise(
         record_units=bool(config.telemetry.get("record_units", True)),
     )
 
-    print("Attente d'un etat du jeu (30 s)...")
-    state = None
-    for _ in range(60):
-        state = bridge.latest_battle_state()
-        if state is not None:
-            break
-        time.sleep(0.5)
-    if state is None:
-        print("Aucun etat recu : la bataille est-elle lancee ?", file=sys.stderr)
+    resultat = _take_command(session, bridge, patience=patience)
+    if resultat is None:
         return 1
-
-    demandees = [unite.unit_id for unite in state.allies if unite.controllable and unite.alive]
-    confiees = session.delegate_all(state)
-    if not confiees:
-        # Le motif vient du Lua. Sans lui, « le jeu a refuse » ne distingue pas
-        # un refus d'un accuse jamais recu, et ne se diagnostique pas.
-        print("Aucune unite confiee : le jeu a refuse la delegation.", file=sys.stderr)
-        print(f"  motif : {session.last_refusal or 'inconnu'}", file=sys.stderr)
-        print(
-            f"  {len(demandees)} unite(s) demandee(s), phase du jeu : {state.phase or 'inconnue'}",
-            file=sys.stderr,
-        )
-        print(
-            "  `totalwar-ai probe --log 30` affiche l'accuse complet cote jeu.",
-            file=sys.stderr,
-        )
-        return 1
+    state, demandees, confiees = resultat
     # Le compte annonce est celui du jeu. En annoncer un autre s'est produit en
     # bataille : dix-huit demandees, six confiees, et la difference passee sous
     # silence pendant toute la session.
