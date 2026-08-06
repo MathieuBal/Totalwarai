@@ -503,6 +503,13 @@ def _battle_over(etape: LiveStep) -> bool:
 #: elle n'est comparable a aucune reference.
 DEFAULT_PATIENCE = 600.0
 
+#: Incidents de pont d'affilee avant de rendre la main.
+#:
+#: Un `os.replace` refuse par Windows, un fichier momentanement verrouille : ce
+#: sont des accrocs, pas des pannes. Trois d'affilee, en revanche, disent que le
+#: jeu a ferme ou que le repertoire d'echange a disparu.
+MAX_BRIDGE_INCIDENTS = 3
+
 
 def _take_command(
     session: SupervisedSession,
@@ -634,9 +641,26 @@ def _supervise(
     fin = time.monotonic() + duration
     interrompu = False
     terminee = False
+    # **Une bataille ne meurt pas d'une ecriture ratee.** Constate en jeu : un
+    # `os.replace` refuse par Windows a la 235e seconde a emporte toute la
+    # session, enregistrement compris. Un incident isole se signale et se
+    # traverse ; c'est leur repetition qui doit arreter.
+    incidents = 0
     try:
         while time.monotonic() < fin:
-            etape = session.step()
+            try:
+                etape = session.step()
+            except OSError as souci:
+                incidents += 1
+                print(f"  incident de pont ({incidents}/{MAX_BRIDGE_INCIDENTS}) : {souci}")
+                if incidents >= MAX_BRIDGE_INCIDENTS:
+                    print("  Trop d'incidents d'affilee : on rend la main.", file=sys.stderr)
+                    break
+                time.sleep(1.0)
+                continue
+            # Un tour reussi efface l'ardoise : on veut arreter sur une panne
+            # persistante, pas sur dix accrocs repartis sur une bataille.
+            incidents = 0
             recorder.observe(etape)
             if etape.interventions or etape.returned or etape.skipped or etape.refused:
                 print(f"  {etape.summary()}")

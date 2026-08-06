@@ -55,6 +55,40 @@ from totalwar_ai.domain.serialization import SchemaError
 
 LOGGER = logging.getLogger("totalwar_ai.bridge.file")
 
+#: Tentatives de remplacement du fichier de commande avant d'abandonner.
+#:
+#: **Windows refuse de remplacer un fichier qu'un autre processus tient
+#: ouvert.** Le Lua relit la commande toutes les 500 ms ; si notre `os.replace`
+#: tombe pendant cette lecture, il leve `PermissionError` — et une session de
+#: supervision est morte a la 235e seconde de bataille pour cette raison.
+#:
+#: Ce n'est pas un probleme de droits mais une course, et elle se gagne en
+#: attendant quelques dizaines de millisecondes.
+REPLACE_ATTEMPTS = 8
+
+#: Attente entre deux tentatives, en secondes.
+REPLACE_BACKOFF = 0.05
+
+
+def _replace_when_free(source: Path, destination: Path) -> None:
+    """`os.replace`, en laissant au jeu le temps de lacher le fichier.
+
+    Sur POSIX le remplacement passe du premier coup : rien n'y empeche de
+    remplacer un fichier ouvert. Ce sont les verrous Windows que l'on contourne
+    ici, et la boucle ne coute rien quand il n'y a pas de conflit.
+    """
+    for tentative in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if tentative == REPLACE_ATTEMPTS - 1:
+                raise
+            LOGGER.debug(
+                "fichier de commande tenu par le jeu, nouvelle tentative (%d)", tentative + 1
+            )
+            time.sleep(REPLACE_BACKOFF)
+
 
 @dataclass(frozen=True, slots=True)
 class MalformedLine:
@@ -145,7 +179,7 @@ class FileBridge:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, self.paths.command)
+            _replace_when_free(temporary, self.paths.command)
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
