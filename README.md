@@ -230,6 +230,7 @@ totalwar-ai learn --check         # ce que vaut chaque bataille enregistree
 totalwar-ai learn --targets       # qui l'IA attaque, et ou elle place ses unites
 totalwar-ai learn --units         # activite par unite + deroule de la bataille
 totalwar-ai learn --targets --save  # mettre le ciblage appris entre les mains de l'agent
+totalwar-ai learn --morale        # ce qui precede une deroute, faute de moral
 ```
 
 `--save` **refuse d'enregistrer** un modele qui ne bat pas `TARGET_PRIORITY` :

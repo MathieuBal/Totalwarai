@@ -113,6 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="enregistrer le ciblage appris pour que l'agent s'en serve en bataille",
     )
     learn.add_argument(
+        "--morale",
+        action="store_true",
+        help="mesurer ce qui precede une deroute, puisque le jeu ne donne pas le moral",
+    )
+    learn.add_argument(
         "--units",
         nargs="?",
         const="",
@@ -1084,6 +1089,8 @@ def _cmd_learn(args: argparse.Namespace, config: AppConfig) -> int:
     corpus = Corpus.load(Path(config.path("telemetry", "battles_dir")))
     if args.units is not None:
         return _learn_units(corpus, args.units)
+    if args.morale:
+        return _learn_morale(corpus)
 
     print(corpus.render())
 
@@ -1138,6 +1145,27 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
 
     print(f"\n--- ce que nos regles auraient fait : {bataille.battle_id[:8]} ---\n")
     print(rehearse(iter_states(bataille.path)).render())
+    return 0
+
+
+def _learn_morale(corpus: Corpus) -> int:
+    """Ce qui precede une deroute, mesure sur le corpus.
+
+    **Trois batailles reelles disent qu'on ne perd pas par usure mais par
+    contagion** — douze unites sur douze rompues, dix au-dessus de 40 % de
+    sante. Une regle fondee sur la sante ne verra jamais cela venir. Reste a
+    savoir si autre chose l'annonce.
+    """
+    from totalwar_ai.learning.morale import study
+    from totalwar_ai.learning.replay import read_states
+
+    if not corpus.usable:
+        print("\nAucune bataille exploitable : rien a mesurer.")
+        return 1
+
+    batailles = [read_states(battle.path) for battle in corpus.usable]
+    print(f"\n--- ce qui precede une deroute, sur {len(batailles)} bataille(s) ---\n")
+    print(study(batailles).render())
     return 0
 
 
