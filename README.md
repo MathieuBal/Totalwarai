@@ -248,6 +248,12 @@ aucune, et ce que le banc en montre est surtout le déploiement que nous avons
 écrit nous-mêmes
 ([`docs/decisions/0009`](docs/decisions/0009-apprendre-la-formation.md)).
 
+**Lancer la commande AVANT la bataille.** `--observe` et `--supervise` attendent
+le jeu et réessaient jusqu'à obtenir la main — dix minutes par défaut, réglable
+par `--wait`. Prendre la main en retard fausse tout : lors d'un essai, la
+supervision n'a pris le contrôle qu'à la 179ᵉ seconde, l'adversaire ayant déjà
+contourné et lancé son assaut. Cette bataille n'était comparable à aucune autre.
+
 **Essayer en escarmouche, pas dans une bataille de campagne scriptée.** Les
 batailles du prologue donnent leurs propres ordres, prennent et rendent le
 contrôle des unités, et suspendent le combat pendant les dialogues : rien de ce
