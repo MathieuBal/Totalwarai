@@ -295,3 +295,81 @@ def test_etat_initial_degrade_des_scenarios() -> None:
     routing = [spec for spec in get_scenario("rout_pursuit").units if spec.initial_routing]
     assert len(routing) >= 2
     assert all(spec.side is Side.ENEMY for spec in routing)
+
+
+# --- concentration : ne pas ouvrir une melee perdue d'avance --------------------
+
+
+def test_le_rapport_local_compte_l_attaquant_dans_les_notres(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Un contre un une fois arrive, c'est la parite — donc zero."""
+    attaquant = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 200.0)
+    cible = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 0.0)
+    etat = make_battle([attaquant, cible])
+
+    assert Planner().local_balance(attaquant, cible, etat) == pytest.approx(0.0)
+
+
+def test_le_rapport_local_est_negatif_quand_on_arrive_en_inferiorite(  # type: ignore[no-untyped-def]
+    make_unit, make_battle
+) -> None:
+    """Deux ennemis groupes, nous seuls : c'est le 1 contre 2 mesure en jeu."""
+    attaquant = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 200.0)
+    cible = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 0.0)
+    etat = make_battle(
+        [attaquant, cible, make_unit("e2", Side.ENEMY, UnitRole.MELEE_INFANTRY, 20.0)]
+    )
+
+    assert Planner().local_balance(attaquant, cible, etat) < 0.0
+
+
+def test_les_allies_trop_loin_ne_soutiennent_pas(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Le soutien est local : au-dela du rayon, un allie ne pese pas."""
+    attaquant = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 200.0)
+    cible = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 0.0)
+    loin = make_unit("a2", Side.ALLY, UnitRole.MELEE_INFANTRY, 400.0)
+    pres = make_unit("a3", Side.ALLY, UnitRole.MELEE_INFANTRY, 20.0)
+
+    planificateur = Planner()
+    assert planificateur.local_balance(attaquant, cible, make_battle([attaquant, cible, loin])) == (
+        pytest.approx(0.0)
+    )
+    assert (
+        planificateur.local_balance(attaquant, cible, make_battle([attaquant, cible, pres])) > 0.0
+    )
+
+
+def test_les_fuyards_ne_comptent_dans_aucun_camp(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Une unite qui rompt ne se bat plus : ni menace, ni renfort."""
+    attaquant = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 200.0)
+    cible = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 0.0)
+    fuyard = make_unit("e2", Side.ENEMY, UnitRole.MELEE_INFANTRY, 20.0, is_routing=True)
+    etat = make_battle([attaquant, cible, fuyard])
+
+    assert Planner().local_balance(attaquant, cible, etat) == pytest.approx(0.0)
+
+
+def test_a_distance_egale_on_prefere_la_cible_ou_l_on_est_soutenu(  # type: ignore[no-untyped-def]
+    make_unit, make_battle
+) -> None:
+    """**Le defaut mesure en jeu.** 65 % des melees livrees en inferiorite
+    locale : a valeur et distance egales, il faut choisir le cote ou la ligne
+    tient, pas celui ou l'on sera deux contre trois."""
+    attaquant = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0, z=0.0)
+    soutenue = make_unit("e_soutenue", Side.ENEMY, UnitRole.MELEE_INFANTRY, 100.0)
+    isolee = make_unit("e_isolee", Side.ENEMY, UnitRole.MELEE_INFANTRY, -100.0)
+    etat = make_battle(
+        [
+            attaquant,
+            soutenue,
+            isolee,
+            # deux allies deja au contact du cote de `soutenue`
+            make_unit("a2", Side.ALLY, UnitRole.MELEE_INFANTRY, 110.0),
+            make_unit("a3", Side.ALLY, UnitRole.MELEE_INFANTRY, 120.0),
+            # deux ennemis groupes autour de `isolee`
+            make_unit("e2", Side.ENEMY, UnitRole.MELEE_INFANTRY, -110.0),
+            make_unit("e3", Side.ENEMY, UnitRole.MELEE_INFANTRY, -120.0),
+        ]
+    )
+
+    planificateur = Planner()
+    assert planificateur.select_target(attaquant, etat) is soutenue

@@ -30,6 +30,7 @@ def _unite(
     z: float = 0.0,
     side: Side = Side.ALLY,
     ammo: float = 1.0,
+    routing: bool = False,
 ) -> UnitState:
     return UnitState(
         id=unit_id,
@@ -37,6 +38,7 @@ def _unite(
         role=role,
         position=Vector3(x, 0.0, z),
         is_engaged=engaged,
+        is_routing=routing,
         health_ratio=health,
         ammo_ratio=ammo,
     )
@@ -174,9 +176,34 @@ def test_une_unite_encore_au_contact_n_est_pas_rendue() -> None:
     toujours = _etat(
         _unite("art", UnitRole.ARTILLERY, engaged=True),
         _unite("e1", UnitRole.MELEE_INFANTRY, x=10.0, side=Side.ENEMY),
-        temps=200.0,
+        temps=130.0,
     )
     assert superviseur.ready_to_return(toujours) == []
+
+
+def test_une_unite_n_est_jamais_gardee_indefiniment() -> None:
+    """Une unite gardee est une unite retiree du plan de l'IA du jeu.
+
+    Une regle dont la condition dure -- « l'armee est entierement engagee » le
+    reste tant que la bataille dure -- garderait l'unite jusqu'a la fin, et l'on
+    rejouerait sans le savoir le defaut le plus couteux du projet : combattre
+    avec une armee amputee.
+    """
+    superviseur = Supervisor(cooldown_seconds=20.0, max_hold_seconds=60.0)
+    engagee = _etat(
+        _unite("art", UnitRole.ARTILLERY, engaged=True),
+        _unite("e1", UnitRole.MELEE_INFANTRY, x=10.0, side=Side.ENEMY),
+        temps=100.0,
+    )
+    superviseur.review(engagee, _confiees("art"))
+
+    # La situation n'a pas change, mais le plafond de garde est atteint.
+    tres_tard = _etat(
+        _unite("art", UnitRole.ARTILLERY, engaged=True),
+        _unite("e1", UnitRole.MELEE_INFANTRY, x=10.0, side=Side.ENEMY),
+        temps=161.0,
+    )
+    assert superviseur.ready_to_return(tres_tard) == ["art"]
 
 
 def test_le_delai_est_respecte_meme_si_la_situation_est_reglee() -> None:

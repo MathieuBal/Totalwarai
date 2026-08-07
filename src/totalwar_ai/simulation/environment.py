@@ -603,9 +603,17 @@ class SimulationEnvironment:
         for unit in self.units.values():
             if unit.dead or unit.routing or not unit.engaged_with:
                 continue
+            # **`sorted` n'est pas cosmetique : c'est ce qui rend le banc
+            # reproductible.** `engaged_with` est un ensemble de chaines, et
+            # l'ordre d'iteration d'un ensemble depend de `PYTHONHASHSEED`, qui
+            # change a chaque processus. Les degats etant appliques defenseur
+            # par defenseur, cet ordre decide qui meurt en premier — et donc
+            # l'issue. Sans ce tri, `balanced_clash` rendait « victoire » ou
+            # « nul » a graine identique selon le processus, et tout ecart de
+            # quelques points mesure au banc pouvait n'etre que ce bruit.
             defenders = [
                 self.units[uid]
-                for uid in unit.engaged_with
+                for uid in sorted(unit.engaged_with)
                 if uid in self.units and not self.units[uid].dead
             ]
             if not defenders:
@@ -766,7 +774,9 @@ class SimulationEnvironment:
         return min(hostiles, key=lambda other: unit.position.distance_2d(other.position))
 
     def _nearest_engaged(self, unit: SimUnit) -> SimUnit | None:
-        candidates = [self.units[uid] for uid in unit.engaged_with if uid in self.units]
+        # Trie pour la meme raison que `_resolve_melee` : `min` departage les
+        # ex aequo par l'ordre d'iteration, qui serait sinon celui du hachage.
+        candidates = [self.units[uid] for uid in sorted(unit.engaged_with) if uid in self.units]
         if not candidates:
             return None
         return min(candidates, key=lambda other: unit.position.distance_2d(other.position))

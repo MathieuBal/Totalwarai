@@ -113,6 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="enregistrer le ciblage appris pour que l'agent s'en serve en bataille",
     )
     learn.add_argument(
+        "--morale",
+        action="store_true",
+        help="mesurer ce qui precede une deroute, puisque le jeu ne donne pas le moral",
+    )
+    learn.add_argument(
         "--units",
         nargs="?",
         const="",
@@ -498,6 +503,13 @@ def _battle_over(etape: LiveStep) -> bool:
 #: elle n'est comparable a aucune reference.
 DEFAULT_PATIENCE = 600.0
 
+#: Incidents de pont d'affilee avant de rendre la main.
+#:
+#: Un `os.replace` refuse par Windows, un fichier momentanement verrouille : ce
+#: sont des accrocs, pas des pannes. Trois d'affilee, en revanche, disent que le
+#: jeu a ferme ou que le repertoire d'echange a disparu.
+MAX_BRIDGE_INCIDENTS = 3
+
 
 def _take_command(
     session: SupervisedSession,
@@ -629,9 +641,26 @@ def _supervise(
     fin = time.monotonic() + duration
     interrompu = False
     terminee = False
+    # **Une bataille ne meurt pas d'une ecriture ratee.** Constate en jeu : un
+    # `os.replace` refuse par Windows a la 235e seconde a emporte toute la
+    # session, enregistrement compris. Un incident isole se signale et se
+    # traverse ; c'est leur repetition qui doit arreter.
+    incidents = 0
     try:
         while time.monotonic() < fin:
-            etape = session.step()
+            try:
+                etape = session.step()
+            except OSError as souci:
+                incidents += 1
+                print(f"  incident de pont ({incidents}/{MAX_BRIDGE_INCIDENTS}) : {souci}")
+                if incidents >= MAX_BRIDGE_INCIDENTS:
+                    print("  Trop d'incidents d'affilee : on rend la main.", file=sys.stderr)
+                    break
+                time.sleep(1.0)
+                continue
+            # Un tour reussi efface l'ardoise : on veut arreter sur une panne
+            # persistante, pas sur dix accrocs repartis sur une bataille.
+            incidents = 0
             recorder.observe(etape)
             if etape.interventions or etape.returned or etape.skipped or etape.refused:
                 print(f"  {etape.summary()}")
@@ -1084,6 +1113,8 @@ def _cmd_learn(args: argparse.Namespace, config: AppConfig) -> int:
     corpus = Corpus.load(Path(config.path("telemetry", "battles_dir")))
     if args.units is not None:
         return _learn_units(corpus, args.units)
+    if args.morale:
+        return _learn_morale(corpus)
 
     print(corpus.render())
 
@@ -1105,6 +1136,8 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
     simplement **recu aucun ordre** ?
     """
     from totalwar_ai.learning.activity import summarise
+    from totalwar_ai.learning.concentration import study as concentration
+    from totalwar_ai.learning.matchup import summarise as rapport_de_forces
     from totalwar_ai.learning.rehearsal import rehearse, render_cascade, rout_cascade
     from totalwar_ai.learning.replay import iter_states
     from totalwar_ai.learning.timeline import summarise as deroule
@@ -1125,7 +1158,10 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
         candidates = corpus.usable or corpus.battles
         bataille = max(candidates, key=lambda item: item.path.stat().st_mtime)
 
-    print(f"--- activite par unite : {bataille.battle_id[:8]} ---\n")
+    print(f"--- rapport de forces : {bataille.battle_id[:8]} ---\n")
+    print(rapport_de_forces(iter_states(bataille.path)).render())
+
+    print(f"\n--- activite par unite : {bataille.battle_id[:8]} ---\n")
     print(summarise(iter_states(bataille.path)).render())
 
     # Le deroule demande une seconde lecture du fichier plutot qu'un corpus en
@@ -1136,8 +1172,34 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
     print(f"\n--- qui a rompu, et dans quel etat : {bataille.battle_id[:8]} ---\n")
     print(render_cascade(rout_cascade(iter_states(bataille.path))))
 
+    # Se lit juste apres la cascade, et pour cause : c'est la mesure qui dit si
+    # la cascade etait la cause ou le symptome (ADR 0010).
+    print(f"\n--- rapport de forces local : {bataille.battle_id[:8]} ---\n")
+    print(concentration(iter_states(bataille.path)).render())
+
     print(f"\n--- ce que nos regles auraient fait : {bataille.battle_id[:8]} ---\n")
     print(rehearse(iter_states(bataille.path)).render())
+    return 0
+
+
+def _learn_morale(corpus: Corpus) -> int:
+    """Ce qui precede une deroute, mesure sur le corpus.
+
+    **Trois batailles reelles disent qu'on ne perd pas par usure mais par
+    contagion** — douze unites sur douze rompues, dix au-dessus de 40 % de
+    sante. Une regle fondee sur la sante ne verra jamais cela venir. Reste a
+    savoir si autre chose l'annonce.
+    """
+    from totalwar_ai.learning.morale import study
+    from totalwar_ai.learning.replay import read_states
+
+    if not corpus.usable:
+        print("\nAucune bataille exploitable : rien a mesurer.")
+        return 1
+
+    batailles = [read_states(battle.path) for battle in corpus.usable]
+    print(f"\n--- ce qui precede une deroute, sur {len(batailles)} bataille(s) ---\n")
+    print(study(batailles).render())
     return 0
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -509,3 +510,53 @@ def test_une_sante_absente_ne_penalise_pas_l_unite() -> None:
     ).to_unit_state(Side.ALLY)
     assert inconnue.effective_strength == pytest.approx(1.0)
     assert inconnue.metadata["morale_available"] is False
+
+
+def test_le_remplacement_attend_que_le_jeu_lache_le_fichier(tmp_path: Path) -> None:
+    """Windows refuse de remplacer un fichier qu'un autre processus tient ouvert.
+
+    Le Lua relit la commande toutes les 500 ms ; un `os.replace` tombe pendant
+    cette lecture leve `PermissionError`, et une session de supervision est
+    morte a la 235e seconde de bataille pour cette raison. Ce n'est pas un
+    probleme de droits mais une course.
+    """
+    import totalwar_ai.bridge.file_bridge as module
+
+    bridge = FileBridge.open(tmp_path)
+    essais = {"n": 0}
+    vrai_replace = os.replace
+
+    def refuse_deux_fois(source: object, destination: object) -> None:
+        essais["n"] += 1
+        if essais["n"] <= 2:
+            raise PermissionError(5, "Acces refuse")
+        vrai_replace(source, destination)  # type: ignore[arg-type]
+
+    with (
+        mock.patch.object(module.os, "replace", refuse_deux_fois),
+        mock.patch.object(module.time, "sleep", lambda _: None),
+    ):
+        bridge.delegate(["1001"])
+
+    assert essais["n"] == 3, "le pont n'a pas insiste"
+    assert bridge.paths.command.exists()
+
+
+def test_un_verrou_qui_ne_lache_jamais_finit_par_lever(tmp_path: Path) -> None:
+    """Insister indefiniment masquerait une vraie panne."""
+    import totalwar_ai.bridge.file_bridge as module
+
+    bridge = FileBridge.open(tmp_path)
+
+    def refuse_toujours(source: object, destination: object) -> None:
+        raise PermissionError(5, "Acces refuse")
+
+    with (
+        mock.patch.object(module.os, "replace", refuse_toujours),
+        mock.patch.object(module.time, "sleep", lambda _: None),
+        pytest.raises(PermissionError),
+    ):
+        bridge.delegate(["1001"])
+
+    # Le temporaire ne doit pas rester derriere lui.
+    assert not list(tmp_path.glob("**/.totalwar_ai_command-*.tmp"))

@@ -183,6 +183,15 @@ totalwar-ai bench --save-baseline      # figer le niveau actuel
 totalwar-ai bench                      # comparer ; code retour 1 si régression
 ```
 
+> **Le banc a longtemps rendu un chiffre différent à chaque lancement.** La
+> mêlée appliquait ses dégâts dans l’ordre d’itération d’un ensemble, donc dans
+> un ordre décidé par `PYTHONHASHSEED` : `balanced_clash` rendait « victoire »
+> ou « nul » à graine identique selon le processus. Corrigé et gardé par
+> `tests/integration/test_bench_determinism.py`, mais **les écarts de quelques
+> points publiés dans les ADR antérieures à 0011 sont à reprendre avant de
+> servir de nouveau à trancher**
+> ([`docs/decisions/0011`](docs/decisions/0011-le-banc-dependait-de-la-graine-de-hachage.md)).
+
 À partir de la troisième bataille d’une même composition, l’agent ajuste sa
 doctrine d’après ses résultats passés et l’explique :
 
@@ -230,6 +239,7 @@ totalwar-ai learn --check         # ce que vaut chaque bataille enregistree
 totalwar-ai learn --targets       # qui l'IA attaque, et ou elle place ses unites
 totalwar-ai learn --units         # activite par unite + deroule de la bataille
 totalwar-ai learn --targets --save  # mettre le ciblage appris entre les mains de l'agent
+totalwar-ai learn --morale        # ce qui precede une deroute, faute de moral
 ```
 
 `--save` **refuse d'enregistrer** un modele qui ne bat pas `TARGET_PRIORITY` :
@@ -247,6 +257,14 @@ formation observée s'y ajoute, mais **non étalonnée** — la doublure n'en a
 aucune, et ce que le banc en montre est surtout le déploiement que nous avons
 écrit nous-mêmes
 ([`docs/decisions/0009`](docs/decisions/0009-apprendre-la-formation.md)).
+
+`learn --units` ajoute, après la cascade de déroutes, le **rapport de forces
+local** : pour chaque unité en mêlée, les ennemis contre les alliés à moins de
+quarante mètres. C'est cette mesure qui a montré que les défaites n'étaient pas
+d'abord un effondrement de moral mais une **défaite en détail** — 65 % et 58 %
+des mêlées livrées en infériorité locale, avec des pics à 2 et 3 contre 1 au
+moment de la chute, alors que le rapport global n'était que de 1,2 contre nous
+([`docs/decisions/0010`](docs/decisions/0010-concentrer-plutot-que-decrocher.md)).
 
 **Lancer la commande AVANT la bataille.** `--observe` et `--supervise` attendent
 le jeu et réessaient jusqu'à obtenir la main — dix minutes par défaut, réglable
