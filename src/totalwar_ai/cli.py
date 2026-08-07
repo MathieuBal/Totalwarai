@@ -1136,6 +1136,7 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
     simplement **recu aucun ordre** ?
     """
     from totalwar_ai.learning.activity import summarise
+    from totalwar_ai.learning.concentration import study as concentration
     from totalwar_ai.learning.matchup import summarise as rapport_de_forces
     from totalwar_ai.learning.rehearsal import rehearse, render_cascade, rout_cascade
     from totalwar_ai.learning.replay import iter_states
@@ -1170,6 +1171,11 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
 
     print(f"\n--- qui a rompu, et dans quel etat : {bataille.battle_id[:8]} ---\n")
     print(render_cascade(rout_cascade(iter_states(bataille.path))))
+
+    # Se lit juste apres la cascade, et pour cause : c'est la mesure qui dit si
+    # la cascade etait la cause ou le symptome (ADR 0010).
+    print(f"\n--- rapport de forces local : {bataille.battle_id[:8]} ---\n")
+    print(concentration(iter_states(bataille.path)).render())
 
     print(f"\n--- ce que nos regles auraient fait : {bataille.battle_id[:8]} ---\n")
     print(rehearse(iter_states(bataille.path)).render())

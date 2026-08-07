@@ -301,6 +301,24 @@ Le raisonnement complet est dans
 [`decisions/0008`](decisions/0008-apprendre-le-ciblage.md) et
 [`decisions/0009`](decisions/0009-apprendre-la-formation.md).
 
+### Le rapport de forces local
+
+`learning/concentration.py` mesure, pour chaque unité alliée en mêlée, les
+ennemis contre les alliés à moins de quarante mètres. C'est la mesure qui a
+requalifié les défaites : non pas un effondrement de moral, mais une **défaite
+en détail** — le rapport local montait à 2 et 3 contre 1 pendant que le rapport
+global restait à 1,2. `Planner.local_balance` est la correction correspondante,
+côté choix de cible ([`decisions/0010`](decisions/0010-concentrer-plutot-que-decrocher.md)).
+
+### Le banc doit d'abord être reproductible
+
+La mêlée du simulateur appliquait ses dégâts dans l'ordre d'itération d'un
+ensemble, donc dans un ordre décidé par `PYTHONHASHSEED`. Le banc rendait un
+chiffre différent à chaque processus, et des règles ont été jugées sur des écarts
+de cette taille. Corrigé, et gardé par un test qui relance l'interpréteur avec
+deux graines de hachage
+([`decisions/0011`](decisions/0011-le-banc-dependait-de-la-graine-de-hachage.md)).
+
 ## Ce qui est vérifié en jeu, et ce qui ne l'est pas
 
 Onze essais en bataille ont eu lieu. La distinction ci-dessous est la seule qui
