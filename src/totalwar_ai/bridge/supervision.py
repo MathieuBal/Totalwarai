@@ -167,6 +167,17 @@ class Supervisor:
     #: l'unite ferait des allers-retours au lieu de se degager.
     cooldown_seconds: float = 20.0
 
+    #: Duree au-dela de laquelle une unite est rendue quoi qu'il arrive.
+    #:
+    #: **Une unite gardee est une unite retiree du plan de l'IA du jeu.** Une
+    #: regle dont la condition dure — « l'armee est entierement engagee » le
+    #: reste tant que la bataille dure — la garderait jusqu'a la fin, et l'on
+    #: rejouerait sans le savoir le defaut le plus couteux du projet : combattre
+    #: avec une armee amputee.
+    #:
+    #: Le plafond ne remplace pas le delai de garde : il le borne.
+    max_hold_seconds: float = 60.0
+
     def review(self, state: BattleState, delegated: set[str]) -> list[Intervention]:
         """Unites a reprendre a l'IA du jeu, avec leur motif.
 
@@ -191,14 +202,23 @@ class Supervisor:
         Deux conditions : le delai est ecoule, et la situation qui a motive la
         reprise a cesse. Rendre une unite encore au contact la remettrait dans
         l'etat exact qui a declenche la reprise.
+
+        **Sauf que la seconde condition ne doit pas pouvoir durer toujours.**
+        Passe `max_hold_seconds`, l'unite repart quoi qu'il en soit : une regle
+        dont la situation persiste la garderait sinon jusqu'a la fin de la
+        bataille, et l'on combattrait avec une armee amputee sans le savoir.
         """
         pretes: list[str] = []
         for unit_id, moment in self.reclaimed.items():
-            if state.game_time - moment < self.cooldown_seconds:
+            tenue_depuis = state.game_time - moment
+            if tenue_depuis < self.cooldown_seconds:
                 continue
             unit = state.unit(unit_id)
             if unit is None:
                 pretes.append(unit_id)  # morte ou disparue : plus rien a suivre
+                continue
+            if tenue_depuis >= self.max_hold_seconds:
+                pretes.append(unit_id)
                 continue
             if any(rule.check(unit, state) is not None for rule in self.rules):
                 continue
