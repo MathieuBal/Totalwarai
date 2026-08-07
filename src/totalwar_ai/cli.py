@@ -1136,6 +1136,7 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
     simplement **recu aucun ordre** ?
     """
     from totalwar_ai.learning.activity import summarise
+    from totalwar_ai.learning.matchup import summarise as rapport_de_forces
     from totalwar_ai.learning.rehearsal import rehearse, render_cascade, rout_cascade
     from totalwar_ai.learning.replay import iter_states
     from totalwar_ai.learning.timeline import summarise as deroule
@@ -1156,7 +1157,10 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
         candidates = corpus.usable or corpus.battles
         bataille = max(candidates, key=lambda item: item.path.stat().st_mtime)
 
-    print(f"--- activite par unite : {bataille.battle_id[:8]} ---\n")
+    print(f"--- rapport de forces : {bataille.battle_id[:8]} ---\n")
+    print(rapport_de_forces(iter_states(bataille.path)).render())
+
+    print(f"\n--- activite par unite : {bataille.battle_id[:8]} ---\n")
     print(summarise(iter_states(bataille.path)).render())
 
     # Le deroule demande une seconde lecture du fichier plutot qu'un corpus en
