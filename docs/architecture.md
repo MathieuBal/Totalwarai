@@ -310,6 +310,15 @@ en détail** — le rapport local montait à 2 et 3 contre 1 pendant que le rapp
 global restait à 1,2. `Planner.local_balance` est la correction correspondante,
 côté choix de cible ([`decisions/0010`](decisions/0010-concentrer-plutot-que-decrocher.md)).
 
+### Ce que les dégâts achètent
+
+`learning/attrition.py` compte ce que nos dégâts ont fait tomber, et non ce
+qu'ils ont entamé. En jeu, l'agent avait de quoi abattre dix régiments et n'en a
+détruit aucun : la parité locale évite les mauvais combats, elle n'en gagne
+aucun. `finishing_value` et `Planner.focus_bonus` corrigent le choix de cible —
+achever ce qui est entamé, renforcer ce qu'on est en train de faire tomber
+([`decisions/0012`](decisions/0012-achever-plutot-qu-egratigner.md)).
+
 ### Le banc doit d'abord être reproductible
 
 La mêlée du simulateur appliquait ses dégâts dans l'ordre d'itération d'un

@@ -1136,6 +1136,7 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
     simplement **recu aucun ordre** ?
     """
     from totalwar_ai.learning.activity import summarise
+    from totalwar_ai.learning.attrition import study as usure
     from totalwar_ai.learning.concentration import study as concentration
     from totalwar_ai.learning.matchup import summarise as rapport_de_forces
     from totalwar_ai.learning.rehearsal import rehearse, render_cascade, rout_cascade
@@ -1176,6 +1177,11 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
     # la cascade etait la cause ou le symptome (ADR 0010).
     print(f"\n--- rapport de forces local : {bataille.battle_id[:8]} ---\n")
     print(concentration(iter_states(bataille.path)).render())
+
+    # La question que pose l'ADR 0012 : nos degats ont-ils fait tomber quelque
+    # chose, ou ont-ils ete etales sur toute la ligne adverse ?
+    print(f"\n--- ce que nos degats ont achete : {bataille.battle_id[:8]} ---\n")
+    print(usure(iter_states(bataille.path)).render())
 
     print(f"\n--- ce que nos regles auraient fait : {bataille.battle_id[:8]} ---\n")
     print(rehearse(iter_states(bataille.path)).render())

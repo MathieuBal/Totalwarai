@@ -7,7 +7,13 @@ import math
 import pytest
 
 from totalwar_ai.agent.grouping import GroupKind, build_groups
-from totalwar_ai.agent.planner import Planner, PlannerSettings, Posture, lateral_of
+from totalwar_ai.agent.planner import (
+    Planner,
+    PlannerSettings,
+    Posture,
+    finishing_value,
+    lateral_of,
+)
 from totalwar_ai.domain.actions import ActionType
 from totalwar_ai.domain.battle_state import BattlePhase
 from totalwar_ai.domain.geometry import Vector3
@@ -176,7 +182,19 @@ def test_ciblage_melee_prefere_le_plus_proche(planner: Planner, make_unit, make_
     assert target.id == "e_inf"
 
 
-def test_saturation_repartit_les_tireurs(planner: Planner, make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+def test_les_tireurs_concentrent_puis_se_repartissent(
+    planner: Planner, make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """Le tir concentre comme la melee, jusqu'a l'entassement.
+
+    Cette regle disait l'inverse : trois tireurs sur une cible faisaient fuir le
+    quatrieme ailleurs. C'est la dispersion que la mesure condamne — 9,77
+    unites-equivalent de degats en jeu, zero regiment abattu. Le banc a tranche :
+    en concentrant aussi le tir, 113 unites adverses detruites sur huit graines
+    contre 105 en le dispersant, a taux de victoire egal.
+
+    L'entassement reste puni, sinon toute l'armee viserait un seul regiment.
+    """
     state = make_battle(
         [
             make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, 0.0, 0.0),
@@ -188,9 +206,14 @@ def test_saturation_repartit_les_tireurs(planner: Planner, make_unit, make_battl
     assert shooter is not None
     first = planner.select_target(shooter, state, for_missile=True)
     assert first is not None
-    second = planner.select_target(shooter, state, assignments={first.id: 3}, for_missile=True)
-    assert second is not None
-    assert second.id != first.id
+
+    # Deux tireurs deja sur la cible : on renforce.
+    renfort = planner.select_target(shooter, state, assignments={first.id: 2}, for_missile=True)
+    assert renfort is not None and renfort.id == first.id
+
+    # Sept : ce n'est plus concentrer, c'est s'entasser.
+    ailleurs = planner.select_target(shooter, state, assignments={first.id: 7}, for_missile=True)
+    assert ailleurs is not None and ailleurs.id != first.id
 
 
 def test_deploiement_place_le_tir_derriere_la_ligne(
@@ -373,3 +396,71 @@ def test_a_distance_egale_on_prefere_la_cible_ou_l_on_est_soutenu(  # type: igno
 
     planificateur = Planner()
     assert planificateur.select_target(attaquant, etat) is soutenue
+
+
+# --- achever plutot qu'egratigner ----------------------------------------------
+
+
+def test_une_cible_intacte_ne_vaut_aucune_prime_d_achevement(make_unit) -> None:  # type: ignore[no-untyped-def]
+    intacte = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY)
+
+    assert finishing_value(intacte) == 0.0
+
+
+def test_la_prime_d_achevement_croit_quand_la_cible_agonise(make_unit) -> None:  # type: ignore[no-untyped-def]
+    """Ce qui compte, ce sont les hommes tombes, pas les blessures moyennes.
+
+    Une unite meurt dans Total War quand il ne lui reste plus personne : c'est le
+    compte d'hommes qui approche de zero, pas la sante moyenne des survivants.
+    """
+    entamee = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, entity_ratio=0.35)
+    agonisante = make_unit("e2", Side.ENEMY, UnitRole.MELEE_INFANTRY, entity_ratio=0.10)
+
+    assert 0.0 < finishing_value(entamee) < finishing_value(agonisante) <= 1.0
+
+
+def test_une_unite_en_deroute_est_a_achever(make_unit) -> None:  # type: ignore[no-untyped-def]
+    """**La penalite sur les fuyards etait a l'envers.** Une unite qui rompt est
+    celle qu'un dernier choc detruit pour de bon ; la laisser partir, c'est la
+    revoir ralliee."""
+    debout = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY)
+    en_fuite = make_unit("e2", Side.ENEMY, UnitRole.MELEE_INFANTRY, is_routing=True)
+
+    assert finishing_value(debout) == 0.0
+    assert finishing_value(en_fuite) > 0.5
+
+
+def test_a_distance_egale_on_acheve_l_unite_entamee(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """**Le defaut mesure en jeu** : 9,77 unites-equivalent de degats etales sur
+    dix-neuf regiments, aucun abattu. Des degats etales ne rendent rien."""
+    attaquant = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0)
+    entamee = make_unit("e_entamee", Side.ENEMY, UnitRole.MELEE_INFANTRY, 60.0, health_ratio=0.15)
+    intacte = make_unit("e_intacte", Side.ENEMY, UnitRole.MELEE_INFANTRY, -60.0)
+    etat = make_battle([attaquant, entamee, intacte])
+
+    assert Planner().select_target(attaquant, etat) is entamee
+
+
+def test_le_soutien_est_encourage_puis_l_entassement_penalise() -> None:
+    """L'ancienne version retirait 0,20 par allie, sans palier : une pression de
+    dispersion permanente, et des degats etales sur toute la ligne adverse."""
+    planificateur = Planner()
+
+    assert planificateur.focus_bonus(0) == 0.0
+    # Concentrer paye...
+    assert planificateur.focus_bonus(1) > 0.0
+    assert planificateur.focus_bonus(2) > planificateur.focus_bonus(1)
+    # ... jusqu'a ce que ce ne soit plus de la concentration mais un embouteillage.
+    assert planificateur.focus_bonus(6) < planificateur.focus_bonus(2)
+
+
+def test_deux_allies_deja_engages_attirent_le_troisieme(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """A distance et valeur egales, renforcer un regiment qu'on est en train de
+    faire tomber vaut mieux qu'en entamer un neuf."""
+    attaquant = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0)
+    prise = make_unit("e_prise", Side.ENEMY, UnitRole.MELEE_INFANTRY, 60.0)
+    neuve = make_unit("e_neuve", Side.ENEMY, UnitRole.MELEE_INFANTRY, -60.0)
+    etat = make_battle([attaquant, prise, neuve])
+
+    choix = Planner().select_target(attaquant, etat, assignments={"e_prise": 2})
+    assert choix is prise
