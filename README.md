@@ -125,6 +125,15 @@ détail est dans [`docs/feasibility.md`](docs/feasibility.md).
 passent par le même code, au jeu de règles près : c'est ce qui rend les deux
 résultats comparables.
 
+> **Le travail tactique ne s'applique qu'en `--play`, et c'est facile à
+> manquer.** Le choix de cible du planificateur — concentration, achèvement,
+> priorité aux unités entamées — ne franchit le pont que dans ce mode :
+> `LiveSession` publie des ordres d'attaque, que le Lua exécute via
+> `uc:attack_unit`. En `--supervise`, `SupervisedSession` n'envoie **que des
+> destinations de repli** issues des trois règles, et l'agent n'y tourne qu'en
+> **décision fantôme**, sans rien émettre. Une amélioration du ciblage y est
+> donc strictement invisible. Pour éprouver la tactique, c'est `--play`.
+
 La colonne de droite n'est pas un détail. `--supervise` reste marqué non éprouvé
 alors qu'il a tourné : à l'essai n° 11 il n'a produit **aucune intervention**,
 l'armée étant en mêlée pure — ni artillerie, ni tir, et un seigneur jamais
@@ -265,6 +274,14 @@ d'abord un effondrement de moral mais une **défaite en détail** — 65 % et 58
 des mêlées livrées en infériorité locale, avec des pics à 2 et 3 contre 1 au
 moment de la chute, alors que le rapport global n'était que de 1,2 contre nous
 ([`docs/decisions/0010`](docs/decisions/0010-concentrer-plutot-que-decrocher.md)).
+
+Il ajoute ensuite **ce que nos dégâts ont acheté**. En jeu, l'agent avait retiré
+9,77 et 5,30 unités-équivalent de points de vie — de quoi abattre dix régiments —
+en n'en détruisant **aucun**, les dégâts étalés sur dix-neuf des vingt régiments
+adverses. Trois corrections du choix de cible portent le rendement de 0,29 à 0,40
+unité abattue par unité-équivalent au banc, soit **+38 % d'unités adverses
+détruites à taux de victoire égal**
+([`docs/decisions/0012`](docs/decisions/0012-achever-plutot-qu-egratigner.md)).
 
 **Lancer la commande AVANT la bataille.** `--observe` et `--supervise` attendent
 le jeu et réessaient jusqu'à obtenir la main — dix minutes par défaut, réglable

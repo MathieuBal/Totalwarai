@@ -417,6 +417,7 @@ def _cmd_probe(args: argparse.Namespace) -> int:
             args.play,
             record=not args.no_record,
             posture=Posture(args.posture) if args.posture else None,
+            patience=args.wait,
         )
 
     if args.status or not (args.watch or args.move):
@@ -558,6 +559,55 @@ def _take_command(
         file=sys.stderr,
     )
     print("  `totalwar-ai probe --log 30` affiche l'accuse complet cote jeu.", file=sys.stderr)
+    return None
+
+
+def _await_battle(
+    bridge: FileBridge,
+    *,
+    patience: float,
+    sleep: Callable[[float], None] = time.sleep,
+) -> ProbeBattleState | None:
+    """Attend que la bataille accepte des ordres, pour `--play`.
+
+    **Pourquoi ce mode a besoin de son propre guichet.** `--play` ne delegue
+    rien : il prend chaque unite le temps d'un ordre. Il n'a donc pas de main a
+    obtenir, seulement une bataille a attendre — mais sans cette attente il
+    consommait son chronometre a tourner dans le vide, ce qui est exactement le
+    defaut corrige pour `--observe` et `--supervise`, et jamais ici.
+    """
+    fin = time.monotonic() + max(0.0, patience)
+    annonce = False
+    dernier_motif = ""
+    while time.monotonic() < fin:
+        state = bridge.latest_battle_state()
+        if state is None:
+            if not annonce:
+                print("En attente du jeu... (lancez la bataille, on s'accroche tout seul)")
+                annonce = True
+            sleep(1.0)
+            continue
+
+        pilotables = [unite for unite in state.allies if unite.controllable and unite.alive]
+        if state.orders_take_effect and pilotables:
+            return state
+
+        motif = (
+            f"phase {state.phase} : un ordre n'aurait aucun effet"
+            if not state.orders_take_effect
+            else "aucune unite pilotable"
+        )
+        if motif != dernier_motif:
+            restant = fin - time.monotonic()
+            print(f"  pas encore jouable ({motif}) — encore {restant:.0f} s d'essais")
+            dernier_motif = motif
+        sleep(1.5)
+
+    print(
+        f"Bataille non jouable en {patience:.0f} s. Derniere raison : "
+        f"{dernier_motif or 'aucun etat recu'}",
+        file=sys.stderr,
+    )
     return None
 
 
@@ -765,6 +815,7 @@ def _play(
     *,
     record: bool = True,
     posture: Posture | None = None,
+    patience: float = DEFAULT_PATIENCE,
 ) -> int:
     """Laisse l'agent piloter la bataille, en rendant compte a chaque tour.
 
@@ -788,6 +839,10 @@ def _play(
         directory=config.path("telemetry", "battles_dir") if record else None,
         record_units=bool(config.telemetry.get("record_units", True)),
     )
+
+    if _await_battle(bridge, patience=patience) is None:
+        print("  `totalwar-ai probe --log 30` affiche l'accuse complet cote jeu.", file=sys.stderr)
+        return 1
 
     print(f"Pilotage pour {duration:.0f} s. Ctrl+C pour tout arreter et rendre la main.")
     if posture is not None:
@@ -1136,6 +1191,7 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
     simplement **recu aucun ordre** ?
     """
     from totalwar_ai.learning.activity import summarise
+    from totalwar_ai.learning.attrition import study as usure
     from totalwar_ai.learning.concentration import study as concentration
     from totalwar_ai.learning.matchup import summarise as rapport_de_forces
     from totalwar_ai.learning.rehearsal import rehearse, render_cascade, rout_cascade
@@ -1176,6 +1232,11 @@ def _learn_units(corpus: Corpus, wanted: str) -> int:
     # la cascade etait la cause ou le symptome (ADR 0010).
     print(f"\n--- rapport de forces local : {bataille.battle_id[:8]} ---\n")
     print(concentration(iter_states(bataille.path)).render())
+
+    # La question que pose l'ADR 0012 : nos degats ont-ils fait tomber quelque
+    # chose, ou ont-ils ete etales sur toute la ligne adverse ?
+    print(f"\n--- ce que nos degats ont achete : {bataille.battle_id[:8]} ---\n")
+    print(usure(iter_states(bataille.path)).render())
 
     print(f"\n--- ce que nos regles auraient fait : {bataille.battle_id[:8]} ---\n")
     print(rehearse(iter_states(bataille.path)).render())

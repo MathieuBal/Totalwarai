@@ -888,3 +888,35 @@ def test_la_prise_en_main_insiste_jusqu_a_obtenir_le_controle(
     assert resultat is not None, "la prise en main a renonce trop tot"
     assert essais["n"] >= 3, "elle n'a pas insiste"
     assert resultat[2], "aucune unite confiee alors que la delegation a fini par passer"
+
+
+def test_le_pilotage_attend_que_la_bataille_soit_jouable(bataille: Probe, tmp_path: Path) -> None:
+    """**`--play` est le seul mode ou le travail tactique s'applique.**
+
+    En supervision, nos regles n'envoient que des destinations de repli : le
+    ciblage du planificateur n'y sert a rien. C'est en pilotage que le choix de
+    cible atteint le jeu — et c'etait justement le mode reste sans attente, qui
+    consommait son chronometre a tourner dans le vide.
+    """
+    from totalwar_ai.cli import _await_battle
+
+    bridge = FileBridge.open(tmp_path).tail()
+    bataille.advance(1200)
+
+    etat = _await_battle(bridge, patience=30.0, sleep=lambda _: bataille.advance(1200))
+
+    assert etat is not None, "l'attente a renonce alors que la bataille etait jouable"
+    assert [unite for unite in etat.allies if unite.controllable and unite.alive]
+
+
+def test_le_pilotage_renonce_proprement_si_la_bataille_ne_vient_pas(tmp_path: Path) -> None:
+    """Sans jeu en face, on renonce au bout du delai plutot que de piloter le vide."""
+    from totalwar_ai.cli import _await_battle
+
+    bridge = FileBridge.open(tmp_path).tail()
+    horloge = {"t": 0.0}
+
+    def dormir(_: float) -> None:
+        horloge["t"] += 1.0
+
+    assert _await_battle(bridge, patience=0.0, sleep=dormir) is None

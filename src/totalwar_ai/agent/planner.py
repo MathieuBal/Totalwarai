@@ -79,6 +79,47 @@ SUPPORT_RADIUS = 40.0
 #: nous laisse a parite ou en superiorite locale.
 CONCENTRATION_WEIGHT = 0.80
 
+#: Vie en deca de laquelle une unite adverse vaut d'etre achevee.
+FINISHING_THRESHOLD = 0.40
+
+#: Poids de la prime a l'achevement.
+#:
+#: **Mesure sur les batailles jouees : zero unite adverse detruite, pour de quoi
+#: en tuer dix.** Bataille 1, 9,77 unites-equivalent de degats etales sur 19 des
+#: 20 regiments adverses — 51 % de leur barre chacun en moyenne, aucun abattu.
+#: Bataille 2, 5,30 pour quatorze regiments entames, aucun abattu.
+#:
+#: Des degats etales ne rendent rien. Un regiment a 50 % se bat encore, et s'il
+#: rompt il se rallie et revient ; un regiment abattu ne revient jamais. Concentrer
+#: n'est pas une preference esthetique, c'est ce qui transforme des degats en
+#: unites adverses en moins — et donc en degats adverses en moins.
+#:
+#: L'ancienne prime valait au plus 0,30 quand la proximite pesait jusqu'a 2,00 :
+#: elle ne pouvait rien decider.
+FINISHING_WEIGHT = 1.20
+
+#: Allies deja envoyes sur une cible que l'on encourage encore, avant de disperser.
+#:
+#: En deca, un allie de plus est un renfort qui concentre ; au-dela, c'est de
+#: l'entassement qui laisse le reste de la ligne libre.
+FOCUS_SUPPORT = 2
+
+#: Prime par allie deja engage sur la cible, jusqu'a `FOCUS_SUPPORT`.
+FOCUS_BONUS = 0.35
+
+#: Penalite par allie au-dela de `FOCUS_SUPPORT`.
+FOCUS_CROWDING = 0.20
+
+#: Penalite appliquee a une cible en deroute.
+#:
+#: **Elle etait de 0,60, et c'etait a l'envers.** Une unite qui rompt est
+#: precisement celle que l'on peut detruire pour de bon : la laisser partir, c'est
+#: la revoir ralliee. La penalite ne disparait pas pour autant — poursuivre a
+#: travers la carte est le piege classique — mais elle ne doit plus interdire
+#: l'achevement d'un fuyard qui est sous notre nez, ce dont la distance se charge
+#: deja.
+ROUTING_PENALTY = 0.20
+
 
 class Posture(StrEnum):
     """Intention generale de la bataille."""
@@ -162,6 +203,26 @@ def lateral_of(front: Vector3) -> Vector3:
     if front.length_2d() <= 1e-9:
         return Vector3(1.0, 0.0, 0.0)
     return Vector3(front.z, 0.0, -front.x)
+
+
+def finishing_value(candidate: UnitState) -> float:
+    """Interet a achever cette cible, dans [0, 1].
+
+    Nul au-dessus de `FINISHING_THRESHOLD`, puis croissant jusqu'a 1 quand la
+    cible est a l'agonie. **La rampe n'est pas lineaire sur toute la barre** : une
+    unite qui passe de 100 % a 90 % n'est pas plus interessante qu'avant, alors
+    qu'une unite a 10 % est a un souffle de disparaitre du champ de bataille.
+    """
+    # **`effective_strength` et non le seul compte d'hommes.** Sa formule
+    # penalise la deroute (x0,1) et la fatigue, donc elle designe aussi l'unite
+    # qui vient de rompre — celle qu'un dernier choc detruit pour de bon, au lieu
+    # de la laisser se rallier. Le banc a tranche entre les deux bases : sur huit
+    # graines, 113 unites adverses detruites contre 84 pour le seul compte
+    # d'hommes, a taux de victoire egal.
+    reste = candidate.effective_strength
+    if reste >= FINISHING_THRESHOLD:
+        return 0.0
+    return (FINISHING_THRESHOLD - reste) / FINISHING_THRESHOLD
 
 
 def missile_range(unit: UnitState) -> float:
@@ -281,6 +342,20 @@ class Planner:
 
     # --- selection de cible --------------------------------------------------
 
+    def focus_bonus(self, already: int) -> float:
+        """Ce que vaut une cible deja prise a partie par `already` allies.
+
+        **Positif tant qu'on concentre, negatif quand on s'entasse.** L'ancienne
+        version retirait 0,20 par allie deja envoye, sans palier : une pression de
+        dispersion permanente, qui explique des degats etales sur dix-neuf
+        regiments et aucun abattu.
+        """
+        if already <= 0:
+            return 0.0
+        soutien = min(already, FOCUS_SUPPORT)
+        entassement = max(0, already - FOCUS_SUPPORT)
+        return FOCUS_BONUS * soutien - FOCUS_CROWDING * entassement
+
     def local_balance(self, attacker: UnitState, candidate: UnitState, state: BattleState) -> float:
         """Superiorite locale obtenue en envoyant `attacker` sur `candidate`.
 
@@ -336,12 +411,16 @@ class Planner:
             # Concentrer : ne pas ouvrir une melee que l'on perdra localement.
             score += CONCENTRATION_WEIGHT * self.local_balance(attacker, candidate, state)
         score += 0.30 * (1.0 - candidate.effective_strength)
+        # Achever ce qui est deja entame, au lieu d'entamer autre chose.
+        score += FINISHING_WEIGHT * finishing_value(candidate)
 
         already = (assignments or {}).get(candidate.id, 0)
-        score -= 0.20 * already
+        # Le tir concentre comme la melee : mesure au banc, 113 unites adverses
+        # detruites contre 105 en dispersant le tir, a taux de victoire egal.
+        score += self.focus_bonus(already)
 
         if candidate.is_routing:
-            score -= 0.60
+            score -= ROUTING_PENALTY
         if for_missile:
             if distance > missile_range(attacker):
                 return float("-inf")
