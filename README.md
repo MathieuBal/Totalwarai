@@ -125,6 +125,15 @@ détail est dans [`docs/feasibility.md`](docs/feasibility.md).
 passent par le même code, au jeu de règles près : c'est ce qui rend les deux
 résultats comparables.
 
+> **Le travail tactique ne s'applique qu'en `--play`, et c'est facile à
+> manquer.** Le choix de cible du planificateur — concentration, achèvement,
+> priorité aux unités entamées — ne franchit le pont que dans ce mode :
+> `LiveSession` publie des ordres d'attaque, que le Lua exécute via
+> `uc:attack_unit`. En `--supervise`, `SupervisedSession` n'envoie **que des
+> destinations de repli** issues des trois règles, et l'agent n'y tourne qu'en
+> **décision fantôme**, sans rien émettre. Une amélioration du ciblage y est
+> donc strictement invisible. Pour éprouver la tactique, c'est `--play`.
+
 La colonne de droite n'est pas un détail. `--supervise` reste marqué non éprouvé
 alors qu'il a tourné : à l'essai n° 11 il n'a produit **aucune intervention**,
 l'armée étant en mêlée pure — ni artillerie, ni tir, et un seigneur jamais
