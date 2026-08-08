@@ -135,6 +135,14 @@ class Probe:
         """
         self._patch_unit(unit_id, "u.is_valid_target = function() return false end")
 
+    def make_uncontrollable(self, unit_id: str) -> None:
+        """Le jeu reprend une unite au script : tout ordre sera refuse.
+
+        Arrive des que le joueur la selectionne a la souris, ou qu'un
+        `unitcontroller` concurrent la detient.
+        """
+        self._patch_unit(unit_id, "u.is_controllable = function() return false end")
+
     def _patch_unit(self, unit_id: str, mutation: str) -> None:
         self.runtime.execute(
             "for _, alliance in ipairs({bm:alliances():item(1)}) do\n"

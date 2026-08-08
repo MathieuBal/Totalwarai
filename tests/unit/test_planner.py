@@ -11,6 +11,7 @@ from totalwar_ai.agent.planner import (
     Planner,
     PlannerSettings,
     Posture,
+    can_be_attacked,
     finishing_value,
     lateral_of,
 )
@@ -464,3 +465,43 @@ def test_deux_allies_deja_engages_attirent_le_troisieme(make_unit, make_battle) 
 
     choix = Planner().select_target(attaquant, etat, assignments={"e_prise": 2})
     assert choix is prise
+
+
+def test_une_cible_que_le_jeu_refusera_n_est_pas_choisie(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """**Sinon l'unite reste plantee toute la bataille.** Le Lua refuse
+    `uc:attack_unit` quand `is_valid_target()` est faux, et ce drapeau reste faux
+    durablement : trois ennemis l'ont ete 665, 644 et 644 fois sur deux batailles.
+    Une unite lancee sur l'une d'elles recoit un refus par seconde."""
+    attaquant = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0)
+    interdite = make_unit(
+        "e_interdite", Side.ENEMY, UnitRole.ARTILLERY, 20.0, metadata={"targetable": False}
+    )
+    atteignable = make_unit("e_ok", Side.ENEMY, UnitRole.MELEE_INFANTRY, 150.0)
+    etat = make_battle([attaquant, interdite, atteignable])
+
+    # L'artillerie toute proche serait le choix evident sans ce garde-fou.
+    assert Planner().select_target(attaquant, etat) is atteignable
+
+
+def test_l_absence_du_drapeau_vaut_attaquable(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Hors du pont — au banc, en test — la question ne se pose pas."""
+    cible = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY)
+
+    assert can_be_attacked(cible)
+
+
+def test_une_cible_interdite_compte_toujours_dans_le_rapport_de_forces(  # type: ignore[no-untyped-def]
+    make_unit, make_battle
+) -> None:
+    """Elle est sur le champ de bataille et elle menace : on ne peut simplement
+    pas lui donner de coup."""
+    etat = make_battle(
+        [
+            make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0),
+            make_unit(
+                "e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 20.0, metadata={"targetable": False}
+            ),
+        ]
+    )
+
+    assert len(etat.enemies()) == 1

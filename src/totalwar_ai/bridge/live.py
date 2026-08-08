@@ -191,6 +191,12 @@ class LiveSession:
     #: Volontairement courte : le joueur doit pouvoir reprendre une unite sans
     #: attendre, et un ordre perime vaut mieux qu'une unite confisquee.
     release_after_ms: int = 5000
+    #: Delai d'attente de l'accuse, en secondes.
+    #:
+    #: Court : savoir qu'un ordre a ete refuse vaut la peine, pas au prix d'un
+    #: tour de boucle perdu a l'attendre.
+    ack_timeout: float = 0.5
+    wait: Callable[[float], None] = time.sleep
     #: Derniere destination envoyee a chaque unite, pour ne pas la faire osciller.
     _last_destination: dict[str, Vector3] = field(default_factory=dict)
 
@@ -245,7 +251,7 @@ class LiveSession:
 
         # Un seul message : deux commandes successives se perdraient, le
         # fichier etant remplace et relu toutes les 500 ms seulement.
-        self.bridge.send_orders(
+        commande = self.bridge.send_orders(
             translation.moves,
             translation.attacks,
             translation.halts,
@@ -257,7 +263,27 @@ class LiveSession:
             blocked=refusees,
             translation=translation,
             sent=translation.order_count,
+            refused=self._refusals(commande.sequence),
         )
+
+    def _refusals(self, sequence: int) -> tuple[tuple[str, str], ...]:
+        """Ce que le jeu a refuse d'executer, et pourquoi.
+
+        **Ce mode ne lisait aucun accuse.** Un ordre refuse — cible devenue non
+        ciblable, groupe verrouille, unite reprise a la souris — ne laissait
+        aucune trace : le compte rendu annoncait « 3 attaque(s) » pour trois
+        ordres tombes dans le vide, et l'unite restait plantee sans que rien ne
+        le dise. Le Lua ne renvoie que le premier motif, ce qui suffit a savoir
+        qu'il faut regarder.
+
+        Ne bloque jamais la boucle : un accuse en retard vaut mieux qu'un tour
+        perdu a l'attendre.
+        """
+        ack = self.bridge.wait_for_ack(sequence, timeout=self.ack_timeout, sleep=self.wait)
+        if ack is None or (ack.accepted and not ack.error):
+            return ()
+        motif = ack.error or ack.status.value
+        return tuple((unit_id, motif) for unit_id in ack.refused_ids) or (("", motif),)
 
     def _drop_micro_moves(self, translation: Translation) -> Translation:
         """Ecarte les deplacements trop courts pour valoir un ordre.

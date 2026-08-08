@@ -225,6 +225,26 @@ def finishing_value(candidate: UnitState) -> float:
     return (FINISHING_THRESHOLD - reste) / FINISHING_THRESHOLD
 
 
+def can_be_attacked(candidate: UnitState) -> bool:
+    """Le jeu acceptera-t-il un ordre d'attaque sur cette unite ?
+
+    **Une cible visible n'est pas forcement attaquable.** Le Lua refuse
+    `uc:attack_unit` quand `is_valid_target()` est faux, et ce drapeau reste faux
+    durablement pour certaines unites : trois ennemis l'ont ete 665, 644 et 644
+    fois sur deux batailles. Une unite lancee sur l'une d'elles recoit un refus
+    par seconde et ne fait rien du tout.
+
+    Le drapeau est absent hors du pont — au banc, en test — et son absence vaut
+    « attaquable » : c'est le seul defaut qui laisse l'agent jouer normalement
+    partout ou la question ne se pose pas.
+
+    On ne les rend pas invisibles pour autant : elles comptent toujours dans les
+    rapports de force et les barycentres. Elles sont sur le champ de bataille,
+    elles menacent — on ne peut simplement pas leur donner de coup.
+    """
+    return bool(candidate.metadata.get("targetable", True))
+
+
 def missile_range(unit: UnitState) -> float:
     """Portee de tir connue de l'unite, sinon valeur par defaut prudente."""
     value = unit.metadata.get("missile_range")
@@ -399,6 +419,10 @@ class Planner:
         Combine proximite, priorite de role, vulnerabilite et saturation. Le tir
         evite les melees en cours (risque de tirs allies) et les fuyards.
         """
+        # Une cible que le jeu refusera n'est pas une cible : la choisir
+        # immobilise l'unite jusqu'a la fin de la bataille.
+        if not can_be_attacked(candidate):
+            return float("-inf")
         distance = attacker.position.distance_2d(candidate.position)
         if for_missile:
             # Le tir choisit surtout selon la valeur de la cible : la distance

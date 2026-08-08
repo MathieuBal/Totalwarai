@@ -333,6 +333,14 @@ class ProbeUnitObservation:
             # s'en sert doit d'abord verifier ces drapeaux.
             "morale_available": False,
             "fatigue_available": False,
+            # **Peut-on lui donner un ordre d'attaque maintenant ?** C'est la
+            # seule question a laquelle `is_valid_target` reponde correctement :
+            # elle ne dit pas si l'unite est vivante (voir `alive_from`), mais
+            # elle dit si le jeu acceptera `uc:attack_unit`. Sans ce drapeau,
+            # une unite lancee sur une cible durablement non ciblable recoit un
+            # refus par seconde et reste plantee — trois ennemis ont ete vus
+            # ainsi 665, 644 et 644 fois sur deux batailles.
+            "targetable": self.targetable,
         }
         for name in ("hitpoints", "men_alive", "bearing", "ammo", "missile_range"):
             value = getattr(self, name)

@@ -920,3 +920,33 @@ def test_le_pilotage_renonce_proprement_si_la_bataille_ne_vient_pas(tmp_path: Pa
         horloge["t"] += 1.0
 
     assert _await_battle(bridge, patience=0.0, sleep=dormir) is None
+
+
+def test_le_pilotage_rend_compte_des_ordres_refuses(bataille: Probe, tmp_path: Path) -> None:
+    """**Ce mode ne lisait aucun accuse.**
+
+    Un ordre refuse ne laissait aucune trace : le compte rendu annoncait « 3
+    attaque(s) » pour trois ordres tombes dans le vide, et l'unite restait
+    plantee sans que rien ne le dise a l'operateur.
+    """
+    from totalwar_ai.bridge.live import LiveSession
+    from totalwar_ai.config import load_config
+
+    bridge = FileBridge.open(tmp_path).tail()
+    session = LiveSession(
+        bridge=bridge,
+        agent=DeterministicTacticalAgent.from_config(load_config(data_dir=tmp_path)),
+        wait=lambda _: bataille.advance(600),
+    )
+    bataille.advance(1200)
+
+    # Toutes nos unites deviennent intouchables : le vrai Lua refusera chaque
+    # ordre avec « unite non controlable ».
+    for unite in ARMEE:
+        bataille.make_uncontrollable(unite[0])
+
+    etape = session.step()
+
+    assert etape.sent, "aucun ordre emis : le test ne prouverait rien"
+    assert etape.refused, "un ordre refuse par le jeu est passe inapercu"
+    assert "refusee(s) par le jeu" in etape.summary()
