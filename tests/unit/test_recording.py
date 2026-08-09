@@ -476,3 +476,66 @@ def test_le_premier_etat_cree_le_fichier(tmp_path: Path) -> None:
     assert recorder.path is not None and ecrits[0] == recorder.path
     premiere = ecrits[0].read_text(encoding="utf-8").splitlines()[0]
     assert json.loads(premiere)["format"] == RECORDING_FORMAT
+
+
+def test_une_armee_entierement_en_deroute_ne_vaut_pas_cent_pour_cent() -> None:
+    """**Le chiffre par lequel le projet se juge annoncait une armee intacte.**
+
+    Bataille `a1274d62` : douze unites alliees sur douze ont rompu, la derniere
+    a t=417 s, et le bilan a rendu « Forces restantes : 100 % ». Une unite en
+    deroute a des hommes debout, donc elle etait comptee vivante — alors qu'il
+    ne restait personne au combat.
+    """
+    debout = ProbeBattleState(
+        allies=tuple(_unite(f"a{i}") for i in range(4)),
+        enemies=tuple(_unite(f"e{i}") for i in range(4)),
+        phase="Deployed",
+    )
+    en_fuite = ProbeBattleState(
+        allies=tuple(
+            ProbeUnitObservation(
+                unit_id=f"a{i}",
+                position=Vector3(0.0, 0.0, 0.0),
+                alive=True,
+                hitpoints=0.5,
+                routing=True,
+            )
+            for i in range(4)
+        ),
+        enemies=tuple(_unite(f"e{i}") for i in range(4)),
+        phase="Deployed",
+    )
+    recorder = BattleRecorder()
+    recorder.observe(_tour(debout))
+    recorder.observe(_tour(en_fuite))
+
+    resume = recorder.summary()
+    assert resume.ally_remaining == pytest.approx(0.0)
+    assert resume.enemy_remaining == pytest.approx(1.0)
+
+
+def test_la_force_restante_pese_les_hommes_et_leur_sante() -> None:
+    """La simulation somme des points de vie ; compter des unites ici rendait
+    les deux chiffres etrangers l'un a l'autre alors que tout les compare."""
+    intacte = ProbeBattleState(
+        allies=(
+            ProbeUnitObservation(
+                unit_id="a1", position=Vector3(0.0, 0.0, 0.0), hitpoints=1.0, men_alive=100
+            ),
+        ),
+        phase="Deployed",
+    )
+    entamee = ProbeBattleState(
+        allies=(
+            ProbeUnitObservation(
+                unit_id="a1", position=Vector3(0.0, 0.0, 0.0), hitpoints=0.5, men_alive=50
+            ),
+        ),
+        phase="Deployed",
+    )
+    recorder = BattleRecorder()
+    recorder.observe(_tour(intacte))
+    recorder.observe(_tour(entamee))
+
+    # Moitie des hommes, a moitie de leur sante : un quart de la force.
+    assert recorder.summary().ally_remaining == pytest.approx(0.25)

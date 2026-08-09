@@ -270,6 +270,21 @@ class Planner:
     #: laisse croire que l'agent a choisi cette posture.
     forced_posture: Posture | None = None
 
+    #: Cible en cours pour chaque unite, tant qu'elle reste valable.
+    #:
+    #: **Sans cela, une unite ne termine jamais sa course.** Bataille
+    #: `a1274d62` : la cavalerie de choc a recu dix cibles de contournement
+    #: differentes en cent trente secondes — 1022, 1021, 1023, 1021, 1023,
+    #: 1022... — et a parcouru 1 944 metres quand le reste de l'armee en faisait
+    #: 500 a 800. Elle n'a acheve aucun contournement, est arrivee seule, et a
+    #: rompu la premiere a t=273 s, ouvrant la cascade qui a emporte les douze
+    #: unites alliees.
+    #:
+    #: La cause est que la cible etait rechoisie a chaque tour : les positions
+    #: bougent, le compte de saturation bouge, et le meilleur candidat change
+    #: pour trois fois rien. Une preference marginale ne vaut pas un demi-tour.
+    _commitments: dict[str, str] = field(default_factory=dict)
+
     #: Ce que l'IA du jeu recherche, appris en la regardant jouer.
     #:
     #: **L'agent joue alors sur les preferences du moteur, pas sur les notres.**
@@ -361,6 +376,41 @@ class Planner:
         )
 
     # --- selection de cible --------------------------------------------------
+
+    def committed_target(
+        self,
+        actor: UnitState,
+        state: BattleState,
+        *,
+        candidates: Sequence[UnitState],
+        assignments: Mapping[str, int] | None = None,
+    ) -> UnitState | None:
+        """Cible de `actor`, en gardant la precedente tant qu'elle tient.
+
+        Une unite lancee sur une cible y va jusqu'au bout. On n'abandonne que
+        pour une raison qui ne se retourne pas : la cible est morte, elle rompt,
+        ou le jeu refuse qu'on l'attaque.
+
+        **Tenir la cible hors du vivier de candidats est le coeur de la
+        correction.** Le vivier du contournement — tireurs adverses ni en
+        deroute ni au contact — change sans arret : un tireur pris a partie en
+        sort, se degage, y revient. En n'y regardant que la, on relancait la
+        cavalerie sur une autre cible a chaque battement, et elle n'arrivait
+        jamais. Une manoeuvre dure plus longtemps qu'un tour de boucle.
+        """
+        engagee = self._commitments.get(actor.id)
+        if engagee is not None:
+            tenue = next((item for item in state.enemies() if item.id == engagee), None)
+            if tenue is not None and not tenue.is_routing and can_be_attacked(tenue):
+                return tenue
+            self._commitments.pop(actor.id, None)
+
+        choisie = self.select_target(
+            actor, state, assignments=assignments, candidates=list(candidates)
+        )
+        if choisie is not None:
+            self._commitments[actor.id] = choisie.id
+        return choisie
 
     def focus_bonus(self, already: int) -> float:
         """Ce que vaut une cible deja prise a partie par `already` allies.
@@ -816,7 +866,9 @@ class Planner:
                 if enemy.role in RANGED_ROLES and not enemy.is_routing and not enemy.is_engaged
             ]
             if juicy and plan.posture is not Posture.DELAY:
-                target = self.select_target(rider, state, assignments=assignments, candidates=juicy)
+                target = self.committed_target(
+                    rider, state, candidates=juicy, assignments=assignments
+                )
                 if target is not None:
                     assignments[target.id] = assignments.get(target.id, 0) + 1
                     decisions.append(

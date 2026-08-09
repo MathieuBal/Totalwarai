@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -79,6 +80,16 @@ class BattleRecorder:
 
     _first_state: ProbeBattleState | None = None
     _last_state: ProbeBattleState | None = None
+    #: Force initiale de chaque unite, par camp, a sa premiere apparition.
+    #:
+    #: Deux raisons de ne pas se contenter du premier etat. Les renforts
+    #: arrivent en cours de bataille — les ignorer ferait passer une armee qui
+    #: grossit pour une armee intacte. Et une unite **detruite disparait des
+    #: listes du jeu** : si le denominateur ne retenait que les unites encore
+    #: presentes, une armee reduite a un quart rendrait « 100 % ».
+    _initial_strength: dict[str, dict[str, float]] = field(
+        default_factory=lambda: {"allies": {}, "enemies": {}}
+    )
     _initial_allies: int = 0
     _initial_enemies: int = 0
     _handle: Any = None
@@ -146,6 +157,11 @@ class BattleRecorder:
             self._initial_allies = len(state.allies)
             self._initial_enemies = len(state.enemies)
         self._last_state = state
+        for camp in ("allies", "enemies"):
+            connues = self._initial_strength[camp]
+            for unite in getattr(state, camp):
+                if unite.unit_id not in connues and unite.alive:
+                    connues[unite.unit_id] = _unit_strength(unite)
 
         entry: dict[str, Any] = {
             "turn": self.turns,
@@ -276,8 +292,12 @@ class BattleRecorder:
             scenario=LIVE_SCENARIO,
             outcome=self.outcome,
             duration=max(0.0, (fin - debut) / 1000.0),
-            ally_remaining=_final_share(self._last_state, "allies", self._initial_allies),
-            enemy_remaining=_final_share(self._last_state, "enemies", self._initial_enemies),
+            ally_remaining=_final_share(
+                self._last_state, "allies", self._initial_strength["allies"]
+            ),
+            enemy_remaining=_final_share(
+                self._last_state, "enemies", self._initial_strength["enemies"]
+            ),
             actions_sent=self.orders_sent,
             actions_blocked=self.orders_blocked,
             agent_mode="deterministic-live",
@@ -380,12 +400,41 @@ def _strength(state: ProbeBattleState, side: str) -> float:
     return sum(connues) if connues else float(len(unites))
 
 
-def _final_share(state: ProbeBattleState | None, side: str, initial: int) -> float:
-    """Part d'un camp encore debout, dans [0, 1]."""
-    if state is None or initial <= 0:
+def _unit_strength(unite: ProbeUnitObservation) -> float:
+    """Force d'une unite : ses hommes debout, ponderes par leur sante."""
+    hommes = unite.men_alive if unite.men_alive is not None else 1
+    sante = unite.hitpoints if unite.hitpoints is not None else 1.0
+    return max(0.0, float(hommes) * float(sante))
+
+
+def _final_share(state: ProbeBattleState | None, side: str, initial: Mapping[str, float]) -> float:
+    """Part d'un camp **encore au combat**, dans [0, 1].
+
+    Deux corrections a la version qui comptait les unites vivantes.
+
+    **Une unite en deroute ne compte plus.** Elle a des hommes debout, donc elle
+    etait comptee intacte : une bataille ou les douze unites alliees ont rompu
+    rendait « 100 % de forces restantes ». Le chiffre par lequel le projet se
+    juge annoncait une armee entiere la ou il ne restait personne au combat.
+
+    **On mesure une force, pas un compte d'unites.** La simulation somme des
+    points de vie ; compter des unites ici rendait les deux chiffres etrangers
+    l'un a l'autre alors que tout le projet les compare.
+    """
+    if state is None or not initial:
         return 0.0
-    vivantes = sum(1 for unite in getattr(state, side) if unite.alive)
-    return min(1.0, vivantes / initial)
+    # Le denominateur porte sur **toutes** les unites vues, pas sur celles qui
+    # restent : le jeu retire une unite detruite de ses listes, et la compter
+    # seulement si elle est encore la rendrait toute perte invisible.
+    depart = sum(initial.values())
+    if depart <= 0.0:
+        return 0.0
+    reste = sum(
+        _unit_strength(unite)
+        for unite in getattr(state, side)
+        if unite.alive and not unite.routing and not unite.shattered
+    )
+    return min(1.0, reste / depart)
 
 
 def _fingerprint(state: ProbeBattleState | None) -> str:
