@@ -225,6 +225,26 @@ def finishing_value(candidate: UnitState) -> float:
     return (FINISHING_THRESHOLD - reste) / FINISHING_THRESHOLD
 
 
+def can_be_attacked(candidate: UnitState) -> bool:
+    """Le jeu acceptera-t-il un ordre d'attaque sur cette unite ?
+
+    **Une cible visible n'est pas forcement attaquable.** Le Lua refuse
+    `uc:attack_unit` quand `is_valid_target()` est faux, et ce drapeau reste faux
+    durablement pour certaines unites : trois ennemis l'ont ete 665, 644 et 644
+    fois sur deux batailles. Une unite lancee sur l'une d'elles recoit un refus
+    par seconde et ne fait rien du tout.
+
+    Le drapeau est absent hors du pont — au banc, en test — et son absence vaut
+    « attaquable » : c'est le seul defaut qui laisse l'agent jouer normalement
+    partout ou la question ne se pose pas.
+
+    On ne les rend pas invisibles pour autant : elles comptent toujours dans les
+    rapports de force et les barycentres. Elles sont sur le champ de bataille,
+    elles menacent — on ne peut simplement pas leur donner de coup.
+    """
+    return bool(candidate.metadata.get("targetable", True))
+
+
 def missile_range(unit: UnitState) -> float:
     """Portee de tir connue de l'unite, sinon valeur par defaut prudente."""
     value = unit.metadata.get("missile_range")
@@ -249,6 +269,21 @@ class Planner:
     #: La raison affichee le dit explicitement, pour qu'aucun compte rendu ne
     #: laisse croire que l'agent a choisi cette posture.
     forced_posture: Posture | None = None
+
+    #: Cible en cours pour chaque unite, tant qu'elle reste valable.
+    #:
+    #: **Sans cela, une unite ne termine jamais sa course.** Bataille
+    #: `a1274d62` : la cavalerie de choc a recu dix cibles de contournement
+    #: differentes en cent trente secondes — 1022, 1021, 1023, 1021, 1023,
+    #: 1022... — et a parcouru 1 944 metres quand le reste de l'armee en faisait
+    #: 500 a 800. Elle n'a acheve aucun contournement, est arrivee seule, et a
+    #: rompu la premiere a t=273 s, ouvrant la cascade qui a emporte les douze
+    #: unites alliees.
+    #:
+    #: La cause est que la cible etait rechoisie a chaque tour : les positions
+    #: bougent, le compte de saturation bouge, et le meilleur candidat change
+    #: pour trois fois rien. Une preference marginale ne vaut pas un demi-tour.
+    _commitments: dict[str, str] = field(default_factory=dict)
 
     #: Ce que l'IA du jeu recherche, appris en la regardant jouer.
     #:
@@ -342,6 +377,41 @@ class Planner:
 
     # --- selection de cible --------------------------------------------------
 
+    def committed_target(
+        self,
+        actor: UnitState,
+        state: BattleState,
+        *,
+        candidates: Sequence[UnitState],
+        assignments: Mapping[str, int] | None = None,
+    ) -> UnitState | None:
+        """Cible de `actor`, en gardant la precedente tant qu'elle tient.
+
+        Une unite lancee sur une cible y va jusqu'au bout. On n'abandonne que
+        pour une raison qui ne se retourne pas : la cible est morte, elle rompt,
+        ou le jeu refuse qu'on l'attaque.
+
+        **Tenir la cible hors du vivier de candidats est le coeur de la
+        correction.** Le vivier du contournement — tireurs adverses ni en
+        deroute ni au contact — change sans arret : un tireur pris a partie en
+        sort, se degage, y revient. En n'y regardant que la, on relancait la
+        cavalerie sur une autre cible a chaque battement, et elle n'arrivait
+        jamais. Une manoeuvre dure plus longtemps qu'un tour de boucle.
+        """
+        engagee = self._commitments.get(actor.id)
+        if engagee is not None:
+            tenue = next((item for item in state.enemies() if item.id == engagee), None)
+            if tenue is not None and not tenue.is_routing and can_be_attacked(tenue):
+                return tenue
+            self._commitments.pop(actor.id, None)
+
+        choisie = self.select_target(
+            actor, state, assignments=assignments, candidates=list(candidates)
+        )
+        if choisie is not None:
+            self._commitments[actor.id] = choisie.id
+        return choisie
+
     def focus_bonus(self, already: int) -> float:
         """Ce que vaut une cible deja prise a partie par `already` allies.
 
@@ -399,6 +469,10 @@ class Planner:
         Combine proximite, priorite de role, vulnerabilite et saturation. Le tir
         evite les melees en cours (risque de tirs allies) et les fuyards.
         """
+        # Une cible que le jeu refusera n'est pas une cible : la choisir
+        # immobilise l'unite jusqu'a la fin de la bataille.
+        if not can_be_attacked(candidate):
+            return float("-inf")
         distance = attacker.position.distance_2d(candidate.position)
         if for_missile:
             # Le tir choisit surtout selon la valeur de la cible : la distance
@@ -792,7 +866,9 @@ class Planner:
                 if enemy.role in RANGED_ROLES and not enemy.is_routing and not enemy.is_engaged
             ]
             if juicy and plan.posture is not Posture.DELAY:
-                target = self.select_target(rider, state, assignments=assignments, candidates=juicy)
+                target = self.committed_target(
+                    rider, state, candidates=juicy, assignments=assignments
+                )
                 if target is not None:
                     assignments[target.id] = assignments.get(target.id, 0) + 1
                     decisions.append(

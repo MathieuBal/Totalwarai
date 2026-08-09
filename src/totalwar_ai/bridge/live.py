@@ -191,6 +191,12 @@ class LiveSession:
     #: Volontairement courte : le joueur doit pouvoir reprendre une unite sans
     #: attendre, et un ordre perime vaut mieux qu'une unite confisquee.
     release_after_ms: int = 5000
+    #: Delai d'attente de l'accuse, en secondes.
+    #:
+    #: Court : savoir qu'un ordre a ete refuse vaut la peine, pas au prix d'un
+    #: tour de boucle perdu a l'attendre.
+    ack_timeout: float = 0.5
+    wait: Callable[[float], None] = time.sleep
     #: Derniere destination envoyee a chaque unite, pour ne pas la faire osciller.
     _last_destination: dict[str, Vector3] = field(default_factory=dict)
 
@@ -230,7 +236,7 @@ class LiveSession:
         translation = self.translator.translate(tour.actions, domaine)
         for action_type, motif in translation.untranslated:
             LOGGER.debug("action non traduite : %s (%s)", action_type.value, motif)
-        translation = self._drop_micro_moves(translation)
+        translation = self._drop_micro_moves(translation, domaine)
 
         prises = tuple(decision.explain() for decision in tour.decisions)
         refusees = tuple(decision.explain() for decision in tour.blocked)
@@ -245,7 +251,7 @@ class LiveSession:
 
         # Un seul message : deux commandes successives se perdraient, le
         # fichier etant remplace et relu toutes les 500 ms seulement.
-        self.bridge.send_orders(
+        commande = self.bridge.send_orders(
             translation.moves,
             translation.attacks,
             translation.halts,
@@ -257,9 +263,29 @@ class LiveSession:
             blocked=refusees,
             translation=translation,
             sent=translation.order_count,
+            refused=self._refusals(commande.sequence),
         )
 
-    def _drop_micro_moves(self, translation: Translation) -> Translation:
+    def _refusals(self, sequence: int) -> tuple[tuple[str, str], ...]:
+        """Ce que le jeu a refuse d'executer, et pourquoi.
+
+        **Ce mode ne lisait aucun accuse.** Un ordre refuse — cible devenue non
+        ciblable, groupe verrouille, unite reprise a la souris — ne laissait
+        aucune trace : le compte rendu annoncait « 3 attaque(s) » pour trois
+        ordres tombes dans le vide, et l'unite restait plantee sans que rien ne
+        le dise. Le Lua ne renvoie que le premier motif, ce qui suffit a savoir
+        qu'il faut regarder.
+
+        Ne bloque jamais la boucle : un accuse en retard vaut mieux qu'un tour
+        perdu a l'attendre.
+        """
+        ack = self.bridge.wait_for_ack(sequence, timeout=self.ack_timeout, sleep=self.wait)
+        if ack is None or (ack.accepted and not ack.error):
+            return ()
+        motif = ack.error or ack.status.value
+        return tuple((unit_id, motif) for unit_id in ack.refused_ids) or (("", motif),)
+
+    def _drop_micro_moves(self, translation: Translation, state: BattleState) -> Translation:
         """Ecarte les deplacements trop courts pour valoir un ordre.
 
         Sans cela une unite dont la destination se recalcule a chaque tour
@@ -267,13 +293,32 @@ class LiveSession:
         allers-retours. Une destination reellement nouvelle passe ; une
         correction de quelques metres est ignoree, et la memoire n'est pas
         mise a jour, pour que la derive lente finisse par franchir le seuil.
+
+        **Mais une unite qui n'est pas arrivee doit etre relancee.** Le jeu rend
+        la main au bout de `release_after_ms` — cinq secondes — et l'unite
+        s'arrete alors ou elle se trouve. Comme l'agent recalculait la meme
+        destination, il la jugeait deja envoyee et ne la renvoyait jamais :
+        l'armee restait plantee. Bataille `a1274d62` : douze deplacements a
+        t=3 s, puis **cent quatre-vingt-dix secondes sans un ordre**, jusqu'a ce
+        que l'operateur deplace une unite a la souris — ce qui decalait sa
+        position et faisait enfin franchir le seuil a la destination recalculee.
+
+        La memoire ne sert donc qu'a taire les corrections **d'une unite deja
+        arrivee**. Tant qu'elle est loin de son point, on repete l'ordre.
         """
         gardes: list[tuple[str, Vector3]] = []
         for unit_id, point in translation.moves:
             precedente = self._last_destination.get(unit_id)
             if precedente is not None and precedente.distance_2d(point) < MIN_REORDER_DISTANCE:
-                LOGGER.debug("deplacement ignore pour %s : trop proche du precedent", unit_id)
-                continue
+                unite = state.unit(unit_id)
+                arrivee = (
+                    unite is not None
+                    and unite.position.distance_2d(precedente) < MIN_REORDER_DISTANCE
+                )
+                if arrivee:
+                    LOGGER.debug("deplacement ignore pour %s : deja sur place", unit_id)
+                    continue
+                LOGGER.debug("deplacement repete pour %s : pas encore arrivee", unit_id)
             self._last_destination[unit_id] = point
             gardes.append((unit_id, point))
 

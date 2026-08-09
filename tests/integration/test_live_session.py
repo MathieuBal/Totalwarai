@@ -920,3 +920,75 @@ def test_le_pilotage_renonce_proprement_si_la_bataille_ne_vient_pas(tmp_path: Pa
         horloge["t"] += 1.0
 
     assert _await_battle(bridge, patience=0.0, sleep=dormir) is None
+
+
+def test_le_pilotage_rend_compte_des_ordres_refuses(bataille: Probe, tmp_path: Path) -> None:
+    """**Ce mode ne lisait aucun accuse.**
+
+    Un ordre refuse ne laissait aucune trace : le compte rendu annoncait « 3
+    attaque(s) » pour trois ordres tombes dans le vide, et l'unite restait
+    plantee sans que rien ne le dise a l'operateur.
+    """
+    from totalwar_ai.bridge.live import LiveSession
+    from totalwar_ai.config import load_config
+
+    bridge = FileBridge.open(tmp_path).tail()
+    session = LiveSession(
+        bridge=bridge,
+        agent=DeterministicTacticalAgent.from_config(load_config(data_dir=tmp_path)),
+        wait=lambda _: bataille.advance(600),
+    )
+    bataille.advance(1200)
+
+    # Toutes nos unites deviennent intouchables : le vrai Lua refusera chaque
+    # ordre avec « unite non controlable ».
+    for unite in ARMEE:
+        bataille.make_uncontrollable(unite[0])
+
+    etape = session.step()
+
+    assert etape.sent, "aucun ordre emis : le test ne prouverait rien"
+    assert etape.refused, "un ordre refuse par le jeu est passe inapercu"
+    assert "refusee(s) par le jeu" in etape.summary()
+
+
+def test_une_unite_qui_n_est_pas_arrivee_est_relancee(bataille: Probe, tmp_path: Path) -> None:
+    """**Le defaut qui a immobilise l'armee pendant trois minutes.**
+
+    Le jeu rend la main au bout de cinq secondes et l'unite s'arrete ou elle se
+    trouve. L'agent recalculait la meme destination, la jugeait deja envoyee, et
+    ne la renvoyait jamais. Bataille `a1274d62` : douze deplacements a t=3 s,
+    puis cent quatre-vingt-dix secondes sans un ordre, jusqu'a ce que
+    l'operateur deplace une unite a la souris.
+    """
+    from totalwar_ai.bridge.live import MIN_REORDER_DISTANCE, LiveSession
+    from totalwar_ai.bridge.orders import Translation
+    from totalwar_ai.config import load_config
+    from totalwar_ai.domain.geometry import Vector3
+
+    bridge = FileBridge.open(tmp_path).tail()
+    session = LiveSession(
+        bridge=bridge,
+        agent=DeterministicTacticalAgent.from_config(load_config(data_dir=tmp_path)),
+        wait=lambda _: bataille.advance(600),
+    )
+    bataille.advance(1200)
+    etat = bridge.latest_battle_state()
+    assert etat is not None
+    domaine = etat.to_battle_state("test")
+
+    unite = domaine.allies()[0]
+    loin = Vector3(unite.position.x, 0.0, unite.position.z + 500.0)
+    ordre = Translation(moves=((unite.id, loin),))
+
+    # Premier envoi : rien a taire.
+    assert session._drop_micro_moves(ordre, domaine).moves
+
+    # L'unite n'a pas bouge : le meme ordre doit repartir.
+    repete = session._drop_micro_moves(ordre, domaine)
+    assert repete.moves, "l'unite immobile n'a jamais recu son ordre une seconde fois"
+
+    # Une fois sur place, on cesse de la harceler.
+    arrivee = Vector3(unite.position.x, 0.0, unite.position.z + MIN_REORDER_DISTANCE / 2)
+    session._last_destination[unite.id] = arrivee
+    assert not session._drop_micro_moves(Translation(moves=((unite.id, arrivee),)), domaine).moves

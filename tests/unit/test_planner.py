@@ -11,6 +11,7 @@ from totalwar_ai.agent.planner import (
     Planner,
     PlannerSettings,
     Posture,
+    can_be_attacked,
     finishing_value,
     lateral_of,
 )
@@ -464,3 +465,108 @@ def test_deux_allies_deja_engages_attirent_le_troisieme(make_unit, make_battle) 
 
     choix = Planner().select_target(attaquant, etat, assignments={"e_prise": 2})
     assert choix is prise
+
+
+def test_une_cible_que_le_jeu_refusera_n_est_pas_choisie(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """**Sinon l'unite reste plantee toute la bataille.** Le Lua refuse
+    `uc:attack_unit` quand `is_valid_target()` est faux, et ce drapeau reste faux
+    durablement : trois ennemis l'ont ete 665, 644 et 644 fois sur deux batailles.
+    Une unite lancee sur l'une d'elles recoit un refus par seconde."""
+    attaquant = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0)
+    interdite = make_unit(
+        "e_interdite", Side.ENEMY, UnitRole.ARTILLERY, 20.0, metadata={"targetable": False}
+    )
+    atteignable = make_unit("e_ok", Side.ENEMY, UnitRole.MELEE_INFANTRY, 150.0)
+    etat = make_battle([attaquant, interdite, atteignable])
+
+    # L'artillerie toute proche serait le choix evident sans ce garde-fou.
+    assert Planner().select_target(attaquant, etat) is atteignable
+
+
+def test_l_absence_du_drapeau_vaut_attaquable(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Hors du pont — au banc, en test — la question ne se pose pas."""
+    cible = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY)
+
+    assert can_be_attacked(cible)
+
+
+def test_une_cible_interdite_compte_toujours_dans_le_rapport_de_forces(  # type: ignore[no-untyped-def]
+    make_unit, make_battle
+) -> None:
+    """Elle est sur le champ de bataille et elle menace : on ne peut simplement
+    pas lui donner de coup."""
+    etat = make_battle(
+        [
+            make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0),
+            make_unit(
+                "e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 20.0, metadata={"targetable": False}
+            ),
+        ]
+    )
+
+    assert len(etat.enemies()) == 1
+
+
+# --- tenir sa cible : une manoeuvre dure plus qu'un tour de boucle -------------
+
+
+def test_la_cavalerie_garde_sa_cible_quand_celle_ci_entre_en_melee(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """**Le defaut qui a perdu la bataille `a1274d62`.**
+
+    Le vivier du contournement — tireurs adverses ni en deroute ni au contact —
+    change sans arret. La cavalerie a recu dix cibles differentes en cent trente
+    secondes, parcouru 1 944 m contre 500 a 800 m pour le reste de l'armee,
+    n'a acheve aucun contournement, et a rompu la premiere.
+    """
+    planificateur = Planner()
+    cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, 0.0)
+    premiere = make_unit("e_arc1", Side.ENEMY, UnitRole.RANGED_INFANTRY, 200.0)
+    seconde = make_unit("e_arc2", Side.ENEMY, UnitRole.RANGED_INFANTRY, 30.0)
+
+    libre = make_battle([cavalier, premiere, seconde])
+    choisie = planificateur.committed_target(cavalier, libre, candidates=[premiere])
+    assert choisie is premiere
+
+    # La cible entre en melee : elle quitte le vivier, mais la course continue.
+    au_contact = make_unit("e_arc1", Side.ENEMY, UnitRole.RANGED_INFANTRY, 200.0, is_engaged=True)
+    etat = make_battle([cavalier, au_contact, seconde])
+    tenue = planificateur.committed_target(cavalier, etat, candidates=[seconde])
+
+    assert tenue is not None and tenue.id == "e_arc1", "la cavalerie a change de cible en route"
+
+
+def test_une_cible_qui_rompt_libere_l_engagement(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """On n'abandonne que pour une raison qui ne se retourne pas."""
+    planificateur = Planner()
+    cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, 0.0)
+    premiere = make_unit("e_arc1", Side.ENEMY, UnitRole.RANGED_INFANTRY, 200.0)
+    seconde = make_unit("e_arc2", Side.ENEMY, UnitRole.RANGED_INFANTRY, 30.0)
+
+    planificateur.committed_target(
+        cavalier, make_battle([cavalier, premiere, seconde]), candidates=[premiere]
+    )
+
+    en_fuite = make_unit("e_arc1", Side.ENEMY, UnitRole.RANGED_INFANTRY, 200.0, is_routing=True)
+    etat = make_battle([cavalier, en_fuite, seconde])
+    suivante = planificateur.committed_target(cavalier, etat, candidates=[seconde])
+
+    assert suivante is seconde
+
+
+def test_une_cible_devenue_inattaquable_libere_l_engagement(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Sinon l'unite reste engagee sur une cible que le jeu refusera toujours."""
+    planificateur = Planner()
+    cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, 0.0)
+    premiere = make_unit("e_arc1", Side.ENEMY, UnitRole.RANGED_INFANTRY, 200.0)
+    seconde = make_unit("e_arc2", Side.ENEMY, UnitRole.RANGED_INFANTRY, 30.0)
+
+    planificateur.committed_target(
+        cavalier, make_battle([cavalier, premiere, seconde]), candidates=[premiere]
+    )
+
+    interdite = make_unit(
+        "e_arc1", Side.ENEMY, UnitRole.RANGED_INFANTRY, 200.0, metadata={"targetable": False}
+    )
+    etat = make_battle([cavalier, interdite, seconde])
+
+    assert planificateur.committed_target(cavalier, etat, candidates=[seconde]) is seconde
