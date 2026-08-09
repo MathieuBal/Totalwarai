@@ -76,6 +76,14 @@ class LiveStep:
     observed: tuple[ProbeBattleState, ...] = ()
     #: Ce que notre agent aurait decide, sans que rien ne parte vers le jeu.
     shadow: ShadowDecision | None = None
+    #: Ordres que l'agent a tus parce qu'il les jugeait deja en cours.
+    #:
+    #: **Se dit, sinon la paralysie est muette.** Une armee immobilisee par
+    #: l'anti-repetition affichait « rien a faire » tour apres tour, exactement
+    #: comme une armee qui n'a effectivement rien a faire — l'operateur a joue
+    #: sept cents secondes a la place de l'agent sans qu'aucune ligne ne le
+    #: signale.
+    suppressed: int = 0
     #: Unites que le jeu a **refuse** de rendre ou de reprendre, avec le motif.
     #:
     #: Une supervision qui ne lit pas les accuses croit avoir agi : constate en
@@ -125,6 +133,8 @@ class LiveStep:
             detail.append(f"{len(self.returned)} rendue(s) a l'IA du jeu")
         if self.refused:
             detail.append(f"{len(self.refused)} refusee(s) par le jeu")
+        if self.suppressed:
+            detail.append(f"{self.suppressed} deja en cours")
 
         return f"{entete} — " + (", ".join(detail) if detail else "rien a faire")
 
@@ -247,6 +257,7 @@ class LiveSession:
                 decisions=prises,
                 blocked=refusees,
                 translation=translation,
+                suppressed=tour.suppressed,
             )
 
         # Un seul message : deux commandes successives se perdraient, le
@@ -263,6 +274,7 @@ class LiveSession:
             blocked=refusees,
             translation=translation,
             sent=translation.order_count,
+            suppressed=tour.suppressed,
             refused=self._refusals(commande.sequence),
         )
 

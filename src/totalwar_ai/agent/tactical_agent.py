@@ -86,7 +86,24 @@ class DeterministicTacticalAgent:
     plan: BattlePlan | None = None
     doctrine: DoctrineProfile = field(default_factory=DoctrineProfile)
     _last_decision_time: float | None = None
+    #: Duree pendant laquelle un ordre deja envoye vaut encore, en secondes.
+    #:
+    #: **Sans expiration, l'armee s'immobilise.** Le jeu rend la main sur chaque
+    #: unite au bout de cinq secondes ; celle-ci s'arrete alors ou elle se
+    #: trouve, sans avoir atteint son point. Le planificateur repropose le meme
+    #: deplacement, qui est ecarte comme doublon — et l'unite ne repart jamais.
+    #:
+    #: Mesure en bataille : `51eed1bc`, douze deplacements a t=3 s puis **trente
+    #: ordres en sept cents secondes**, l'operateur ayant du jouer a la place de
+    #: l'agent. Un ordre repete est un defaut de journal ; une armee qui ne bouge
+    #: plus est une bataille perdue.
+    #:
+    #: Six secondes : un peu plus que la fenetre du jeu, pour ne pas renvoyer un
+    #: ordre encore en cours d'execution.
+    order_ttl: float = 6.0
     _active_signatures: dict[str, tuple[Any, ...]] = field(default_factory=dict, repr=False)
+    #: Instant du dernier envoi de chaque signature, pour la faire expirer.
+    _signature_time: dict[str, float] = field(default_factory=dict, repr=False)
     _blocked_signatures: set[tuple[Any, ...]] = field(default_factory=set, repr=False)
 
     @classmethod
@@ -119,6 +136,7 @@ class DeterministicTacticalAgent:
         self.plan = None
         self._last_decision_time = None
         self._active_signatures.clear()
+        self._signature_time.clear()
         self._blocked_signatures.clear()
         self.safety.reset()
 
@@ -194,7 +212,7 @@ class DeterministicTacticalAgent:
         # Ordre volontaire : securite -> anti-repetition -> limite de debit.
         # Le budget d'ordres par minute ne doit jamais etre consomme par des
         # ordres redondants ou par des actions deja refusees.
-        kept, suppressed = self._drop_duplicates(outcome.allowed)
+        kept, suppressed = self._drop_duplicates(outcome.allowed, state.game_time)
         throttled = self.safety.throttle(kept, state.game_time)
         blocked, repeated = self._drop_repeated_blocks(outcome.blocked)
 
@@ -253,21 +271,31 @@ class DeterministicTacticalAgent:
 
     # --- anti-repetition -----------------------------------------------------
 
-    def _drop_duplicates(self, decisions: Sequence[Decision]) -> tuple[list[Decision], int]:
-        """Supprime les ordres identiques a ceux deja actifs.
+    def _drop_duplicates(
+        self, decisions: Sequence[Decision], game_time: float
+    ) -> tuple[list[Decision], int]:
+        """Supprime les ordres identiques a ceux **encore en cours**.
 
         Re-envoyer sans cesse le meme ordre est penalise (`unnecessary_order_change`)
         et brouille la lecture des journaux.
+
+        **Mais un ordre ne reste pas actif indefiniment.** Le jeu rend la main sur
+        chaque unite au bout de quelques secondes, et elle s'arrete alors sans
+        avoir atteint son point. Une signature retenue pour toujours transformait
+        cette anti-repetition en paralysie : le planificateur reproposait le bon
+        deplacement a chaque cycle, et il etait ecarte a chaque fois.
         """
         kept: list[Decision] = []
         suppressed = 0
         for decision in decisions:
             signature = decision.action.signature()
             key = ",".join(sorted(decision.action.actor_ids))
-            if self._active_signatures.get(key) == signature:
+            depuis = game_time - self._signature_time.get(key, float("-inf"))
+            if self._active_signatures.get(key) == signature and depuis < self.order_ttl:
                 suppressed += 1
                 continue
             self._active_signatures[key] = signature
+            self._signature_time[key] = game_time
             kept.append(decision)
         return kept, suppressed
 
