@@ -33,7 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from totalwar_ai.domain.battle_state import BattleState
-from totalwar_ai.domain.unit_state import Side, UnitRole, UnitState
+from totalwar_ai.domain.unit_state import Side
 
 #: Duree d'une tranche, en secondes de jeu. Meme decoupage que `concentration`.
 SLICE_SECONDS = 60.0
@@ -188,11 +188,6 @@ class Elevation:
         return "\n".join(lignes)
 
 
-def _flies(unit: UnitState) -> bool:
-    """L'unite est-elle en vol ? Son altitude ne renseigne alors pas le sol."""
-    return unit.role is UnitRole.FLYING_UNIT or "flying" in unit.tags
-
-
 def study(states: Iterable[BattleState]) -> Elevation:
     """L'ecart d'altitude entre les deux lignes, etat par etat.
 
@@ -207,7 +202,7 @@ def study(states: Iterable[BattleState]) -> Elevation:
             altitudes[camp] = [
                 unite.position.y
                 for unite in etat.side_units(camp)
-                if unite.is_alive and not _flies(unite)
+                if unite.is_alive and not unite.is_airborne
             ]
         if not altitudes[Side.ALLY] or not altitudes[Side.ENEMY]:
             continue

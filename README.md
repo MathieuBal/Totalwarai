@@ -108,8 +108,10 @@ la bataille** une fois l'armée confiée. Le Lua acquitte, le harnais Lua embarq
 couvre — mais un ordre acquitté n'est pas un ordre exécuté.
 
 Ce que le jeu **ne** donne pas, vérifié accesseur par accesseur : ni moral, ni
-fatigue, ni vitesse, ni largeur de front, ni la moindre donnée de terrain. Le
-détail est dans [`docs/feasibility.md`](docs/feasibility.md).
+fatigue, ni vitesse, ni largeur de front. Du terrain, il donne **l'altitude** —
+sous chaque unité, et en tout point de la carte via `v_to_ground` — mais ni
+obstacles, ni forêts, ni lignes de vue. Le détail est dans
+[`docs/feasibility.md`](docs/feasibility.md).
 
 ### Cinq façons de jouer une bataille
 
@@ -281,6 +283,13 @@ parmi les charges, la règle de sécurité comparait notre force autour de la ci
 l'arrêt toute la phase d'approche. Une cible de flanc se juge désormais sur son
 escorte immédiate, la charge frontale sur tout son voisinage
 ([`docs/decisions/0013`](docs/decisions/0013-un-contournement-n-est-pas-une-charge-frontale.md)).
+
+Il dit aussi **qui tenait la hauteur**. L'altitude est la seule donnée de terrain
+que le jeu fournit ; elle circulait depuis toujours sans qu'aucune décision ne la
+lise. La mesure a montré que l'agent **arrivait au contact en contrebas** dans ses
+deux batailles — −5,25 m et −6,46 m sur des cartes offrant vingt-deux et quinze
+mètres de relief. Le choix de cible et le seuil de charge en tiennent désormais
+compte ([`docs/decisions/0014`](docs/decisions/0014-tenir-la-hauteur.md)).
 
 Il ajoute ensuite **ce que nos dégâts ont acheté**. En jeu, l'agent avait retiré
 9,77 et 5,30 unités-équivalent de points de vie — de quoi abattre dix régiments —

@@ -29,6 +29,24 @@ from totalwar_ai.domain.unit_state import (
 #: Actions toujours autorisees pour une unite en danger : elles l'en sortent.
 ESCAPE_ACTIONS: frozenset[ActionType] = frozenset({ActionType.RETREAT, ActionType.DISENGAGE})
 
+#: Denivele a partir duquel la securite considere la pente comme adverse.
+#:
+#: **Ces seuils sont ceux de la securite, pas ceux du planificateur.** Ils valent
+#: aujourd'hui la meme chose que `planner.SLOPE_THRESHOLD` et
+#: `planner.SLOPE_SATURATION`, et c'est un hasard heureux plutot qu'un lien : le
+#: filet doit pouvoir juger seul, sans quoi remplacer le planificateur par un
+#: modele appris emporterait les garde-fous avec lui.
+UPHILL_THRESHOLD = 3.0
+UPHILL_SATURATION = 15.0
+
+#: Exigence supplementaire quand la charge se fait en pente franchement adverse.
+#:
+#: Une charge en montee reclame la moitie de force en plus. Choisi modeste a
+#: dessein : le denivele modifie une melee, il ne la decide pas, et une exigence
+#: trop haute reproduirait le defaut que l'ADR 0013 vient de corriger — une regle
+#: de securite qui interdit la manoeuvre au lieu de la borner.
+UPHILL_DEMAND = 1.5
+
 
 @dataclass(frozen=True, slots=True)
 class SafetySettings:
@@ -203,6 +221,26 @@ class SuicidalChargeRule(SafetyRule):
         self.radius = radius
         self.flank_radius = flank_radius
 
+    @staticmethod
+    def _uphill_penalty(attackers: Sequence[UnitState], target: UnitState) -> float:
+        """Facteur applique au seuil quand on charge vers le haut.
+
+        Vaut 1 a plat et jusqu'a `UPHILL_DEMAND` en pente franche : il faut alors
+        etre nettement plus fort pour que la charge soit acceptee. Ne descend
+        jamais sous 1 — charger vers le bas est un avantage, pas une permission
+        d'attaquer en inferiorite.
+
+        Les unites en vol sont ignorees : leur altitude est celle de leur vol.
+        """
+        au_sol = [unit for unit in attackers if not unit.is_airborne]
+        if not au_sol or target.is_airborne:
+            return 1.0
+        montee = target.position.y - min(unit.position.y for unit in au_sol)
+        if montee < UPHILL_THRESHOLD:
+            return 1.0
+        part = min(1.0, (montee - UPHILL_THRESHOLD) / (UPHILL_SATURATION - UPHILL_THRESHOLD))
+        return 1.0 + part * (UPHILL_DEMAND - 1.0)
+
     def check(self, action: AgentAction, state: BattleState, rear: Vector3) -> SafetyVerdict | None:
         if not action.is_charge:
             return None
@@ -234,14 +272,20 @@ class SuicidalChargeRule(SafetyRule):
         )
         if hostile <= 1e-6:
             return None
+        # **Monter coute, et le seuil doit en tenir compte.** Charger en pente
+        # adverse, c'est arriver essouffle sur un ennemi qui frappe de haut : le
+        # rapport de forces qui suffisait a plat ne suffit plus. Mesure en jeu :
+        # l'agent est arrive au contact a -5,25 m et -6,46 m dans ses deux
+        # batailles, sans jamais que rien ne l'en avertisse.
+        exige = self.min_ratio * self._uphill_penalty(attackers, target)
         ratio = friendly / hostile
-        if ratio >= self.min_ratio:
+        if ratio >= exige:
             return None
         return SafetyVerdict(
             rule=self.name,
             reason=(
                 f"rapport de forces local defavorable autour de {target.id} "
-                f"({ratio:.2f} < {self.min_ratio:.2f})"
+                f"({ratio:.2f} < {exige:.2f})"
             ),
             # On tient la ligne plutot que de se replier : reculer ouvrirait le front.
             replacement=AgentAction(

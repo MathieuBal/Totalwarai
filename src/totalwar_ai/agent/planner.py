@@ -120,6 +120,32 @@ FOCUS_CROWDING = 0.20
 #: deja.
 ROUTING_PENALTY = 0.20
 
+#: Denivele au-dela duquel une cible est franchement plus haute ou plus basse.
+#:
+#: Meme seuil que `learning.elevation.COMMANDING_HEIGHT` : en deca, on ne
+#: distingue pas une pente d'un terrain plat, et un agent qui prefererait une
+#: cible pour vingt centimetres de denivele choisirait sur du bruit.
+SLOPE_THRESHOLD = 3.0
+
+#: Denivele a partir duquel la pente pese de tout son poids.
+#:
+#: Au-dela, elle ne pese pas davantage : une falaise n'est pas douze fois pire
+#: qu'un talus, elle est simplement infranchissable — et le planificateur n'a pas
+#: a modeliser cela, la distance s'en charge.
+SLOPE_SATURATION = 15.0
+
+#: Poids de la pente dans le choix d'une cible de melee.
+#:
+#: **Mesure sur les deux batailles reelles** : l'agent est arrive au contact en
+#: contrebas dans les deux cas, -5,25 m et -6,46 m, sur des cartes offrant vingt-
+#: deux et quinze metres de relief entre les deux lignes. Il ne choisissait pas
+#: mal la pente : il ne la voyait pas, aucune decision ne lisant l'altitude.
+#:
+#: Volontairement plus faible que la concentration : le denivele modifie une
+#: melee, le nombre la decide. Une cible en contrebas ne vaut jamais de traverser
+#: le champ pour l'atteindre.
+SLOPE_WEIGHT = 0.40
+
 
 class Posture(StrEnum):
     """Intention generale de la bataille."""
@@ -223,6 +249,26 @@ def finishing_value(candidate: UnitState) -> float:
     if reste >= FINISHING_THRESHOLD:
         return 0.0
     return (FINISHING_THRESHOLD - reste) / FINISHING_THRESHOLD
+
+
+def slope_advantage(attacker: UnitState, candidate: UnitState) -> float:
+    """Avantage de pente a charger `candidate`, dans [-1, 1].
+
+    Positif quand la cible est **en contrebas** — on descend sur elle — negatif
+    quand il faut monter. Nul en deca de `SLOPE_THRESHOLD`, ou la pente ne se
+    distingue pas d'un terrain plat.
+
+    **Aucune unite en vol des deux cotes.** L'altitude d'une unite qui vole est
+    celle de son vol : une volante a deux cents metres n'attaque pas « depuis la
+    hauteur », et lui accorder un avantage de pente serait une pure erreur de
+    lecture. C'est la lecon que `learning/elevation.py` a apprise en premier.
+    """
+    if attacker.is_airborne or candidate.is_airborne:
+        return 0.0
+    denivele = attacker.position.y - candidate.position.y
+    if abs(denivele) < SLOPE_THRESHOLD:
+        return 0.0
+    return max(-1.0, min(1.0, denivele / SLOPE_SATURATION))
 
 
 def can_be_attacked(candidate: UnitState) -> bool:
@@ -484,6 +530,8 @@ class Planner:
             score = 2.0 / (1.0 + distance / 25.0) + self.target_value(attacker.role, candidate.role)
             # Concentrer : ne pas ouvrir une melee que l'on perdra localement.
             score += CONCENTRATION_WEIGHT * self.local_balance(attacker, candidate, state)
+            # Descendre sur l'ennemi plutot que de monter vers lui.
+            score += SLOPE_WEIGHT * slope_advantage(attacker, candidate)
         score += 0.30 * (1.0 - candidate.effective_strength)
         # Achever ce qui est deja entame, au lieu d'entamer autre chose.
         score += FINISHING_WEIGHT * finishing_value(candidate)

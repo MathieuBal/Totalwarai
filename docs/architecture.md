@@ -319,6 +319,19 @@ aucun. `finishing_value` et `Planner.focus_bonus` corrigent le choix de cible �
 achever ce qui est entamé, renforcer ce qu'on est en train de faire tomber
 ([`decisions/0012`](decisions/0012-achever-plutot-qu-egratigner.md)).
 
+### L'altitude, seule donnée de terrain
+
+`learning/elevation.py` mesure l'écart de hauteur entre les deux lignes, volantes
+exclues et sur la **médiane** — un seigneur volant échappe au filtre et une
+moyenne y perdrait treize mètres. Le verdict porte sur la phase d'approche : une
+fois au contact, la hauteur est subie, et les fuyards qui refluent la font
+remonter sans que personne l'ait voulu.
+
+Côté décision, `Planner.slope_advantage` et le durcissement de seuil de
+`SuicidalChargeRule` en tirent parti. Le banc ne peut rien en dire — son monde est
+plat, ce qui est vérifié et non suppose
+([`decisions/0014`](decisions/0014-tenir-la-hauteur.md)).
+
 ### Le banc doit d'abord être reproductible
 
 La mêlée du simulateur appliquait ses dégâts dans l'ordre d'itération d'un

@@ -338,3 +338,71 @@ def test_un_contournement_dans_la_masse_reste_refuse(make_unit, make_battle) -> 
     assert verdict is not None
     assert verdict.replacement is not None
     assert verdict.replacement.type is ActionType.HOLD_POSITION
+
+
+def _perche(unit_id: str, side: Side, role: UnitRole, x: float, altitude: float):  # type: ignore[no-untyped-def]
+    """La fabrique partagee pose toujours l'altitude a zero."""
+    from totalwar_ai.domain.unit_state import UnitState
+
+    return UnitState(id=unit_id, side=side, role=role, position=Vector3(x, altitude, 0.0))
+
+
+def test_charger_en_montee_exige_plus_de_force(make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Arriver essouffle sur un ennemi qui frappe de haut n'est pas la meme
+    chose qu'un choc a plat : le seuil qui suffisait a plat ne suffit plus."""
+    regle = SuicidalChargeRule(min_ratio=0.6, radius=60.0, flank_radius=35.0)
+
+    def etat(altitude_cible: float):  # type: ignore[no-untyped-def]
+        return make_battle(
+            [
+                _perche("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0, 40.0),
+                _perche("a2", Side.ALLY, UnitRole.MELEE_INFANTRY, 15.0, 40.0),
+                _perche("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 30.0, altitude_cible),
+                _perche("e2", Side.ENEMY, UnitRole.MELEE_INFANTRY, 45.0, altitude_cible),
+                _perche("e3", Side.ENEMY, UnitRole.MELEE_INFANTRY, 55.0, altitude_cible),
+            ]
+        )
+
+    action = AgentAction(
+        type=ActionType.ATTACK_TARGET, actor_ids=("a1", "a2"), parameters={"target_id": "e1"}
+    )
+
+    # A plat, deux contre trois passe : le rapport vaut 0,67 pour un seuil de 0,6.
+    assert regle.check(action, etat(40.0), REAR) is None
+    # Vingt metres plus haut, la meme charge est refusee.
+    assert regle.check(action, etat(60.0), REAR) is not None
+
+
+def test_charger_vers_le_bas_n_assouplit_pas_le_seuil(make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Descendre est un avantage, pas une permission d'attaquer en inferiorite."""
+    regle = SuicidalChargeRule(min_ratio=0.6, radius=60.0, flank_radius=35.0)
+    state = make_battle(
+        [
+            _perche("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0, 80.0),
+            _perche("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 30.0, 40.0),
+            _perche("e2", Side.ENEMY, UnitRole.MELEE_INFANTRY, 40.0, 40.0),
+            _perche("e3", Side.ENEMY, UnitRole.MELEE_INFANTRY, 50.0, 40.0),
+            _perche("e4", Side.ENEMY, UnitRole.MELEE_INFANTRY, 55.0, 40.0),
+        ]
+    )
+    action = AgentAction(
+        type=ActionType.ATTACK_TARGET, actor_ids=("a1",), parameters={"target_id": "e1"}
+    )
+
+    assert regle.check(action, state, REAR) is not None
+
+
+def test_une_volante_ne_charge_ni_en_montee_ni_en_descente(make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Son altitude est celle de son vol : la pente ne la concerne pas."""
+    from totalwar_ai.domain.unit_state import UnitState
+
+    volante = UnitState(
+        id="a_vol",
+        side=Side.ALLY,
+        role=UnitRole.FLYING_UNIT,
+        position=Vector3(0.0, 200.0, 0.0),
+        tags=("flying",),
+    )
+    cible = _perche("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 30.0, 40.0)
+
+    assert SuicidalChargeRule._uphill_penalty([volante], cible) == 1.0
