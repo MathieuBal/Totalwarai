@@ -275,6 +275,13 @@ des mêlées livrées en infériorité locale, avec des pics à 2 et 3 contre 1 
 moment de la chute, alors que le rapport global n'était que de 1,2 contre nous
 ([`docs/decisions/0010`](docs/decisions/0010-concentrer-plutot-que-decrocher.md)).
 
+Le contournement, lui, était **structurellement interdit** : `FLANK` étant classé
+parmi les charges, la règle de sécurité comparait notre force autour de la cible
+à la ligne adverse entière — trente-cinq refus en une seule bataille, cavalerie à
+l'arrêt toute la phase d'approche. Une cible de flanc se juge désormais sur son
+escorte immédiate, la charge frontale sur tout son voisinage
+([`docs/decisions/0013`](docs/decisions/0013-un-contournement-n-est-pas-une-charge-frontale.md)).
+
 Il ajoute ensuite **ce que nos dégâts ont acheté**. En jeu, l'agent avait retiré
 9,77 et 5,30 unités-équivalent de points de vie — de quoi abattre dix régiments —
 en n'en détruisant **aucun**, les dégâts étalés sur dix-neuf des vingt régiments
