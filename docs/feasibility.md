@@ -244,11 +244,11 @@ Ces deux manques ne sont pas des bogues à corriger : ce sont des contraintes du
 terrain. Ils devront être reportés dans les règles de l'agent avant tout
 pilotage réel, faute de quoi il déciderait sur des champs constamment vides.
 
-### Le terrain n'est pas une case fermée
+### Le terrain : ce qui est acquis, et ce qui reste à publier
 
-Ce document a longtemps porté « aucune donnée de terrain ». C'est vrai des
-accesseurs d'unité recensés, et **faux du reste** : deux voies n'avaient jamais
-été testées.
+Ce document a longtemps porté « aucune donnée de terrain ». C'était vrai des
+accesseurs d'unité recensés, et faux du reste : les deux voies non testées
+répondent toutes les deux.
 
 **L'altitude répond déjà.** `unit:position():get_y()` rend le relief sous chaque
 unité — entre 21 et 33 relevés en bataille dès l'essai n° 3. Elle était lue puis
@@ -256,17 +256,21 @@ jetée à l'enregistrement ; elle y est désormais conservée. Elle dit qui tien
 hauteur, ce que réclame toute doctrine d'artillerie, et accumulée sur des
 dizaines de batailles elle dessine le relief des cartes déjà jouées.
 
-**`v_to_ground` reste à trancher.** Notre propre code l'appelle à chaque ordre de
-déplacement pour poser une destination au sol. Si le vecteur qu'elle rend expose
-son `get_y()`, alors nous tenons une sonde d'altitude en **tout point de la
-carte**, et un relief complet devient calculable avant le premier coup de feu.
+**`v_to_ground` est tranchée : elle lit le relief.** Le recensement a relevé
+**14,9 à 40,9 m sur une croix de 300 m** — des valeurs qui diffèrent, donc une
+vraie sonde d'altitude en tout point de la carte, et non une constante. Un relief
+complet est calculable avant le premier coup de feu.
 
-La révision 13 pose la question : elle échantillonne une croix de cinq points
-autour d'une de nos unités et journalise les altitudes. **Des valeurs qui
-diffèrent prouveraient que la sonde lit le relief** ; des valeurs toutes
-identiques diraient qu'elle rend une constante, et ne servirait à rien. Contre
-le faux jeu elle rend zéro partout, ce qui est attendu — il ne modélise aucun
-relief.
+Deux réserves sur cet acquis. Le recensement **journalise sans publier** : ses
+valeurs ne vont que dans le journal du jeu, aucun message de protocole ne les
+transporte, et les exploiter demandera une nouvelle révision de la sonde. Et le
+faux jeu rend zéro partout, ce qui est attendu — il ne modélise aucun relief, et
+aucun test hors jeu ne pourra donc valider un relevé de grille.
+
+**Ce qui est déjà exploitable sans rien changer** : l'altitude sous chaque unité,
+publiée à chaque état. Elle a montré que l'agent arrivait au contact en contrebas
+dans ses deux batailles (-5,25 m et -6,46 m), et c'est sur elle que
+`learning/elevation.py` travaille.
 
 Ce que cela ne donnerait pas, même au mieux : ni obstacles, ni forêts, ni terrain
 infranchissable, ni lignes de vue. Le relief permet de les approcher, pas de les

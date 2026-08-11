@@ -253,7 +253,7 @@ pas disparaître parce qu'une nouvelle bataille commence.
 
 ### Apprendre en regardant jouer l'IA du moteur
 
-Notre agent ne verra jamais le terrain, le moral ni la fatigue — le recensement
+Notre agent ne verra jamais le moral ni la fatigue, et du terrain il ne connait que l'altitude — le recensement
 l'a établi accesseur par accesseur. Écrire des règles à la main contre un
 adversaire qui y voit a donc un plafond. La voie retenue est de **l'observer et
 d'apprendre ses décisions**.
