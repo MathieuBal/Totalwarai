@@ -569,11 +569,28 @@ class SimulationEnvironment:
         unit.heading = math.atan2(away.x, away.z)
 
     def _resolve_missiles(self, delta: float, events: list[Event]) -> None:
-        """Tir : portee, munitions, precision, penalite d'armure."""
+        """Tir : portee, munitions, precision, penalite d'armure.
+
+        **Une unite qui se replie continue de tirer**, et seul le contact la fait
+        taire. C'est une correction de fidelite, pas un avantage donne a l'agent :
+        `RETREAT` et `MOVE_GROUP` se traduisent par **la meme commande** vers le
+        jeu (`bridge.orders.OrderTranslator.destination_keys`), un simple
+        deplacement. Aucune bataille reelle ne peut donc distinguer les deux, et
+        le simulateur modelisait ici une difference qui n'existe pas.
+
+        Ce que cela coutait se mesure. Sur `balanced_clash`, l'agent gagnait en
+        trainant toute sa ligne de melee vers l'arriere : l'ennemi suivait, restait
+        sous le feu, et les archers vidaient leur carquois — 60 % des pertes
+        adverses etaient infligees **ligne hors contact**, munitions 2,00/2,00. Ce
+        repli n'etait pourtant voulu par personne : c'etait le cliquet de la
+        reserve. Le cliquet supprime, les archers se taisaient des qu'un ennemi
+        passait a soixante-dix metres et terminaient la bataille avec un quart de
+        leurs munitions — 1,53/2,00 — pour deux unites adverses de moins abattues.
+        """
         for unit in self.units.values():
             if unit.dead or unit.routing or not unit.template.is_ranged or unit.ammo <= 0:
                 continue
-            if unit.is_engaged or unit.order.kind is OrderKind.RETREAT:
+            if unit.is_engaged:
                 continue
             target = self.units.get(unit.order.target_id or "")
             if target is None or target.dead or target.side is unit.side:

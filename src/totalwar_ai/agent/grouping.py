@@ -7,6 +7,7 @@ recalcules a chaque plan, car les pertes changent la composition.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -99,11 +100,35 @@ class GroupSet:
         return {group.kind.value: list(group.unit_ids) for group in self.non_empty()}
 
 
-def build_groups(state: BattleState, *, side: Side = Side.ALLY, reserve_size: int = 0) -> GroupSet:
+def build_groups(
+    state: BattleState,
+    *,
+    side: Side = Side.ALLY,
+    reserve_size: int = 0,
+    reserve_ids: Collection[str] = (),
+) -> GroupSet:
     """Repartit les unites d'un camp en groupes tactiques.
 
     `reserve_size` retire du front les unites les plus fraiches pour constituer
     une reserve : c'est la doctrine, pas la composition, qui en decide.
+
+    `reserve_ids` nomme les unites **deja** en reserve, et elles y restent tant
+    qu'elles sont disponibles. Seules les places vacantes se pourvoient a la
+    fraicheur.
+
+    .. rubric:: Pourquoi la fraicheur ne peut pas decider seule
+
+    `effective_strength` inclut la fatigue, et le simple fait de se replier en
+    coute. L'unite envoyee en reserve reculait de soixante metres, se fatiguait
+    par ce seul recul, repassait derriere une unite de ligne restee immobile —
+    et se faisait remplacer au plan suivant. Le critere de selection eliminait
+    donc exactement celui qu'il venait de choisir.
+
+    Mesure sur `skirmish_standoff`, face a un ennemi qui n'avance jamais : **119
+    changements de composition** en 1201 plans, entre les quatre memes unites.
+    Chaque rotation ramenait l'unite repliee dans une ligne elle-meme reculee et
+    en envoyait une autre derriere — l'ancre a recule de 198 m et l'infanterie a
+    parcouru 300 m **en s'eloignant** de l'ennemi.
     """
     buckets: dict[GroupKind, list[str]] = {kind: [] for kind in GroupKind}
     for unit in state.side_units(side, available_only=True):
@@ -111,14 +136,24 @@ def build_groups(state: BattleState, *, side: Side = Side.ALLY, reserve_size: in
         buckets[kind].append(unit.id)
 
     if reserve_size > 0 and len(buckets[GroupKind.FRONT_LINE]) > reserve_size:
+        ligne = set(buckets[GroupKind.FRONT_LINE])
         line_units = [
-            unit
-            for unit in state.side_units(side, available_only=True)
-            if unit.id in set(buckets[GroupKind.FRONT_LINE])
+            unit for unit in state.side_units(side, available_only=True) if unit.id in ligne
         ]
-        # Les unites les plus intactes font la meilleure reserve.
-        line_units.sort(key=lambda unit: unit.effective_strength, reverse=True)
-        reserved = {unit.id for unit in line_units[:reserve_size]}
+        # Les sortants d'abord, dans l'ordre stable de l'etat : la reserve ne se
+        # renouvelle que par les places que la bataille a rendues vacantes.
+        #
+        # **La troncature porte sur une liste, jamais sur un ensemble.** Trancher
+        # dans un `set` rendrait le banc dependant de `PYTHONHASHSEED` — c'est
+        # exactement le defaut que l'ADR 0011 a coute a trouver.
+        anciennes = set(reserve_ids)
+        tenues = [unit.id for unit in line_units if unit.id in anciennes]
+        reserved = set(tenues[:reserve_size])
+        if len(reserved) < reserve_size:
+            # Les unites les plus intactes font la meilleure reserve.
+            candidates = [unit for unit in line_units if unit.id not in reserved]
+            candidates.sort(key=lambda unit: unit.effective_strength, reverse=True)
+            reserved |= {unit.id for unit in candidates[: reserve_size - len(reserved)]}
         buckets[GroupKind.RESERVE].extend(sorted(reserved))
         buckets[GroupKind.FRONT_LINE] = [
             unit_id for unit_id in buckets[GroupKind.FRONT_LINE] if unit_id not in reserved
