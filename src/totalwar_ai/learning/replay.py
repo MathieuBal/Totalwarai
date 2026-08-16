@@ -130,6 +130,9 @@ def _observation(brut: dict[str, Any], fiche: dict[str, Any]) -> ProbeUnitObserv
         in_melee=bool(brut.get("in_melee", False)),
         routing=bool(brut.get("routing", False)),
         hidden=bool(brut.get("hidden", False)),
+        # Ecrit a l'enregistrement seulement quand il est faux : son absence
+        # signifie « ciblable », l'etat de loin le plus frequent.
+        targetable=not bool(brut.get("untargetable", False)),
         can_fly=bool(fiche.get("can_fly", False)),
         hitpoints=_optional_float(brut.get("hitpoints")),
         men_alive=_optional_int(brut.get("men_alive")),

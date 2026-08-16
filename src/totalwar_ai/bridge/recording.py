@@ -29,6 +29,7 @@ from typing import Any
 from totalwar_ai.bridge.command_models import ProbeBattleState, ProbeUnitObservation
 from totalwar_ai.bridge.live import LiveStep
 from totalwar_ai.domain.battle_state import BattleOutcomeKind
+from totalwar_ai.domain.unit_state import Side
 from totalwar_ai.memory.models import BattleSummary, Episode
 
 #: Nom de scenario donne aux batailles jouees dans le jeu.
@@ -380,6 +381,32 @@ def _unit_entry(observation: ProbeUnitObservation) -> dict[str, Any]:
         entry["routing"] = True
     if observation.hidden:
         entry["hidden"] = True
+    # **Ecrit quand il est FAUX**, a rebours des autres : `targetable` vaut vrai
+    # la quasi-totalite du temps, et c'est son absence qui porte l'information.
+    #
+    # Sans lui, le corpus ne voit pas ce que le jeu refusait. Trois ennemis ont
+    # ete declares non ciblables 665, 644 et 644 fois sur deux batailles : une
+    # unite lancee sur l'un d'eux recoit un refus par seconde et ne fait rien.
+    # `Planner.can_be_attacked` s'appuie dessus en direct — un corpus qui l'ignore
+    # apprend d'une bataille ou tout etait attaquable, ce qui n'a jamais ete vrai.
+    if not observation.targetable:
+        entry["untargetable"] = True
+    # **Ecrit quand il est FAUX**, a rebours des autres : `targetable` vaut vrai
+    # la quasi-totalite du temps, et c'est son absence qui porte l'information.
+    #
+    # Sans lui, le corpus ne voit pas ce que le jeu refusait. Trois ennemis ont
+    # ete declares non ciblables 665, 644 et 644 fois sur deux batailles : une
+    # unite lancee sur l'un d'eux recoit un refus par seconde et ne fait rien.
+    # `Planner.can_be_attacked` s'appuie dessus en direct — un corpus qui l'ignore
+    # apprend d'une bataille ou tout etait attaquable, ce qui n'a jamais ete vrai.
+    # **Ecrit quand il est FAUX**, a rebours des autres : `targetable` vaut vrai
+    # la quasi-totalite du temps, et c'est son absence qui porte l'information.
+    #
+    # Sans lui, le corpus ne voit pas ce que le jeu refusait. Trois ennemis ont
+    # ete declares non ciblables 665, 644 et 644 fois sur deux batailles : une
+    # unite lancee sur l'un d'eux recoit un refus par seconde et ne fait rien.
+    # `Planner.can_be_attacked` s'appuie dessus en direct — un corpus qui l'ignore
+    # apprend d'une bataille ou tout etait attaquable, ce qui n'a jamais ete vrai.
     if observation.hitpoints is not None:
         entry["hitpoints"] = round(observation.hitpoints, 3)
     if observation.men_alive is not None:
@@ -438,7 +465,33 @@ def _final_share(state: ProbeBattleState | None, side: str, initial: Mapping[str
 
 
 def _fingerprint(state: ProbeBattleState | None) -> str:
-    """Empreinte de composition, pour retrouver les batailles semblables."""
+    """Empreinte de composition, pour retrouver les batailles semblables.
+
+    **Elle ne comptait que les unites**, et rendait `allies:12|enemies:10`. Deux
+    armees entierement differentes — douze lanciers contre douze chevaliers —
+    portaient donc la meme empreinte, et `MemoryRepository.find_similar` les
+    donnait pour comparables. L'adaptation de doctrine demarrant des la deuxieme
+    bataille, il suffisait de deux affrontements sans rapport pour qu'elle tire
+    une lecon de leur moyenne.
+
+    Elle compte desormais les **roles**, exactement comme
+    `simulation.scenarios.Scenario.fingerprint` : c'est la condition pour que les
+    batailles jouees et simulees soient comparables au lieu d'etre melangees sous
+    des empreintes de natures differentes.
+    """
     if state is None:
         return ""
-    return "|".join(f"{camp}:{len(getattr(state, camp))}" for camp in ("allies", "enemies"))
+    from totalwar_ai.agent.unit_classifier import UnitClassifier
+
+    classifieur = UnitClassifier.from_config()
+    # Le meme classifieur qu'en direct, sur les memes entrees : une empreinte
+    # calculee autrement ici qu'en bataille ne retrouverait jamais ses pareilles.
+    domaine = classifieur.classify_state(state.to_battle_state("empreinte"))
+    parts: list[str] = []
+    for camp, side in (("ally", Side.ALLY), ("enemy", Side.ENEMY)):
+        comptes: dict[str, int] = {}
+        for unite in domaine.side_units(side):
+            comptes[unite.role.value] = comptes.get(unite.role.value, 0) + 1
+        detail = ",".join(f"{role}x{nombre}" for role, nombre in sorted(comptes.items()))
+        parts.append(f"{camp}:{detail}")
+    return "|".join(parts)

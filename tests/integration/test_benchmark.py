@@ -123,6 +123,34 @@ def test_scenario_manquant_est_signale(config: AppConfig) -> None:
     baseline = BenchmarkReport(scenarios=(ScenarioResult(scenario="disparu", win_rate=1.0),))
     comparison = compare(baseline, _bench(config))
     assert comparison.missing_scenarios == ("disparu",)
+    # **Le signaler ne suffisait pas.** `missing_scenarios` etait calcule et
+    # jamais consulte par le verdict : c'est ce que la ligne suivante pince.
+    assert not comparison.acceptable
+
+
+def test_un_candidat_ampute_est_refuse() -> None:
+    """**Un scenario absent n'est pas un scenario reussi.**
+
+    Supprimer par megarde le scenario le plus dur rendait le candidat
+    « acceptable » : il ne restait plus rien pour y regresser, et le banc — le
+    mecanisme qui decide de ce que le projet garde — validait l'amputation.
+    """
+    baseline = BenchmarkReport(
+        scenarios=(
+            ScenarioResult(scenario="facile", win_rate=1.0, average_ally_remaining=0.9),
+            ScenarioResult(scenario="difficile", win_rate=0.3, average_ally_remaining=0.4),
+        )
+    )
+    # Le scenario difficile a disparu ; le reste est intact, voire meilleur.
+    candidate = BenchmarkReport(
+        scenarios=(ScenarioResult(scenario="facile", win_rate=1.0, average_ally_remaining=0.95),)
+    )
+    comparison = compare(baseline, candidate)
+
+    assert comparison.regressions == (), "le test ne prouverait rien avec une regression"
+    assert comparison.missing_scenarios == ("difficile",)
+    assert not comparison.acceptable
+    assert "manquant" in comparison.summary_line()
 
 
 def test_aller_retour_du_rapport(config: AppConfig) -> None:

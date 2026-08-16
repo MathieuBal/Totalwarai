@@ -539,3 +539,48 @@ def test_la_force_restante_pese_les_hommes_et_leur_sante() -> None:
 
     # Moitie des hommes, a moitie de leur sante : un quart de la force.
     assert recorder.summary().ally_remaining == pytest.approx(0.25)
+
+
+def test_deux_armees_differentes_n_ont_pas_la_meme_empreinte() -> None:
+    """**L'empreinte ne comptait que les unites.**
+
+    Elle rendait `allies:12|enemies:10`, si bien que douze lanciers et douze
+    chevaliers portaient la meme. `MemoryRepository.find_similar` les donnait
+    donc pour comparables, et l'adaptation de doctrine — qui demarre des la
+    deuxieme bataille — tirait une lecon de la moyenne de deux affrontements
+    sans rapport.
+    """
+
+    def _bataille(cle_alliee: str) -> ProbeBattleState:
+        return ProbeBattleState(
+            allies=(
+                ProbeUnitObservation(
+                    unit_id="a1",
+                    position=Vector3(0.0, 0.0, 0.0),
+                    unit_type=cle_alliee,
+                    controllable=True,
+                    men_alive=80,
+                ),
+            ),
+            enemies=(
+                ProbeUnitObservation(
+                    unit_id="e1",
+                    position=Vector3(0.0, 0.0, 50.0),
+                    unit_type="wh_main_emp_inf_swordsmen",
+                    men_alive=80,
+                ),
+            ),
+            phase="Deployed",
+        )
+
+    def _empreinte(etat: ProbeBattleState) -> str:
+        recorder = BattleRecorder()
+        recorder.observe(_tour(etat))
+        return recorder.summary().army_fingerprint
+
+    cavalerie = _empreinte(_bataille("wh_main_emp_cav_reiksguard"))
+    infanterie = _empreinte(_bataille("wh_main_emp_inf_spearmen"))
+
+    assert cavalerie != infanterie, "deux armees differentes partagent une empreinte"
+    # Et l'empreinte decrit bien des roles, comme celle du simulateur.
+    assert "x1" in cavalerie and "ally:" in cavalerie
