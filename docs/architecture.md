@@ -253,7 +253,7 @@ pas disparaître parce qu'une nouvelle bataille commence.
 
 ### Apprendre en regardant jouer l'IA du moteur
 
-Notre agent ne verra jamais le terrain, le moral ni la fatigue — le recensement
+Notre agent ne verra jamais le moral ni la fatigue, et du terrain il ne connait que l'altitude — le recensement
 l'a établi accesseur par accesseur. Écrire des règles à la main contre un
 adversaire qui y voit a donc un plafond. La voie retenue est de **l'observer et
 d'apprendre ses décisions**.
@@ -318,6 +318,19 @@ détruit aucun : la parité locale évite les mauvais combats, elle n'en gagne
 aucun. `finishing_value` et `Planner.focus_bonus` corrigent le choix de cible —
 achever ce qui est entamé, renforcer ce qu'on est en train de faire tomber
 ([`decisions/0012`](decisions/0012-achever-plutot-qu-egratigner.md)).
+
+### L'altitude, seule donnée de terrain
+
+`learning/elevation.py` mesure l'écart de hauteur entre les deux lignes, volantes
+exclues et sur la **médiane** — un seigneur volant échappe au filtre et une
+moyenne y perdrait treize mètres. Le verdict porte sur la phase d'approche : une
+fois au contact, la hauteur est subie, et les fuyards qui refluent la font
+remonter sans que personne l'ait voulu.
+
+Côté décision, `Planner.slope_advantage` et le durcissement de seuil de
+`SuicidalChargeRule` en tirent parti. Le banc ne peut rien en dire — son monde est
+plat, ce qui est vérifié et non suppose
+([`decisions/0014`](decisions/0014-tenir-la-hauteur.md)).
 
 ### Le banc doit d'abord être reproductible
 

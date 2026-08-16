@@ -31,6 +31,13 @@ safety:
   ranged_threat_radius: 70.0
   # Rapport de puissance locale minimal exige avant d'accepter une charge.
   min_local_power_ratio_for_charge: 0.6
+  # Rayon (metres) dans lequel on compte l'escorte d'une cible de contournement.
+  #
+  # Plus court que le rayon des charges frontales : ce qui menace une cavalerie
+  # tombant sur un tireur arriere, c'est ce qui peut se retourner sur elle, pas
+  # la ligne adverse a soixante metres qui fait face ailleurs. A soixante, tout
+  # contournement etait refuse — trente-cinq refus en une bataille.
+  flank_escort_radius: 35.0
   # Sante en dessous de laquelle le seigneur est retire du combat.
   lord_retreat_health_ratio: 0.35
 

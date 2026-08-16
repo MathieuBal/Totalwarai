@@ -14,6 +14,7 @@ from totalwar_ai.agent.planner import (
     can_be_attacked,
     finishing_value,
     lateral_of,
+    slope_advantage,
 )
 from totalwar_ai.domain.actions import ActionType
 from totalwar_ai.domain.battle_state import BattlePhase
@@ -570,3 +571,69 @@ def test_une_cible_devenue_inattaquable_libere_l_engagement(make_unit, make_batt
     etat = make_battle([cavalier, interdite, seconde])
 
     assert planificateur.committed_target(cavalier, etat, candidates=[seconde]) is seconde
+
+
+# --- la pente ------------------------------------------------------------------
+
+
+def _perche(unit_id: str, side: Side, role: UnitRole, x: float, altitude: float) -> object:
+    """Une unite a une altitude donnee : la fabrique partagee pose toujours zero."""
+    from totalwar_ai.domain.unit_state import UnitState
+
+    return UnitState(id=unit_id, side=side, role=role, position=Vector3(x, altitude, 0.0))
+
+
+def test_un_terrain_plat_ne_donne_aucun_avantage_de_pente() -> None:
+    """En deca du seuil, preferer une cible pour vingt centimetres serait du bruit."""
+    haut = _perche("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0, 40.0)
+    bas = _perche("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 50.0, 38.5)
+
+    assert slope_advantage(haut, bas) == 0.0
+
+
+def test_descendre_sur_l_ennemi_vaut_mieux_que_monter() -> None:
+    attaquant = _perche("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0, 50.0)
+    en_contrebas = _perche("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 50.0, 40.0)
+    en_surplomb = _perche("e2", Side.ENEMY, UnitRole.MELEE_INFANTRY, -50.0, 60.0)
+
+    assert slope_advantage(attaquant, en_contrebas) > 0.0
+    assert slope_advantage(attaquant, en_surplomb) < 0.0
+
+
+def test_la_pente_sature(make_unit) -> None:  # type: ignore[no-untyped-def]
+    """Une falaise n'est pas douze fois pire qu'un talus."""
+    attaquant = _perche("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0, 200.0)
+    cible = _perche("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 50.0, 0.0)
+
+    assert slope_advantage(attaquant, cible) == pytest.approx(1.0)
+
+
+def test_une_volante_n_attaque_pas_depuis_la_hauteur() -> None:
+    """**La lecon apprise en mesurant l'altitude.**
+
+    L'altitude d'une unite qui vole est celle de son vol : lui accorder un
+    avantage de pente serait une pure erreur de lecture.
+    """
+    from totalwar_ai.domain.unit_state import UnitState
+
+    volante = UnitState(
+        id="a_vol",
+        side=Side.ALLY,
+        role=UnitRole.FLYING_UNIT,
+        position=Vector3(0.0, 200.0, 0.0),
+        tags=("flying",),
+    )
+    au_sol = _perche("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, 50.0, 40.0)
+
+    assert slope_advantage(volante, au_sol) == 0.0
+    assert slope_advantage(au_sol, volante) == 0.0
+
+
+def test_a_distance_egale_on_prefere_la_cible_en_contrebas(make_battle) -> None:  # type: ignore[no-untyped-def]
+    """**Le defaut mesure en jeu** : arrive au contact a -5,25 m et -6,46 m."""
+    attaquant = _perche("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0, 50.0)
+    en_bas = _perche("e_bas", Side.ENEMY, UnitRole.MELEE_INFANTRY, 60.0, 38.0)
+    en_haut = _perche("e_haut", Side.ENEMY, UnitRole.MELEE_INFANTRY, -60.0, 62.0)
+    etat = make_battle([attaquant, en_bas, en_haut])
+
+    assert Planner().select_target(attaquant, etat) is en_bas

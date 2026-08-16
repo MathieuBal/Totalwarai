@@ -123,6 +123,22 @@ class UnitState:
         return self.role in MOBILE_ROLES
 
     @property
+    def is_airborne(self) -> bool:
+        """L'unite est-elle en vol ?
+
+        **Son altitude ne renseigne alors pas le terrain** : elle donne la
+        hauteur du vol. Une volante relevee a 222 m quand le sol alentour est a
+        60 fausserait toute lecture du relief.
+
+        Deux marqueurs, parce qu'aucun ne suffit seul : le role, et l'etiquette
+        posee par la sonde. Un **seigneur volant n'a ni l'un ni l'autre** — la
+        regle du classifieur cede la priorite a `lord` pour ne pas lui retirer sa
+        protection — et reste donc invisible ici. Toute mesure d'altitude doit le
+        supposer et rester robuste a un point aberrant.
+        """
+        return self.role is UnitRole.FLYING_UNIT or "flying" in self.tags
+
+    @property
     def is_precious(self) -> bool:
         return self.role in PRECIOUS_ROLES
 
