@@ -159,7 +159,8 @@ données existent et sont lisibles par un script de bataille** :
 | unités ennemies | `bm:alliances()` | probable | **accessible** — 2 alliances, la 2ᵉ aligne 11 unités (essai n° 6) |
 | vitesse, largeur de front | `speed`, `width` | inconnu | **inaccessible** — absents |
 | altitude du sol | `unit:position():get_y()` | inconnu | **accessible** — 21 à 33 relevés (essai n° 3), désormais enregistrée |
-| altitude en un point quelconque | `v_to_ground(v(x,0,z)):get_y()` | **oui** | **vérifié** — 14,9 à 40,9 m relevés sur une croix de 300 m |
+| altitude en un point quelconque | `v_to_ground(v(x,0,z)):get_y()` | **oui** | **vérifié** — voir le relevé complet ci-dessous |
+| altitude, API dédiée | `bm:get_terrain_height` | inconnu | **présente** — jamais appelée, signature non testée |
 | nom affichable | `unit:name()` | inconnu | **inutilisable** — renvoie `"1"`, un identifiant de script |
 
 Relevé par le recensement automatique de l'essai n° 6, qui appelle chaque
@@ -240,9 +241,31 @@ qui s'appuie sur un moral continu est inapplicable en jeu telle quelle.
 qui en dépendent (relever une unité épuisée, choisir le moment d'une charge)
 n'ont aucune donnée sur quoi s'appuyer.
 
-Ces deux manques ne sont pas des bogues à corriger : ce sont des contraintes du
-terrain. Ils devront être reportés dans les règles de l'agent avant tout
-pilotage réel, faute de quoi il déciderait sur des champs constamment vides.
+> **⚠ Ces deux manques n'ont pas été établis, seulement constatés sous certains
+> noms.** Un audit externe a relevé que la documentation WH3 publie des
+> accesseurs que le recensement n'a **jamais essayés**, et le tableau ci-dessus
+> montre le motif : pour chaque capacité déclarée absente, il existe un nom
+> voisin non tenté.
+>
+> | tenté et absent | documenté, jamais tenté |
+> | --- | --- |
+> | `unary_morale` | `is_wavering`, `is_crumbling`, `is_unstable` |
+> | `fatigue`, `unary_fatigue`, `fatigue_level` | `fatigue_state()` |
+> | `number_of_men` | `initial_number_of_men()` |
+> | `speed` | `slow_speed()`, `fast_speed()` |
+> | `width` | `ordered_width()` |
+> | — | `current_target()`, `unit_distance()`, `is_left_flank_threatened()` |
+>
+> `is_wavering` est le plus lourd de conséquences : le projet a bâti toute sa
+> stratégie d'apprentissage sur « le moral est invisible, il faut le prédire ».
+> Si ce drapeau répond, la cascade de déroute devient directement observable.
+>
+> **Rien n'est acquis pour autant** : la documentation dit que ces fonctions
+> existent, pas qu'elles sont exposées dans notre bac à sable. C'est au
+> recensement de trancher, comme il l'a fait pour `v_to_ground`.
+
+Tant que ce recensement n'a pas eu lieu, ces manques doivent être reportés dans
+les règles de l'agent — il déciderait sinon sur des champs constamment vides.
 
 ### Le terrain : ce qui est acquis, et ce qui reste à publier
 
@@ -256,10 +279,29 @@ jetée à l'enregistrement ; elle y est désormais conservée. Elle dit qui tien
 hauteur, ce que réclame toute doctrine d'artillerie, et accumulée sur des
 dizaines de batailles elle dessine le relief des cartes déjà jouées.
 
-**`v_to_ground` est tranchée : elle lit le relief.** Le recensement a relevé
-**14,9 à 40,9 m sur une croix de 300 m** — des valeurs qui diffèrent, donc une
-vraie sonde d'altitude en tout point de la carte, et non une constante. Un relief
-complet est calculable avant le premier coup de feu.
+**`v_to_ground` est tranchée : elle lit le relief.** Le relevé brut, journalisé
+en bataille et repris ici pour qu'il cesse de n'exister que dans un fichier du
+jeu :
+
+```text
+altitude sous l'unite    : 21.007
+sol en (   3.441, -296.494) : 21.007
+sol en ( 153.441, -296.494) : 31.811
+sol en (-146.559, -296.494) : 23.199
+sol en (   3.441, -146.494) : 40.853
+sol en (   3.441, -446.494) : 14.940
+```
+
+Deux enseignements plutôt qu'un. Les valeurs **diffèrent** — 14,9 à 40,9 m sur
+une croix de 300 m — donc la sonde lit bien le relief et non une constante. Et
+le point central rend **exactement** l'altitude relevée sous l'unité : les deux
+voies interrogent la même source, ce qu'aucune valeur isolée n'aurait montré.
+Deux batailles distinctes ont produit des chiffres identiques.
+
+**`bm:get_terrain_height` existe aussi**, et c'est une découverte du même
+recensement : sur cinq noms candidats testés, celui-là répond. Une API d'altitude
+dédiée serait plus directe qu'une projection au sol — sa signature n'a pas été
+essayée, et elle mérite de l'être avant de bâtir un échantillonnage en grille.
 
 Deux réserves sur cet acquis. Le recensement **journalise sans publier** : ses
 valeurs ne vont que dans le journal du jeu, aucun message de protocole ne les
@@ -283,9 +325,9 @@ connaître.
 | créer un contrôleur | `army:create_unit_controller()` | accessible | **accessible** — essai n° 4 |
 | prendre une unité | `uc:add_units(unit)` | accessible, peut échouer sur groupe verrouillé | **accessible** — essai n° 4, sur le seigneur ; le cas du groupe verrouillé reste non rencontré |
 | déplacer vers un point | `uc:goto_location(v_to_ground(v(x,y,z)), run)` | accessible | **accessible** — 20,3 m parcourus, essai n° 4 |
-| attaquer une unité | `uc:attack_unit(cible, primaire, courir)` | accessible | **non testée** — hors périmètre du prototype |
+| attaquer une unité | `uc:attack_unit(cible, primaire, courir)` | accessible | **accessible** — ordres d'attaque lancés et acquittés en bataille, aucun refus |
 | stopper | `uc:halt()` | accessible | **non testée** |
-| **rendre la main** | `uc:release_control()` | accessible | **non confirmée** — appelée sans erreur, effet non constaté |
+| **rendre la main** | `uc:release_control()` | accessible | **confirmée** — « controle rendu au joueur » journalisé unité par unité, à chaque expiration du délai |
 | comportements (tir à volonté…) | `uc:change_behaviour_active()` | accessible | **non testée** |
 
 ## Communication Lua ↔ Python
