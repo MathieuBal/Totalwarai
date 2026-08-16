@@ -58,11 +58,20 @@ d'avoir servi, sans jouer une seule bataille.**
 Une table décrit toujours parfaitement les batailles dont elle est tirée. La
 seule question qui vaille est : prédit-elle celles qu'elle n'a pas vues ?
 
-La coupe est **chronologique** — apprendre le début d'un corpus, prédire sa fin.
-Mélanger ferait fuiter la même bataille des deux côtés, et la précision annoncée
-serait celle d'un modèle qui a déjà vu la réponse. Un test le vérifie sur un
-corpus dont la politique s'inverse à mi-parcours : la table apprise doit se
-tromper partout.
+La coupe sépare des **batailles**, jamais des décisions. Chaque bataille sert de
+lot de contrôle à son tour, le modèle étant appris sur toutes les autres.
+
+> **Cette section affirmait le contraire, et la mesure qu'elle publiait était
+> fausse.** Elle décrivait une coupe chronologique dans une liste plate
+> d'observations et prétendait que cela empêchait « la même bataille de fuiter
+> des deux côtés ». Le code ne tenait pas cette promesse : la coupe tombait au
+> milieu d'une bataille, et les décisions d'une même bataille partagent unités,
+> positions et composition adverse. Le modèle retrouvait donc des réponses déjà
+> vues. Défaut trouvé par un audit externe, vérifié dans le code, corrigé — et
+> le test qui l'aurait attrapé encodait lui-même le mauvais contrat.
+
+Un test le vérifie désormais sur deux batailles de politiques **opposées** :
+chacune prédite par l'autre, la table doit se tromper partout.
 
 Deux étalons, dont l'un seul importe vraiment :
 
@@ -85,9 +94,20 @@ bruit.
 | ambiguïté sans continuité | 29,9 % |
 | ambiguïté avec continuité | **22,6 %** |
 | choix retenus pour l'apprentissage | 610 |
-| prédiction — modèle appris | **82,0 %** |
-| prédiction — hasard | 60,8 % |
-| prédiction — `TARGET_PRIORITY` | 60,7 % |
+| prédiction — modèle appris | **54,4 %** |
+| prédiction — hasard | 40,2 % |
+| prédiction — `TARGET_PRIORITY` | 37,9 % |
+| **écart entre les huit passes** | **26,0 % à 100,0 %** |
+
+**Les 82,0 % publiés jusqu'ici étaient le produit de la fuite.** Mesurée
+honnêtement — huit batailles servant de contrôle à tour de rôle — la prédiction
+tombe à 54,4 %. Le modèle continue de battre les deux étalons, ce qui était la
+question posée ; mais l'écart entre passes, de 26 % à 100 %, dit qu'un chiffre
+unique ne décrivait aucune des huit.
+
+> **Le chiffre du corpus réel reste à recalculer.** Ce tableau est celui de
+> l'étalonnage contre la doublure. Toute table apprise de vraies batailles avant
+> cette correction porte le même biais, et `learn --targets` doit être rejoué.
 
 **Ces chiffres ne disent rien de l'IA du jeu.** Ils disent que l'instrument
 retrouve une politique dont on connaît la réponse, et qu'il le fait mieux que

@@ -323,6 +323,15 @@ class Accuracy:
     random: float
     #: Part que notre table `TARGET_PRIORITY` ecrite a la main atteint.
     handwritten: float
+    #: Nombre de batailles servies en controle, une par passe.
+    folds: int = 0
+    #: Precision la plus basse et la plus haute parmi ces passes.
+    #:
+    #: **Un chiffre unique sur trois batailles ne mesure rien.** L'ecart entre
+    #: les passes dit s'il reste quelque chose apres avoir change de bataille,
+    #: ou si l'on a mesure une bataille particuliere.
+    worst: float = 0.0
+    best: float = 0.0
 
     @property
     def beats_random(self) -> bool:
@@ -340,51 +349,85 @@ class Accuracy:
             if self.beats_random
             else "rien n'a ete appris : le hasard fait aussi bien"
         )
-        return (
-            f"{self.samples} decision(s) de controle\n"
-            f"  appris            {self.learned:6.1%}\n"
-            f"  hasard            {self.random:6.1%}\n"
-            f"  TARGET_PRIORITY   {self.handwritten:6.1%}\n"
-            f"  -> {verdict}"
-        )
+        lignes = [
+            f"{self.samples} decision(s) de controle"
+            + (f", {self.folds} bataille(s) en controle a tour de role" if self.folds else ""),
+            f"  appris            {self.learned:6.1%}",
+            f"  hasard            {self.random:6.1%}",
+            f"  TARGET_PRIORITY   {self.handwritten:6.1%}",
+        ]
+        if self.folds > 1:
+            lignes.append(f"  ecart entre passes {self.worst:5.1%} a {self.best:.1%}")
+        lignes.append(f"  -> {verdict}")
+        return "\n".join(lignes)
 
 
-def evaluate(observations: Sequence[Observation], *, holdout: float = 0.3) -> Accuracy:
-    """Apprend sur une part des decisions et mesure sur le reste.
+def evaluate(battles: Sequence[Sequence[Observation]]) -> Accuracy:
+    """Apprend sur toutes les batailles sauf une, et predit celle-la.
 
-    La coupe est **chronologique** : on apprend du debut d'un corpus et l'on
-    predit sa fin. Melanger les decisions ferait fuiter la meme bataille des
-    deux cotes de la coupe, et la precision annoncee serait celle d'un modele
-    qui a deja vu la reponse.
+    **La coupe doit separer des batailles, pas des decisions.** La version
+    precedente decoupait une liste plate a 70 % et sa docstring affirmait que
+    cela empechait « la meme bataille de fuiter des deux cotes ». C'etait faux :
+    la coupe tombe au milieu d'une bataille, et les decisions d'une meme bataille
+    partagent les memes unites, les memes positions, la meme composition adverse.
+    Le modele retrouvait donc des reponses qu'il avait deja vues, et les 82 %
+    publies par l'ADR 0008 n'etaient pas une mesure de generalisation.
+
+    On prend donc chaque bataille a son tour comme lot de controle — une seule
+    coupe ne dirait rien sur un corpus de trois. La precision rendue est la
+    moyenne des passes ; `worst` et `best` disent ce qu'elle cache.
+
+    Accepte une sequence de batailles, chacune etant la suite de ses
+    observations. L'appelant les tient deja separees : c'est en les concatenant
+    qu'il perdait l'information.
     """
-    utiles = [retenu for retenu in map(as_choice, observations) if retenu is not None]
-    if len(utiles) < 2:
-        return Accuracy(samples=0, learned=0.0, random=0.0, handwritten=0.0)
-
-    coupe = max(1, int(len(utiles) * (1.0 - holdout)))
-    modele = _build(utiles[:coupe], skipped=0)
-    controle = utiles[coupe:]
-    if not controle:
-        return Accuracy(samples=0, learned=0.0, random=0.0, handwritten=0.0)
-
     from totalwar_ai.agent.planner import TARGET_PRIORITY
 
-    bons = alea = table = 0.0
-    for retenu in controle:
-        offerts = retenu.available
-        if modele.predict(retenu.attacker, offerts) is retenu.target:
-            bons += 1
-        # Le hasard se calcule au lieu de se tirer : la probabilite de tomber
-        # sur le bon role est exactement sa part parmi les unites disponibles.
-        alea += offerts.count(retenu.target) / len(offerts)
-        choix = max(offerts, key=lambda role: TARGET_PRIORITY.get(role, 0.4))
-        if choix is retenu.target:
-            table += 1
+    par_bataille = [
+        [retenu for retenu in map(as_choice, bataille) if retenu is not None]
+        for bataille in battles
+    ]
+    par_bataille = [lot for lot in par_bataille if lot]
+    if len(par_bataille) < 2:
+        # Une seule bataille exploitable : il n'y a rien contre quoi valider, et
+        # inventer une coupe interne rendrait exactement le chiffre flatteur que
+        # cette fonction existe pour eviter.
+        return Accuracy(samples=0, learned=0.0, random=0.0, handwritten=0.0)
 
-    total = len(controle)
+    bons = alea = table = 0.0
+    total = 0
+    scores: list[float] = []
+    for index, controle in enumerate(par_bataille):
+        entrainement = [
+            choix for autre, lot in enumerate(par_bataille) if autre != index for choix in lot
+        ]
+        if not entrainement:
+            continue
+        modele = _build(entrainement, skipped=0)
+        justes = 0.0
+        for retenu in controle:
+            offerts = retenu.available
+            if modele.predict(retenu.attacker, offerts) is retenu.target:
+                justes += 1
+            # Le hasard se calcule au lieu de se tirer : la probabilite de tomber
+            # sur le bon role est exactement sa part parmi les unites disponibles.
+            alea += offerts.count(retenu.target) / len(offerts)
+            choix_table = max(offerts, key=lambda role: TARGET_PRIORITY.get(role, 0.4))
+            if choix_table is retenu.target:
+                table += 1
+        bons += justes
+        total += len(controle)
+        scores.append(justes / len(controle))
+
+    if not total or not scores:
+        return Accuracy(samples=0, learned=0.0, random=0.0, handwritten=0.0)
+
     return Accuracy(
         samples=total,
         learned=bons / total,
         random=alea / total,
         handwritten=table / total,
+        folds=len(scores),
+        worst=min(scores),
+        best=max(scores),
     )
