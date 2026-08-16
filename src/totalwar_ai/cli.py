@@ -1297,14 +1297,17 @@ def _learn_targets(corpus: Corpus, *, save_to: Path | None = None) -> int:
     # Deux passes sur le disque plutot qu'un corpus entier en memoire : trente
     # batailles a deux hertz font des centaines de milliers d'etats d'unite, et
     # relire un fichier coute bien moins cher que de les garder tous ouverts.
-    observations = []
+    # **Les batailles restent separees.** Les aplatir ici etait la cause de la
+    # fuite de validation : `evaluate` ne pouvait plus savoir ou l'une finissait.
+    par_bataille = []
     for battle in corpus.usable:
         etats = read_states(battle.path)
         if len(etats) >= 2:
-            observations += infer(etats).observations
+            par_bataille.append(infer(etats).observations)
 
+    observations = [item for lot in par_bataille for item in lot]
     modele = learn(observations)
-    mesure = evaluate(observations)
+    mesure = evaluate(par_bataille)
     print(f"\n--- ciblage appris sur {len(corpus.usable)} bataille(s) ---\n")
     print(modele.render())
     print()
@@ -1404,9 +1407,10 @@ def _learn_calibrate() -> int:
         part = ambigues / cibles if cibles else 0.0
         print(f"  {etiquette:<18} {cibles:5d} decisions  {part:5.1%} ambigues")
 
-    observations = [item for etats in lots for item in infer(etats).observations]
+    par_bataille = [infer(etats).observations for etats in lots]
+    observations = [item for lot in par_bataille for item in lot]
     print(f"\n{learn(observations).render()}\n")
-    print(evaluate(observations).explain())
+    print(evaluate(par_bataille).explain())
 
     # La formation ne s'etalonne pas contre la doublure : elle n'en a aucune, et
     # ce qu'on lit ici est surtout le deploiement que nous avons ecrit nous-memes

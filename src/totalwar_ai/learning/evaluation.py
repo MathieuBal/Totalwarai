@@ -280,13 +280,25 @@ class Comparison:
 
     @property
     def acceptable(self) -> bool:
-        """Un candidat n'est acceptable que sans regression sur un scenario."""
-        return not self.regressions
+        """Un candidat n'est acceptable que sans regression **et sans manque**.
+
+        **Un scenario absent n'est pas un scenario reussi.** `missing_scenarios`
+        etait calcule, stocke, et jamais consulte : supprimer par megarde le
+        scenario le plus dur rendait le candidat « acceptable », puisqu'il ne
+        restait plus rien pour y regresser.
+
+        C'est le banc qui decide de ce que le projet garde. Une comparaison qui
+        peut valider un candidat ampute ne decide de rien.
+        """
+        return not self.regressions and not self.missing_scenarios
 
     def summary_line(self) -> str:
-        verdict = (
-            "aucune regression" if self.acceptable else f"{len(self.regressions)} regression(s)"
-        )
+        if self.regressions:
+            verdict = f"{len(self.regressions)} regression(s)"
+        elif self.missing_scenarios:
+            verdict = f"{len(self.missing_scenarios)} scenario(s) manquant(s)"
+        else:
+            verdict = "aucune regression"
         return (
             f"taux de victoire {self.win_rate_before:.0%} -> {self.win_rate_after:.0%}, "
             f"forces restantes {self.strength_before:.0%} -> {self.strength_after:.0%} "

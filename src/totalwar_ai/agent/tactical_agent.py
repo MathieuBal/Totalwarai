@@ -138,6 +138,11 @@ class DeterministicTacticalAgent:
         self._active_signatures.clear()
         self._signature_time.clear()
         self._blocked_signatures.clear()
+        # Le planificateur porte lui aussi de la memoire — engagements de cible,
+        # composition de la reserve, detection d'enlisement. La laisser passer
+        # d'une bataille a la suivante ferait dependre la seconde de la premiere,
+        # et deux batailles identiques n'auraient pas le meme deroulement.
+        self.planner.reset()
         self.safety.reset()
 
     def apply_doctrine(self, profile: DoctrineProfile) -> None:

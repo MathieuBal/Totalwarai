@@ -217,3 +217,49 @@ def test_une_bataille_relue_se_laisse_inferer(tmp_path: Path) -> None:
     # Ce qui etait offert au choix doit survivre a la relecture : sans cela,
     # l'apprentissage du ciblage ne pourrait rien normaliser.
     assert set(approches[0].available) == {UnitRole.RANGED_INFANTRY, UnitRole.SPEAR_INFANTRY}
+
+
+def test_une_cible_refusee_par_le_jeu_survit_a_l_enregistrement(tmp_path: Path) -> None:
+    """**Le drapeau existait en direct et se perdait a l'ecriture.**
+
+    `targetable` vient de `is_valid_target()` : il ne dit pas si l'unite est
+    vivante, il dit si le jeu acceptera un ordre d'attaque. Trois ennemis ont ete
+    declares non ciblables 665, 644 et 644 fois sur deux batailles reelles.
+    `Planner.can_be_attacked` s'appuie dessus en direct — un corpus qui l'ignore
+    apprend d'une bataille ou tout etait attaquable, ce qui n'a jamais ete vrai.
+    """
+    interdite = ProbeUnitObservation(
+        unit_id="e1",
+        position=Vector3(10.0, 0.0, 20.0),
+        unit_type="wh_dlc_grn_inf_archers",
+        men_alive=60,
+        targetable=False,
+    )
+    ordinaire = ProbeUnitObservation(
+        unit_id="e2",
+        position=Vector3(30.0, 0.0, 20.0),
+        unit_type="wh_dlc_grn_inf_archers",
+        men_alive=60,
+    )
+    nous = ProbeUnitObservation(
+        unit_id="a1",
+        position=Vector3(0.0, 0.0, 0.0),
+        unit_type="wh_main_emp_inf_swordsmen",
+        controllable=True,
+        men_alive=80,
+    )
+    etat = ProbeBattleState(
+        allies=(nous,), enemies=(interdite, ordinaire), phase="Deployed", sequence=1
+    )
+
+    recorder = BattleRecorder(directory=tmp_path)
+    recorder.observe(LiveStep(state=etat))
+    recorder.close()
+    assert recorder.path is not None
+
+    rejoue = read_states(recorder.path)
+    assert rejoue, "l'enregistrement n'a rien rendu"
+    par_id = {unite.id: unite for unite in rejoue[-1].enemies(available_only=False)}
+
+    assert par_id["e1"].metadata["targetable"] is False, "le refus du jeu s'est perdu"
+    assert par_id["e2"].metadata["targetable"] is True

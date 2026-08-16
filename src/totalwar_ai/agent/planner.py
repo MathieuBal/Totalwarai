@@ -15,7 +15,7 @@ ensuite : le planificateur peut se tromper, la securite doit rattraper.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -171,6 +171,14 @@ class PlannerSettings:
     pursuit_power_ratio: float = 1.5
     reserve_units: int = 1
     min_line_for_reserve: int = 4
+    #: Distance a laquelle un ennemi qui approche declenche le repli tirant.
+    withdraw_trigger: float = 66.0
+    #: Recul demande a chaque plan pendant un repli tirant, en metres.
+    #:
+    #: Court volontairement : il s'agit de garder l'ennemi a distance de tir, pas
+    #: de fuir. Un pas long ferait sortir l'ennemi de la portee de nos archers,
+    #: ce qui annulerait tout l'interet de la manoeuvre.
+    withdraw_step: float = 20.0
 
     @classmethod
     def from_config(cls, agent: Mapping[str, Any], safety: Mapping[str, Any]) -> PlannerSettings:
@@ -331,6 +339,16 @@ class Planner:
     #: pour trois fois rien. Une preference marginale ne vaut pas un demi-tour.
     _commitments: dict[str, str] = field(default_factory=dict)
 
+    #: Unites actuellement tenues en reserve, d'un plan au suivant.
+    #:
+    #: **L'appartenance a la reserve doit survivre a la fatigue qu'elle cause.**
+    #: Sans memoire, `build_groups` rechoisissait a chaque plan la plus fraiche,
+    #: et le repli lui-meme faisait perdre cette fraicheur : voir la mesure citee
+    #: dans sa docstring. C'est aussi ce qui permet a `_line_anchor` d'ecarter la
+    #: reserve — l'ancre a besoin de la connaitre avant que les groupes ne soient
+    #: recalcules.
+    _reserve_ids: set[str] = field(default_factory=set)
+
     #: Ce que l'IA du jeu recherche, appris en la regardant jouer.
     #:
     #: **L'agent joue alors sur les preferences du moteur, pas sur les notres.**
@@ -360,15 +378,23 @@ class Planner:
 
     # --- plan general --------------------------------------------------------
 
+    def reset(self) -> None:
+        """Oublie tout ce qui appartenait a la bataille precedente."""
+        self._commitments.clear()
+        self._reserve_ids.clear()
+
     def build_plan(self, state: BattleState) -> BattlePlan:
-        """Choisit la posture et recompose les groupes."""
+        """Choisit la posture et recompose les groupes.
+
+        **Les groupes se composent avant l'ancre, et non l'inverse.** L'ancre
+        doit ecarter la reserve (voir :func:`_line_anchor`), donc il faut savoir
+        qui en fait partie avant de la calculer. La posture, elle, ne depend que
+        des rapports de force : elle se decide en premier sans rien devoir a la
+        geometrie.
+        """
         allies = state.allies()
         enemies = state.enemies()
-        anchor = _line_anchor(state, allies)
         enemy_anchor = state.centroid(Side.ENEMY)
-        front = anchor.direction_to(enemy_anchor)
-        if front.length_2d() <= 1e-9:
-            front = Vector3(0.0, 0.0, 1.0)
 
         ratio = state.power_ratio()
         missile_edge = _missile_edge(state)
@@ -411,15 +437,83 @@ class Planner:
             else 0
         )
 
+        if reserve_size <= 0:
+            # La posture ne demande plus de reserve : l'oublier, sinon un simple
+            # passage a l'offensive laisserait une reserve fantome que le retour
+            # a la defensive ressusciterait a l'identique.
+            self._reserve_ids.clear()
+        groups = build_groups(
+            state, reserve_size=reserve_size, reserve_ids=tuple(self._reserve_ids)
+        )
+        self._reserve_ids = set(groups.get(GroupKind.RESERVE).unit_ids)
+
+        anchor = _line_anchor(state, allies, exclude=self._reserve_ids)
+        front = anchor.direction_to(enemy_anchor)
+        if front.length_2d() <= 1e-9:
+            front = Vector3(0.0, 0.0, 1.0)
+
+        if self._fighting_withdrawal(state, posture, anchor, allies, enemies):
+            # **Le repli porte sur l'ancre, donc sur toute la formation.** Reculer
+            # la seule ligne de melee laisse les archers sur place : l'ennemi les
+            # atteint, `_protect_ranged` les fait fuir, et la manoeuvre se retourne
+            # contre elle-meme. Mesure sur `balanced_clash` : 6 victoires sur 12 en
+            # ne repliant que la ligne, contre 12 sur 12 quand toute la formation
+            # reculait. Tout ce qui se place par rapport a l'ancre suit ici d'un
+            # seul mouvement, en gardant ses distances.
+            anchor = anchor - front.scaled(self.settings.withdraw_step)
         return BattlePlan(
             posture=posture,
             anchor=anchor,
             front_direction=front,
-            groups=build_groups(state, reserve_size=reserve_size),
+            groups=groups,
             rationale=rationale,
             created_at=state.game_time,
             power_ratio=ratio,
         )
+
+    def _fighting_withdrawal(
+        self,
+        state: BattleState,
+        posture: Posture,
+        anchor: Vector3,
+        allies: Sequence[UnitState],
+        enemies: Sequence[UnitState],
+    ) -> bool:
+        """Faut-il reculer la formation pour garder l'ennemi sous le feu ?
+
+        **Cette manoeuvre existait deja, mais par accident.** Le cliquet de la
+        reserve trainait l'ancre vers l'arriere ; toute la formation suivait,
+        l'ennemi aussi, il restait a portee, et les archers vidaient leur
+        carquois. Mesure sur `balanced_clash` : 60 % des pertes adverses infligees
+        ligne hors contact, munitions 2,00/2,00, **12 victoires sur 12 graines**.
+        Le cliquet supprime, il n'en restait que 5 sur 12 : la manoeuvre valait
+        sept victoires que personne n'avait voulues.
+
+        Il faut donc la vouloir — et surtout savoir l'arreter. Quatre conditions,
+        toutes des conditions d'**arret**, et c'est ce qui separe ce repli des
+        deux corrections que l'ADR 0005 a mesurees et rejetees :
+
+        * **la posture est defensive** : en `ADVANCE` ou `ENVELOP`, on a decide
+          d'aller au contact et reculer contredirait le plan ;
+        * **il reste des munitions** : sans elles, reculer ne fait plus que ceder
+          du terrain — c'est l'« armee figee a 98 m sous les tirs » qui avait
+          coute une bataille ;
+        * **personne n'est encore au contact** : une melee engagee qui recule se
+          fait tuer de dos, et le premier choc fixe le lieu de la bataille ;
+        * **l'ennemi approche vraiment** : au-dela de `withdraw_trigger`, il n'y a
+          rien a esquiver, et reculer le sortirait de la portee de nos archers —
+          ce qui annule tout l'interet. Mesure : declencher a 110 m au lieu de 66
+          fait tomber le taux de 6/12 a 0/12, l'ennemi finissant a 41 % de forces
+          au lieu de 25 %.
+        """
+        if posture not in (Posture.DEFEND, Posture.DELAY):
+            return False
+        if _remaining_ammo(state) <= 0.0:
+            return False
+        if any(unit.is_engaged for unit in allies):
+            return False
+        proche = state.nearest(anchor, [unit for unit in enemies if unit.is_available])
+        return proche is not None and proche[1] <= self.settings.withdraw_trigger
 
     # --- selection de cible --------------------------------------------------
 
@@ -709,7 +803,7 @@ class Planner:
         rear = anchor - front.scaled(self.settings.reserve_offset)
 
         retreating = self._protect_ranged(state, groups, rear, decisions)
-        self._fire_missiles(state, groups, retreating, assignments, decisions)
+        self._fire_missiles(state, plan, retreating, assignments, decisions)
         self._command_front_line(state, plan, assignments, decisions)
         self._command_cavalry(state, plan, assignments, decisions)
         self._command_leaders(state, plan, decisions)
@@ -754,23 +848,68 @@ class Planner:
     def _fire_missiles(
         self,
         state: BattleState,
-        groups: GroupSet,
+        plan: BattlePlan,
         retreating: set[str],
         assignments: dict[str, int],
         decisions: list[Decision],
     ) -> None:
-        """Concentre le tir des unites disponibles sur les meilleures cibles."""
-        for kind in (GroupKind.ARTILLERY, GroupKind.MISSILE):
+        """Concentre le tir des unites disponibles, et **rattache celles qui n'ont
+        plus rien a viser**.
+
+        Le pipeline tactique ne repositionnait jamais le groupe de tir : un
+        tireur recevait un ordre de repli s'il etait menace, un ordre de tir s'il
+        avait une cible a portee — et **rien du tout** dans tous les autres cas.
+        Tant que l'ennemi venait a nous, cela ne se voyait pas.
+
+        Des que l'agent porte l'attaque, cela devient la faute qui perd la
+        bataille : sur `skirmish_standoff`, l'infanterie avance de 165 m pendant
+        que les deux unites de tir bougent de 5,5 m et 1,6 m. La ligne arrive
+        seule, l'appui reste a l'arriere hors de portee, et l'ennemi encaisse
+        zero degat pour 39 % des notres.
+
+        C'est mot pour mot ce que l'operateur avait decrit en jeu : « trois unites
+        d'archers qui n'ont pas suivi le pack ». Le defaut etait ici.
+        """
+        anchor = plan.anchor
+        heading = math.atan2(plan.front_direction.x, plan.front_direction.z)
+        suivre = plan.posture in (Posture.ADVANCE, Posture.ENVELOP)
+        for kind, offset in (
+            (GroupKind.ARTILLERY, self.settings.artillery_offset),
+            (GroupKind.MISSILE, self.settings.missile_offset),
+        ):
             shooters = [
                 unit
-                for unit in groups.get(kind).available_units(state)
+                for unit in plan.groups.get(kind).available_units(state)
                 if unit.can_shoot and unit.id not in retreating
             ]
+            station = anchor - plan.front_direction.scaled(offset)
             for shooter in shooters:
                 target = self.select_target(
                     shooter, state, assignments=assignments, for_missile=True
                 )
                 if target is None:
+                    ecart = shooter.position.distance_2d(station)
+                    # **Seulement quand la ligne avance.** En posture defensive,
+                    # la position de tir se choisit par rapport a la menace et non
+                    # par rapport a l'ancre : rattacher les tireurs au poste en
+                    # toute posture fait tomber `balanced_clash` de 11 a 1
+                    # victoire sur 12, en les faisant marcher au lieu de tirer
+                    # pendant le repli tirant.
+                    if suivre and ecart > self.settings.line_spacing:
+                        decisions.append(
+                            decide(
+                                _move_units(
+                                    (shooter.id,),
+                                    station,
+                                    Formation.LINE,
+                                    heading=heading,
+                                    spacing=0.0,
+                                ),
+                                f"aucune cible a portee, poste de tir a {ecart:.0f} metres",
+                                "suivre la ligne pour rester en soutien",
+                                confidence=0.7,
+                            )
+                        )
                     continue
                 assignments[target.id] = assignments.get(target.id, 0) + 1
                 distance = shooter.position.distance_2d(target.position)
@@ -1018,16 +1157,32 @@ class Planner:
         assignments: dict[str, int],
         decisions: list[Decision],
     ) -> None:
-        """Garde la reserve, sauf si la ligne est debordee."""
+        """Garde la reserve, et l'engage des que la bataille est jouee.
+
+        **Une reserve qui ne sert jamais est une unite en moins.** Le seul motif
+        d'engagement etait le debordement numerique, qui ne se produit presque
+        jamais : la reserve regardait la bataille. Cela ne se voyait pas tant que
+        la composition tournait a chaque plan, car chaque rotation renvoyait
+        l'unite au feu — la doctrine etait sauvee par un defaut. La rotation
+        supprimee, le cout est apparu d'un coup : `balanced_clash` est tombe de
+        100 % a 0 %, l'ennemi passant de 17 % a 47 % de forces restantes.
+
+        Le second motif est celui d'une vraie reserve : **la moitie de la ligne
+        au contact**. L'ennemi est alors fixe, et c'est precisement l'instant ou
+        une unite fraiche qui arrive vaut plus que la meme unite arrivee avec
+        tout le monde.
+        """
         reserve = plan.groups.get(GroupKind.RESERVE).available_units(state)
         if not reserve:
             return
         line = plan.groups.get(GroupKind.FRONT_LINE).available_units(state)
         engaged_enemies = [enemy for enemy in state.enemies() if enemy.is_engaged]
+        engaged_line = [unit for unit in line if unit.is_engaged]
         outnumbered = len(engaged_enemies) > max(1, len(line))
+        joined = bool(engaged_line)
 
         for unit in reserve:
-            if outnumbered:
+            if outnumbered or joined:
                 target = self.select_target(unit, state, assignments=assignments)
                 if target is not None:
                     assignments[target.id] = assignments.get(target.id, 0) + 1
@@ -1039,8 +1194,12 @@ class Planner:
                                 parameters={"target_id": target.id},
                                 confidence=0.7,
                             ),
-                            f"ligne debordee ({len(engaged_enemies)} ennemis engages)",
-                            "engager la reserve pour retablir la ligne",
+                            f"ligne debordee ({len(engaged_enemies)} ennemis engages)"
+                            if outnumbered
+                            else f"ligne au contact ({len(engaged_line)}/{len(line)})",
+                            "engager la reserve pour retablir la ligne"
+                            if outnumbered
+                            else "engager la reserve sur un ennemi deja fixe",
                             confidence=0.7,
                         )
                     )
@@ -1110,22 +1269,50 @@ def _wing_side(index: int) -> str:
     return "left" if index % 2 == 0 else "right"
 
 
-def _line_anchor(state: BattleState, allies: Sequence[UnitState]) -> Vector3:
-    """Point de reference du dispositif : le centre de la ligne de front.
+def _line_anchor(
+    state: BattleState, allies: Sequence[UnitState], *, exclude: Collection[str] = ()
+) -> Vector3:
+    """Point de reference du dispositif : le centre de la ligne **qui combat**.
 
     Ancrer le plan sur le centre de gravite de toute l'armee creerait une boucle
     de retroaction : replier les tireurs deplace le centre vers l'arriere, ce qui
     replie encore les tireurs, et l'armee recule indefiniment sans combattre.
     La ligne de front, elle, ne bouge que si on lui ordonne de bouger.
+
+    **La reserve rouvrait cette porte.** Elle n'est pas un role mais un groupe de
+    doctrine : ses unites gardent leur role de melee et comptaient donc dans
+    cette moyenne. Or on les envoie soixante metres en arriere. L'ancre les
+    suivait, le point de ralliement reculait d'autant, et le cycle recommencait —
+    198 m de recul mesures sur `skirmish_standoff` face a un ennemi qui n'avance
+    jamais. `exclude` les retire : l'ancre suit la ligne partout ou elle va, mais
+    cesse de compter ceux qu'on a explicitement envoyes a l'arriere.
+
+    Ce n'est pas figer l'ancre — correction mesuree et rejetee par l'ADR 0005,
+    qui faisait tomber `balanced_clash` de 100 % a 0 %.
     """
+    ecartees = set(exclude)
     line = [
         unit.position
         for unit in allies
-        if unit.role not in RANGED_ROLES and unit.role not in MOBILE_ROLES
+        if unit.role not in RANGED_ROLES
+        and unit.role not in MOBILE_ROLES
+        and unit.id not in ecartees
     ]
     if line:
         return centroid(line)
+    # Toute la ligne en reserve : mieux vaut une ancre imparfaite qu'aucune.
+    if ecartees:
+        return _line_anchor(state, allies)
     return centroid(unit.position for unit in allies) if allies else Vector3()
+
+
+def _remaining_ammo(state: BattleState) -> float:
+    """Munitions alliees restantes, en part de ce qu'une unite emporte.
+
+    Somme et non moyenne : c'est la capacite de feu encore disponible qui decide
+    s'il vaut la peine de faire durer l'approche, pas l'etat moyen des carquois.
+    """
+    return sum(unit.ammo_ratio for unit in state.allies() if unit.is_ranged and unit.is_available)
 
 
 def _missile_edge(state: BattleState) -> float:

@@ -9,6 +9,7 @@ jeu — et cela se verifie **sans jouer une seule bataille**.
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,16 @@ from totalwar_ai.learning.targeting import (
 )
 from totalwar_ai.simulation.environment import SimulationEnvironment, UnitSpec
 
+#: Compteur de decisions distinctes forgees par `_choix`.
+#:
+#: **Chaque appel doit produire une decision differente.** Les observations
+#: portaient toutes `unit_id="u"` et `target_id="c"` : pour
+#: `targeting.episodes`, qui replie les releves consecutifs d'une meme paire,
+#: vingt appels ne faisaient plus qu'une seule decision tenue — ce qui est le
+#: comportement correct sur un corpus a 2 Hz, mais pas ce que ces tests veulent
+#: dire. Des identifiants distincts rendent l'intention explicite.
+_compteur = itertools.count()
+
 
 def _choix(
     attaquant: UnitRole,
@@ -34,12 +45,13 @@ def _choix(
     move: Move = Move.CLOSE,
     ambigu: bool = False,
 ) -> Observation:
+    index = next(_compteur)
     return Observation(
-        game_time=0.0,
-        unit_id="u",
+        game_time=float(index),
+        unit_id=f"u{index}",
         role=attaquant,
         move=move,
-        target_id="c",
+        target_id=f"c{index}",
         target_role=cible,
         ambiguous=ambigu,
         available=offert,
@@ -187,8 +199,12 @@ def test_la_table_retrouve_la_chasse_aux_tireurs() -> None:
 
 
 def test_le_modele_appris_predit_mieux_que_le_hasard() -> None:
-    """Un modele qui ne bat pas le hasard n'a rien appris du tout."""
-    mesure = evaluate(_observations_de_la_doublure())
+    """Un modele qui ne bat pas le hasard n'a rien appris du tout.
+
+    Deux batailles tirees de la meme politique : apprendre sur l'une doit
+    permettre de predire l'autre.
+    """
+    mesure = evaluate([_observations_de_la_doublure(), _observations_de_la_doublure()])
     assert mesure.samples > 0
     assert mesure.beats_random, mesure.explain()
 
@@ -208,17 +224,58 @@ def test_un_corpus_vide_ne_produit_pas_de_verdict() -> None:
 # --- la coupe ne fait pas fuiter la reponse ------------------------------------
 
 
-def test_la_coupe_est_chronologique() -> None:
-    """Melanger ferait apprendre et mesurer sur les memes instants de bataille."""
-    duo = (UnitRole.MELEE_INFANTRY, UnitRole.ARTILLERY)
-    # Premiere moitie : on prend l'artillerie. Seconde : on prend la melee.
-    observations = [_choix(UnitRole.LORD, UnitRole.ARTILLERY, duo) for _ in range(50)]
-    observations += [_choix(UnitRole.LORD, UnitRole.MELEE_INFANTRY, duo) for _ in range(50)]
+def test_une_bataille_ne_fuite_pas_dans_son_propre_controle() -> None:
+    """**Le defaut que l'audit a trouve, et que la docstring niait.**
 
-    # Apprise sur le debut, la table predit l'artillerie et se trompe partout.
-    mesure = evaluate(observations, holdout=0.3)
-    assert mesure.samples == 30
-    assert mesure.learned == 0.0, "la seconde moitie a fuite dans l'apprentissage"
+    L'ancienne version decoupait une liste plate d'observations a 70 % et
+    affirmait que cela empechait « la meme bataille de fuiter des deux cotes ».
+    La coupe tombait au milieu d'une bataille, et les decisions d'une meme
+    bataille partagent unites, positions et composition adverse.
+
+    Deux batailles de politiques **opposees** le montrent : chacune predite par
+    l'autre, le modele doit se tromper partout. S'il obtient un bon score, c'est
+    qu'il a vu la reponse.
+    """
+    duo = (UnitRole.MELEE_INFANTRY, UnitRole.ARTILLERY)
+    prend_artillerie = [_choix(UnitRole.LORD, UnitRole.ARTILLERY, duo) for _ in range(50)]
+    prend_melee = [_choix(UnitRole.LORD, UnitRole.MELEE_INFANTRY, duo) for _ in range(50)]
+
+    mesure = evaluate([prend_artillerie, prend_melee])
+
+    assert mesure.samples == 100, "les deux batailles doivent servir de controle a tour de role"
+    assert mesure.learned == 0.0, "une bataille a fuite dans son propre apprentissage"
+    assert mesure.folds == 2
+
+
+def test_une_seule_bataille_ne_produit_aucun_verdict() -> None:
+    """Il n'y a rien contre quoi valider, et inventer une coupe interne rendrait
+    exactement le chiffre flatteur que cette fonction existe pour eviter."""
+    duo = (UnitRole.MELEE_INFANTRY, UnitRole.ARTILLERY)
+    seule = [_choix(UnitRole.LORD, UnitRole.ARTILLERY, duo) for _ in range(50)]
+
+    assert evaluate([seule]).samples == 0
+
+
+def test_l_ecart_entre_passes_est_publie() -> None:
+    """**Un chiffre unique sur trois batailles ne mesure rien.**
+
+    Une politique constante et une politique opposee : la moyenne masque que
+    l'une des passes est parfaite et l'autre nulle.
+    """
+    duo = (UnitRole.MELEE_INFANTRY, UnitRole.ARTILLERY)
+    # Effectifs asymetriques a dessein : a egalite d'affinite, `predict` rend le
+    # premier role disponible, et la passe ne mesurerait plus une preference.
+    lots = [
+        [_choix(UnitRole.LORD, UnitRole.ARTILLERY, duo) for _ in range(60)],
+        [_choix(UnitRole.LORD, UnitRole.ARTILLERY, duo) for _ in range(60)],
+        [_choix(UnitRole.LORD, UnitRole.MELEE_INFANTRY, duo) for _ in range(20)],
+    ]
+    mesure = evaluate(lots)
+
+    assert mesure.folds == 3
+    assert mesure.worst == 0.0
+    assert mesure.best == 1.0
+    assert "ecart entre passes" in mesure.explain()
 
 
 # --- de ce qu'on apprend a ce que l'agent en fait -------------------------------

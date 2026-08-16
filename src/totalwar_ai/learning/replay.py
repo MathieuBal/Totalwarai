@@ -120,7 +120,11 @@ def _observation(brut: dict[str, Any], fiche: dict[str, Any]) -> ProbeUnitObserv
             float(brut.get("z", 0.0)),
         ),
         unit_type=str(fiche.get("type", "")),
-        controllable=fiche.get("side") == "ally",
+        # Enregistre a partir de la revision 15, et seulement quand il est faux.
+        # Les batailles anterieures n'en portent pas la trace : pour elles, le
+        # camp reste la seule information disponible, et c'est la meilleure
+        # approximation possible — non une mesure.
+        controllable=fiche.get("side") == "ally" and not bool(brut.get("uncontrollable", False)),
         commanding=bool(fiche.get("commanding", False)),
         idle=bool(brut.get("idle", False)),
         # Meme regle qu'en direct : des hommes debout suffisent a etre vivant.
@@ -130,6 +134,9 @@ def _observation(brut: dict[str, Any], fiche: dict[str, Any]) -> ProbeUnitObserv
         in_melee=bool(brut.get("in_melee", False)),
         routing=bool(brut.get("routing", False)),
         hidden=bool(brut.get("hidden", False)),
+        # Ecrit a l'enregistrement seulement quand il est faux : son absence
+        # signifie « ciblable », l'etat de loin le plus frequent.
+        targetable=not bool(brut.get("untargetable", False)),
         can_fly=bool(fiche.get("can_fly", False)),
         hitpoints=_optional_float(brut.get("hitpoints")),
         men_alive=_optional_int(brut.get("men_alive")),

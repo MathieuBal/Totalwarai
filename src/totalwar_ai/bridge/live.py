@@ -553,7 +553,17 @@ class SupervisedSession:
                 if item.destination is not None
             ]
             if moves:
-                self.bridge.send_orders(moves, release_after_ms=self.release_after_ms)
+                # **L'ordre correctif se confirme comme le reste.** La reprise
+                # etait bien confirmee, mais le deplacement qui la justifie
+                # partait sans qu'on lise l'accuse : on savait avoir repris
+                # l'unite, jamais si elle avait bouge. C'est exactement le defaut
+                # qui a brule deux sessions reelles — croire avoir agi.
+                refuses += self._confirm(
+                    self.bridge.send_orders(moves, release_after_ms=self.release_after_ms).sequence,
+                    [unit_id for unit_id, _ in moves],
+                    "correction",
+                    maintenant,
+                )
 
         if rendues:
             refuses += self._confirm(
@@ -563,7 +573,10 @@ class SupervisedSession:
             self.delegated.update(rendues)
             self.supervisor.forget(rendues)
 
-        adoptees = self._adopt(state, exclues={item.unit_id for item in interventions})
+        adoptees, refus_adoption = self._adopt(
+            state, exclues={item.unit_id for item in interventions}
+        )
+        refuses += refus_adoption
         if adoptees:
             rendues = [*rendues, *adoptees]
 
@@ -577,7 +590,9 @@ class SupervisedSession:
             sent=len(interventions) + len(rendues),
         )
 
-    def _adopt(self, state: ProbeBattleState, *, exclues: set[str]) -> list[str]:
+    def _adopt(
+        self, state: ProbeBattleState, *, exclues: set[str]
+    ) -> tuple[list[str], list[tuple[str, str]]]:
         """Confie a l'IA du jeu les unites qui lui echappent encore.
 
         **Une delegation faite une fois au depart ne couvre pas une bataille.**
@@ -590,6 +605,12 @@ class SupervisedSession:
         Ne touche pas aux unites que la supervision vient de reprendre : elles
         sont a nous **volontairement**, et les reconfier annulerait la correction
         dans le tour meme ou elle est donnee.
+
+        Rend les unites adoptees **et les refus**. Ces derniers etaient jetes :
+        ils alimentaient bien `unreachable`, mais ne remontaient jamais dans
+        `LiveStep.refused`, si bien que l'operateur ne voyait pas que le jeu
+        avait refuse de lui confier une unite — elle restait simplement inerte
+        jusqu'a la fin, sans explication.
         """
         candidates = [
             unite.unit_id
@@ -602,7 +623,7 @@ class SupervisedSession:
             and unite.unit_id not in self.supervisor.held
         ]
         if not candidates:
-            return []
+            return [], []
         refuses = self._confirm(
             self.bridge.delegate(candidates).sequence,
             candidates,
@@ -611,10 +632,9 @@ class SupervisedSession:
         )
         adoptees = [unit_id for unit_id in candidates if unit_id not in self.unreachable]
         self.delegated.update(adoptees)
-        # Les refus alimentent `unreachable` dans `_confirm` : on ne redemandera
-        # pas la meme unite a chaque tour jusqu'a la fin de la bataille.
-        del refuses
-        return adoptees
+        # `_confirm` a deja nourri `unreachable` : on ne redemandera pas la meme
+        # unite a chaque tour. Les refus repartent tout de meme vers le journal.
+        return adoptees, refuses
 
     def _shadow(self, domaine: BattleState) -> ShadowDecision | None:
         """Ce que nous aurions fait, calcule sans rien envoyer au jeu.
