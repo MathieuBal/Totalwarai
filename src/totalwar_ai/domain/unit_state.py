@@ -130,13 +130,26 @@ class UnitState:
         hauteur du vol. Une volante relevee a 222 m quand le sol alentour est a
         60 fausserait toute lecture du relief.
 
-        Deux marqueurs, parce qu'aucun ne suffit seul : le role, et l'etiquette
-        posee par la sonde. Un **seigneur volant n'a ni l'un ni l'autre** — la
-        regle du classifieur cede la priorite a `lord` pour ne pas lui retirer sa
-        protection — et reste donc invisible ici. Toute mesure d'altitude doit le
-        supposer et rester robuste a un point aberrant.
+        Trois marqueurs, parce qu'aucun ne suffit seul.
+
+        Le role et l'etiquette manquent tous les deux le **seigneur volant** : la
+        regle `flying_unit` du classifieur passe avant `lord`, si bien que la
+        sonde n'etiquette `flying` que les unites qui ne commandent pas — sans
+        quoi un prince demon volant perdrait `ProtectLord`. Cette precaution
+        porte sur la *politique* de classification ; elle ne doit pas effacer le
+        *fait*. `can_fly`, que le jeu publie et que l'enregistrement conserve,
+        est ce fait — et c'est lui qui rattrape le cas que les deux autres
+        laissaient passer.
+
+        La mediane de `learning.elevation` reste malgre tout : elle protege
+        contre un point aberrant quelle qu'en soit la cause, ce qu'aucun de ces
+        trois marqueurs ne garantit.
         """
-        return self.role is UnitRole.FLYING_UNIT or "flying" in self.tags
+        return (
+            self.role is UnitRole.FLYING_UNIT
+            or "flying" in self.tags
+            or bool(self.metadata.get("can_fly", False))
+        )
 
     @property
     def is_precious(self) -> bool:

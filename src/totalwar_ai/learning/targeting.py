@@ -44,6 +44,7 @@ deux, celle de gauche ou celle du flanc — releve d'un autre module.
 from __future__ import annotations
 
 import json
+import statistics
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -243,6 +244,36 @@ class TargetingModel:
         return "\n".join(lignes)
 
 
+def episodes(observations: Iterable[Observation]) -> list[Observation]:
+    """Une decision par **episode**, et non une par releve.
+
+    **Le corpus est echantillonne a 2 Hz, et rien ne repliait ces releves.** Une
+    unite qui charge le meme ennemi pendant une minute produisait ainsi cent
+    vingt « decisions » identiques. Deux consequences, toutes deux fausses :
+
+    * `samples` annoncait des milliers de decisions la ou il y en avait quelques
+      dizaines, ce qui donne a la mesure une assise qu'elle n'a pas ;
+    * la precision se trouvait dominee par les engagements **longs** plutot que
+      par les choix **frequents** — un seul corps a corps interminable pesait
+      plus que vingt decisions de ciblage distinctes.
+
+    Une decision commence quand une unite change de cible et dure tant qu'elle
+    la garde. On ne retient donc que le premier releve de chaque suite
+    `(unite, cible)` consecutive.
+
+    L'ordre d'arrivee fait foi : les observations d'une bataille sont produites
+    dans l'ordre du temps de jeu par :mod:`totalwar_ai.learning.observation`.
+    """
+    retenues: list[Observation] = []
+    en_cours: dict[str, str | None] = {}
+    for item in observations:
+        precedente = en_cours.get(item.unit_id, "")
+        if precedente != item.target_id:
+            en_cours[item.unit_id] = item.target_id
+            retenues.append(item)
+    return retenues
+
+
 def learn(observations: Iterable[Observation]) -> TargetingModel:
     """Tire une table d'affinites des decisions observees.
 
@@ -251,10 +282,13 @@ def learn(observations: Iterable[Observation]) -> TargetingModel:
     ferait passer pour un fait —, celles ou un seul role etait disponible, ou
     choisir ne voulait rien dire, et **la melee**, ou l'on ne choisit plus rien
     (voir :data:`CHOICE_MOVES`).
+
+    Les releves sont d'abord replies en episodes (voir :func:`episodes`) : sans
+    cela, la table apprend la duree des engagements et non les preferences.
     """
     total = 0
     choix: list[Choice] = []
-    for item in observations:
+    for item in episodes(observations):
         total += 1
         retenu = as_choice(item)
         if retenu is not None:
@@ -384,7 +418,7 @@ def evaluate(battles: Sequence[Sequence[Observation]]) -> Accuracy:
     from totalwar_ai.agent.planner import TARGET_PRIORITY
 
     par_bataille = [
-        [retenu for retenu in map(as_choice, bataille) if retenu is not None]
+        [retenu for retenu in map(as_choice, episodes(bataille)) if retenu is not None]
         for bataille in battles
     ]
     par_bataille = [lot for lot in par_bataille if lot]
@@ -394,9 +428,10 @@ def evaluate(battles: Sequence[Sequence[Observation]]) -> Accuracy:
         # cette fonction existe pour eviter.
         return Accuracy(samples=0, learned=0.0, random=0.0, handwritten=0.0)
 
-    bons = alea = table = 0.0
     total = 0
     scores: list[float] = []
+    alea: list[float] = []
+    table: list[float] = []
     for index, controle in enumerate(par_bataille):
         entrainement = [
             choix for autre, lot in enumerate(par_bataille) if autre != index for choix in lot
@@ -404,29 +439,35 @@ def evaluate(battles: Sequence[Sequence[Observation]]) -> Accuracy:
         if not entrainement:
             continue
         modele = _build(entrainement, skipped=0)
-        justes = 0.0
+        justes = hasard = ecrite = 0.0
         for retenu in controle:
             offerts = retenu.available
             if modele.predict(retenu.attacker, offerts) is retenu.target:
                 justes += 1
             # Le hasard se calcule au lieu de se tirer : la probabilite de tomber
             # sur le bon role est exactement sa part parmi les unites disponibles.
-            alea += offerts.count(retenu.target) / len(offerts)
+            hasard += offerts.count(retenu.target) / len(offerts)
             choix_table = max(offerts, key=lambda role: TARGET_PRIORITY.get(role, 0.4))
             if choix_table is retenu.target:
-                table += 1
-        bons += justes
+                ecrite += 1
         total += len(controle)
+        # **Une bataille, une voix.** La version precedente rendait `bons / total`
+        # — une moyenne ponderee par la taille des batailles — alors que sa
+        # docstring promettait « la moyenne des passes ». Une bataille longue
+        # ecrasait donc les autres, ce qui vide de son sens une coupe faite
+        # precisement pour separer les batailles.
         scores.append(justes / len(controle))
+        alea.append(hasard / len(controle))
+        table.append(ecrite / len(controle))
 
     if not total or not scores:
         return Accuracy(samples=0, learned=0.0, random=0.0, handwritten=0.0)
 
     return Accuracy(
         samples=total,
-        learned=bons / total,
-        random=alea / total,
-        handwritten=table / total,
+        learned=statistics.mean(scores),
+        random=statistics.mean(alea),
+        handwritten=statistics.mean(table),
         folds=len(scores),
         worst=min(scores),
         best=max(scores),

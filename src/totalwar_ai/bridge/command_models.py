@@ -341,6 +341,13 @@ class ProbeUnitObservation:
             # refus par seconde et reste plantee — trois ennemis ont ete vus
             # ainsi 665, 644 et 644 fois sur deux batailles.
             "targetable": self.targetable,
+            # **Le fait, distinct de la politique.** `_tags()` n'expose `flying`
+            # que pour les unites qui ne commandent pas, afin que la regle
+            # `flying_unit` du classifieur ne retire pas `ProtectLord` a un
+            # prince demon volant. Le fait brut doit voyager quand meme : sans
+            # lui, l'altitude d'un seigneur volant — celle de son vol, pas celle
+            # du sol — entrait dans la mesure du relief.
+            "can_fly": self.can_fly,
         }
         for name in ("hitpoints", "men_alive", "bearing", "ammo", "missile_range"):
             value = getattr(self, name)

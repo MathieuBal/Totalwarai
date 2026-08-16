@@ -391,6 +391,13 @@ def _unit_entry(observation: ProbeUnitObservation) -> dict[str, Any]:
     # apprend d'une bataille ou tout etait attaquable, ce qui n'a jamais ete vrai.
     if not observation.targetable:
         entry["untargetable"] = True
+    # Meme convention, et meme raison. La relecture **deduisait** ce drapeau du
+    # camp — « allie donc controlable » —, ce qui est faux precisement quand cela
+    # compte : en supervision, nos propres unites sont confiees a l'IA du jeu et
+    # cessent de l'etre. Aucun module d'apprentissage ne le lit aujourd'hui, mais
+    # une valeur inventee dans un corpus finit toujours par etre lue un jour.
+    if not observation.controllable:
+        entry["uncontrollable"] = True
     # **Ecrit quand il est FAUX**, a rebours des autres : `targetable` vaut vrai
     # la quasi-totalite du temps, et c'est son absence qui porte l'information.
     #

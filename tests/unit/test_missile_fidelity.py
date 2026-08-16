@@ -46,3 +46,26 @@ def test_une_unite_de_tir_qui_se_replie_continue_de_tirer() -> None:
 
     assert env.units["a_arc"].ammo < env.units["a_arc"].max_ammo, "le tireur doit avoir tire"
     assert env.units["e_inf"].hp_ratio < depart, "l'ennemi doit avoir encaisse"
+
+
+def test_un_seigneur_volant_est_reconnu_en_vol() -> None:
+    """Le role et l'etiquette le manquent tous les deux.
+
+    La sonde n'etiquette `flying` que les unites qui ne commandent pas, pour que
+    la regle `flying_unit` ne retire pas `ProtectLord` a un prince demon volant.
+    Le fait brut `can_fly` doit voyager quand meme : sinon l'altitude de son vol
+    entre dans la mesure du relief comme si c'etait celle du sol.
+    """
+    from totalwar_ai.bridge.command_models import ProbeUnitObservation
+    from totalwar_ai.domain.unit_state import UnitRole
+
+    seigneur = ProbeUnitObservation(
+        unit_id="lord",
+        position=Vector3(0.0, 222.0, 0.0),
+        commanding=True,
+        can_fly=True,
+    )
+    domaine = seigneur.to_unit_state(Side.ALLY)
+    assert "flying" not in domaine.tags, "l'etiquette reste reservee aux non-commandants"
+    assert domaine.role is not UnitRole.FLYING_UNIT
+    assert domaine.is_airborne, "le fait can_fly doit rattraper le cas"

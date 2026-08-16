@@ -9,6 +9,7 @@ jeu — et cela se verifie **sans jouer une seule bataille**.
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,16 @@ from totalwar_ai.learning.targeting import (
 )
 from totalwar_ai.simulation.environment import SimulationEnvironment, UnitSpec
 
+#: Compteur de decisions distinctes forgees par `_choix`.
+#:
+#: **Chaque appel doit produire une decision differente.** Les observations
+#: portaient toutes `unit_id="u"` et `target_id="c"` : pour
+#: `targeting.episodes`, qui replie les releves consecutifs d'une meme paire,
+#: vingt appels ne faisaient plus qu'une seule decision tenue — ce qui est le
+#: comportement correct sur un corpus a 2 Hz, mais pas ce que ces tests veulent
+#: dire. Des identifiants distincts rendent l'intention explicite.
+_compteur = itertools.count()
+
 
 def _choix(
     attaquant: UnitRole,
@@ -34,12 +45,13 @@ def _choix(
     move: Move = Move.CLOSE,
     ambigu: bool = False,
 ) -> Observation:
+    index = next(_compteur)
     return Observation(
-        game_time=0.0,
-        unit_id="u",
+        game_time=float(index),
+        unit_id=f"u{index}",
         role=attaquant,
         move=move,
-        target_id="c",
+        target_id=f"c{index}",
         target_role=cible,
         ambiguous=ambigu,
         available=offert,
