@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from totalwar_ai.agent.explainability import Decision, decide
 from totalwar_ai.agent.grouping import GroupKind, GroupSet, TacticalGroup, build_groups
+from totalwar_ai.agent.mobility import MobilityTracker
 from totalwar_ai.agent.sectors import Assault, commit, split_sectors
 from totalwar_ai.domain.actions import ActionType, AgentAction, Formation
 from totalwar_ai.domain.battle_state import BattlePhase, BattleState
@@ -352,6 +353,14 @@ class Planner:
     #: pour trois fois rien. Une preference marginale ne vaut pas un demi-tour.
     _commitments: dict[str, str] = field(default_factory=dict)
 
+    #: Vitesse observee de chaque unite, pour composer un assaut qui arrive.
+    #:
+    #: **Se remplit en regardant l'armee marcher**, jamais en lisant un gabarit :
+    #: le simulateur connait `template.speed`, le jeu ne le donne pas, et batir
+    #: l'ETA dessus rendrait le banc plus juste et l'agent inapplicable en
+    #: bataille. Voir :mod:`totalwar_ai.agent.mobility`.
+    _mobility: MobilityTracker = field(default_factory=MobilityTracker)
+
     #: Assaut de secteur en cours, d'un plan au suivant.
     #:
     #: **Collant comme la reserve, et pour la meme raison.** Un secteur rechoisi
@@ -405,6 +414,7 @@ class Planner:
         self._commitments.clear()
         self._reserve_ids.clear()
         self._assault = None
+        self._mobility.reset()
 
     def build_plan(self, state: BattleState) -> BattlePlan:
         """Choisit la posture et recompose les groupes.
@@ -417,6 +427,9 @@ class Planner:
         """
         allies = state.allies()
         enemies = state.enemies()
+        # Releve le deplacement depuis le plan precedent : c'est de la que vient
+        # toute la connaissance de vitesse de l'agent.
+        self._mobility.observe(state)
         enemy_anchor = state.centroid(Side.ENEMY)
 
         ratio = state.power_ratio()
@@ -576,11 +589,13 @@ class Planner:
             # combat.
             return None
 
-        carte = split_sectors(state, front, allies)
+        carte = split_sectors(state, front, allies, mobility=self._mobility)
         secteur = carte.best()
         if secteur is None:
             return None
-        self._assault = commit(secteur, state, allies, game_time=state.game_time)
+        self._assault = commit(
+            secteur, state, allies, game_time=state.game_time, mobility=self._mobility
+        )
         return self._assault
 
     def _fighting_withdrawal(

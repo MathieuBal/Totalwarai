@@ -44,6 +44,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from totalwar_ai.agent.mobility import MobilityTracker
 from totalwar_ai.domain.battle_state import BattleState
 from totalwar_ai.domain.geometry import Vector3, centroid
 from totalwar_ai.domain.unit_state import UnitState
@@ -72,12 +73,35 @@ SECTOR_COUNT = 3
 #: La marge paie ce delai.
 ASSAULT_RATIO = 1.5
 
-#: Distance au-dela de laquelle une unite ne participe pas a un assaut.
+#: Delai au-dela duquel une unite ne participe pas a un assaut, en secondes.
 #:
-#: Compter toute l'armee dans le numerateur ferait croire a une superiorite que
-#: la geometrie interdit : une unite a trois cents metres ne concentre rien, elle
-#: arrive apres.
-REACH = 200.0
+#: **`REACH` etait une distance, et c'etait le defaut.** Compter toute l'armee
+#: dans le numerateur fait croire a une superiorite que la geometrie interdit ;
+#: mais un seuil en metres traite une piece d'artillerie a 1,6 m/s et une
+#: cavalerie de choc a 8,5 comme equivalentes a distance egale. L'une arrive en
+#: vingt-quatre secondes, l'autre en deux minutes.
+#:
+#: **Ce seuil ne doit pas mordre, et c'est mesure.** Regle d'abord a 45 s — le
+#: delai median jusqu'au contact valait 31 s — il a produit **zero assaut sur
+#: douze graines** : au premier plan, aucune unite n'a encore ete vue marcher,
+#: chacune porte donc la vitesse par defaut, et 45 s a 4 m/s ne fait que 180 m
+#: quand la ligne adverse est a plus de deux cents.
+#:
+#: La lecon est que le delai absolu n'est pas le bon instrument. Deux unites a
+#: trois cents metres qui arrivent **ensemble** portent un coup concentre ; ce
+#: qui tue un assaut est la dispersion, dont `ASSAULT_WINDOW` se charge. Le
+#: delai ne sert donc qu'a ecarter ce qui ne peut pas arriver du tout : au-dela
+#: d'une minute et demie, l'assaut decide maintenant appartient a une autre
+#: bataille.
+ASSAULT_DEADLINE = 90.0
+
+#: Ecart d'arrivee tolere au sein d'un assaut, en secondes.
+#:
+#: **Un assaut n'est fort que si ses unites arrivent groupees.** Trois unites qui
+#: arrivent a vingt secondes d'intervalle livrent trois combats a un contre un,
+#: pas un combat a trois contre un — c'est la defaite en detail, appliquee a
+#: nous-memes et de notre propre initiative.
+ASSAULT_WINDOW = 15.0
 
 #: Part de la force initiale sous laquelle un secteur est considere rompu.
 BREAK_SHARE = 0.35
@@ -249,6 +273,7 @@ def split_sectors(
     front: Vector3,
     allies: Sequence[UnitState],
     *,
+    mobility: MobilityTracker | None = None,
     count: int = SECTOR_COUNT,
 ) -> SectorMap:
     """Decoupe le front adverse en tranches laterales, et evalue chacune.
@@ -261,6 +286,11 @@ def split_sectors(
     """
     from totalwar_ai.agent.planner import TARGET_PRIORITY, lateral_of
 
+    # Sans suivi de mobilite — au premier plan d'une bataille, ou dans un test
+    # qui n'en fournit pas — chacun porte la vitesse par defaut, et le tri par
+    # temps redevient un tri par distance. C'est exactement le comportement
+    # precedent : la degradation est douce, jamais un refus de composer.
+    mobility = mobility if mobility is not None else MobilityTracker()
     ennemis = [unit for unit in state.enemies() if unit.is_available]
     if not ennemis or count <= 0:
         return SectorMap()
@@ -304,7 +334,7 @@ def split_sectors(
             if unit.id not in membres
             and any(unit.position.distance_2d(autre.position) <= SUPPORT_RADIUS for autre in dedans)
         )
-        atteignables = [unit for unit in allies if centre.distance_2d(unit.position) <= REACH]
+        atteignables = [unit for unit in allies if mobility.eta(unit, centre) <= ASSAULT_DEADLINE]
         tranches.append(
             Sector(
                 index=index,
@@ -322,27 +352,58 @@ def split_sectors(
 
 
 def commit(
-    sector: Sector, state: BattleState, allies: Sequence[UnitState], game_time: float
+    sector: Sector,
+    state: BattleState,
+    allies: Sequence[UnitState],
+    game_time: float,
+    *,
+    mobility: MobilityTracker | None = None,
 ) -> Assault | None:
-    """Compose l'assaut : le necessaire, et pas davantage.
+    """Compose l'assaut : le necessaire, qui arrive ensemble, et pas davantage.
 
     **Envoyer toute l'armee n'est pas concentrer, c'est s'engager.** On ajoute
-    les unites par ordre de proximite au secteur jusqu'a depasser
-    `ASSAULT_RATIO`, puis on s'arrete : ce qui reste tient le front ailleurs, et
-    c'est cette fixation qui empeche l'adversaire de venir retablir la partie
-    qu'on attaque.
+    les unites jusqu'a depasser `ASSAULT_RATIO`, puis on s'arrete : ce qui reste
+    tient le front ailleurs, et c'est cette fixation qui empeche l'adversaire de
+    venir retablir la partie qu'on attaque.
+
+    .. rubric:: Par temps d'arrivee, et non par distance
+
+    Le tri se faisait par distance, et l'agent n'avait aucune notion de vitesse.
+    Mesure sur `outnumbered`, douze graines : le rapport annonce 1,50 au choix
+    valait **0,96 au contact** — l'assaut arrivait sous la parite, apres 31 s de
+    trajet, ayant perdu 36 % de son avantage en chemin.
+
+    Deux bornes le corrigent, et la seconde est la plus importante :
+
+    * `ASSAULT_DEADLINE` ecarte ce qui ne peut pas arriver a temps ;
+    * `ASSAULT_WINDOW` ecarte ce qui arriverait **trop tard par rapport aux
+      autres**. Trois unites separees de vingt secondes livrent trois combats a
+      un contre un, pas un combat a trois contre un : c'est la defaite en detail
+      que l'on s'infligerait soi-meme.
 
     Rend `None` si le necessaire n'existe pas — l'agent garde alors son
-    comportement habituel.
+    comportement habituel, et c'est cette abstention qui protege les scenarios
+    deja gagnes.
     """
+    suivi = mobility if mobility is not None else MobilityTracker()
     disponibles = [unit for unit in allies if unit.id in set(sector.reachable)]
-    disponibles.sort(key=lambda unit: (sector.centre.distance_2d(unit.position), unit.id))
+    # L'identifiant tranche les egalites : deux unites de meme ETA doivent
+    # toujours etre prises dans le meme ordre, sinon le banc cesse d'etre
+    # reproductible (ADR 0011).
+    disponibles.sort(key=lambda unit: (suivi.eta(unit, sector.centre), unit.id))
 
     engagees: list[str] = []
     force = 0.0
     besoin = sector.cost * ASSAULT_RATIO
+    premier: float | None = None
     for unit in disponibles:
         if force >= besoin:
+            break
+        arrivee = suivi.eta(unit, sector.centre)
+        if premier is None:
+            premier = arrivee
+        elif arrivee - premier > ASSAULT_WINDOW:
+            # Les suivantes sont plus lentes encore : le tri le garantit.
             break
         engagees.append(unit.id)
         force += unit.effective_strength
