@@ -31,9 +31,12 @@ from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.learning.checkpoints import CheckpointStore
 from totalwar_ai.learning.evaluation import (
     DEFAULT_SEEDS,
+    GATE_B_MINIMUM_WIN_RATE,
     HIDDEN_SEEDS,
     BenchmarkReport,
+    Comparison,
     compare,
+    gate_verdict,
     render_table,
     run_benchmark,
 )
@@ -1474,24 +1477,42 @@ def _cmd_bench(args: argparse.Namespace, config: AppConfig) -> int:
         print(f"\nReference enregistree : {baseline_path}")
         return 0
 
+    comparison: Comparison | None = None
     if args.no_compare or not baseline_path.exists():
         if not args.no_compare:
             print(
                 "\nAucune reference enregistree. "
                 "Utiliser `totalwar-ai bench --save-baseline` pour en creer une."
             )
-        return 0
+    else:
+        baseline = BenchmarkReport.from_dict(json.loads(baseline_path.read_text(encoding="utf-8")))
+        comparison = compare(baseline, report)
+        print(f"\nComparaison a la reference : {comparison.summary_line()}")
+        for change in comparison.improvements:
+            print(f"  + {change.describe()}")
+        for change in comparison.regressions:
+            print(f"  ! {change.describe()}")
+        for name in comparison.missing_scenarios:
+            print(f"  ? scenario absent du banc courant : {name}")
 
-    baseline = BenchmarkReport.from_dict(json.loads(baseline_path.read_text(encoding="utf-8")))
-    comparison = compare(baseline, report)
-    print(f"\nComparaison a la reference : {comparison.summary_line()}")
-    for change in comparison.improvements:
-        print(f"  + {change.describe()}")
-    for change in comparison.regressions:
-        print(f"  ! {change.describe()}")
-    for name in comparison.missing_scenarios:
-        print(f"  ? scenario absent du banc courant : {name}")
-    return 0 if comparison.acceptable else 1
+    # **Le verdict de porte se rend a chaque banc, pas seulement sur demande.**
+    # Une porte que l'on n'evalue qu'au moment ou l'on croit la franchir est une
+    # porte dont on choisit la date : elle ne mesure plus rien.
+    porte = gate_verdict(
+        report,
+        name="GATE B — graines reservees" if args.hidden else "GATE A — banc fixe",
+        comparison=comparison,
+        minimum_win_rate=GATE_B_MINIMUM_WIN_RATE if args.hidden else 0.0,
+    )
+    print("\n" + porte.render())
+    if comparison is not None and not comparison.acceptable:
+        return 1
+    # **Le verdict se lit toujours, mais ne rougit le code de sortie que sur une
+    # execution de porte explicite.** Faire echouer le banc ordinaire tant que la
+    # Gate A n'est pas franchie le laisserait rouge pendant des semaines, et un
+    # signal toujours rouge ne signale plus rien — l'alarme de regression, elle,
+    # doit rester lisible.
+    return 0 if (porte.passed or not args.hidden) else 1
 
 
 def _cmd_doctrine(config: AppConfig) -> int:

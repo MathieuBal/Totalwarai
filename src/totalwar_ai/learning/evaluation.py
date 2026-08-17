@@ -42,20 +42,30 @@ DEFAULT_SEEDS: tuple[int, ...] = (11, 23, 37)
 #: 101, 102, … — plage deja brulee par ce meme ADR. Elles ne sont atteignables
 #: que par `bench --hidden`, et ce nom est la pour qu'on ne les tape pas par
 #: distraction.
-HIDDEN_SEEDS: tuple[int, ...] = (
-    9001,
-    9002,
-    9003,
-    9004,
-    9005,
-    9006,
-    9007,
-    9008,
-    9009,
-    9010,
-    9011,
-    9012,
+#:
+#: .. rubric:: Une reserve lue est brulee
+#:
+#: **Un seul pool ne suffit pas, et c'est le piege suivant.** Le jour ou l'on
+#: joue `B1`, ou l'on regarde le score, ou l'on corrige le code en consequence,
+#: `B1` a servi a choisir : ce n'est plus un jeu de controle, c'est devenu un jeu
+#: de developpement, et le rejouer ne mesurerait que la correction qu'il a lui-
+#: meme inspiree. D'ou trois pools, consommes dans l'ordre — chacun ne juge
+#: qu'une fois.
+HIDDEN_SEED_POOLS: tuple[tuple[int, ...], ...] = (
+    tuple(9001 + index for index in range(12)),
+    tuple(9101 + index for index in range(12)),
+    tuple(9201 + index for index in range(12)),
 )
+
+#: Pool de controle courant. Les precedents ont ete lus, donc brules.
+HIDDEN_SEEDS: tuple[int, ...] = HIDDEN_SEED_POOLS[0]
+
+#: Taux de victoire minimal exige par la Gate B, sur graines reservees.
+#:
+#: La Gate A n'en impose aucun : elle exige a la place **une victoire par
+#: famille**, ce qui est plus strict qu'une moyenne. Une moyenne de 90 %
+#: s'obtient tres bien avec une famille a zero.
+GATE_B_MINIMUM_WIN_RATE = 0.90
 
 #: Baisse maximale toleree avant de parler de regression.
 DEFAULT_WIN_RATE_TOLERANCE = 0.10
@@ -336,6 +346,88 @@ class Comparison:
             f"forces restantes {self.strength_before:.0%} -> {self.strength_after:.0%} "
             f"({verdict})"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class GateVerdict:
+    """Verdict d'une porte de validation, rendu sans interpretation.
+
+    **Une porte se definit avant l'experience, ou elle ne definit rien.** Cette
+    classe existe parce que le contrat de la Gate A, tel qu'il avait ete ecrit
+    dans l'ADR 0016, se contredisait : il exigeait « aucun scenario a 0 % » et
+    admettait dans la meme phrase qu'un nul contre un ennemi passif ne soit pas
+    un echec. Les deux ne tiennent pas ensemble, et l'ambiguite se serait
+    resolue — apres coup — dans le sens qui arrangeait le resultat.
+
+    Le critere retenu est le plus strict des deux : **chaque famille doit
+    produire au moins une victoire**. Une superiorite locale mesuree valide la
+    primitive qui la produit ; elle ne valide pas l'issue de la bataille.
+    """
+
+    name: str
+    #: Familles n'ayant pas produit une seule victoire, toutes graines confondues.
+    winless: tuple[str, ...] = ()
+    #: Familles attendues et absentes du rapport.
+    missing: tuple[str, ...] = ()
+    #: Regressions relevees face a la reference, quand il y en a une.
+    regressions: tuple[str, ...] = ()
+    win_rate: float = 0.0
+    minimum_win_rate: float = 0.0
+
+    @property
+    def passed(self) -> bool:
+        return (
+            not self.winless
+            and not self.missing
+            and not self.regressions
+            and self.win_rate >= self.minimum_win_rate
+        )
+
+    def render(self) -> str:
+        lignes = [f"--- {self.name} ---"]
+        if self.minimum_win_rate > 0.0:
+            lignes.append(
+                f"  taux de victoire {self.win_rate:.0%} (minimum {self.minimum_win_rate:.0%})"
+            )
+        else:
+            lignes.append(f"  taux de victoire {self.win_rate:.0%}")
+        if self.winless:
+            lignes.append(f"  sans aucune victoire : {', '.join(self.winless)}")
+        if self.missing:
+            lignes.append(f"  absents du banc     : {', '.join(self.missing)}")
+        if self.regressions:
+            lignes.append(f"  regressions         : {len(self.regressions)}")
+        lignes.append("  -> " + ("FRANCHIE" if self.passed else "NON FRANCHIE"))
+        return "\n".join(lignes)
+
+
+def gate_verdict(
+    report: BenchmarkReport,
+    *,
+    name: str,
+    comparison: Comparison | None = None,
+    minimum_win_rate: float = 0.0,
+) -> GateVerdict:
+    """Juge un banc contre un contrat de porte.
+
+    Chaque scenario compte pour une famille : le banc n'en regroupe aucun, et
+    inventer des familles ici reviendrait a choisir apres coup lesquelles
+    peuvent se permettre de ne jamais gagner.
+    """
+    return GateVerdict(
+        name=name,
+        winless=tuple(
+            entry.scenario for entry in report.scenarios if entry.battles and not entry.win_rate
+        ),
+        missing=tuple(comparison.missing_scenarios) if comparison is not None else (),
+        regressions=(
+            tuple(item.describe() for item in comparison.regressions)
+            if comparison is not None
+            else ()
+        ),
+        win_rate=report.win_rate,
+        minimum_win_rate=minimum_win_rate,
+    )
 
 
 def compare(

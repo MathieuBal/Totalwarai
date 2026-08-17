@@ -141,10 +141,25 @@ révoquées parce qu'elles dégradaient les résultats — l'une faisait passer
 ### La sonde d'intégration parle un protocole séparé
 
 `bridge/command_models.py` définit un protocole **plus pauvre** que celui de
-`bridge/protocol.py`. Cette pauvreté n'est pas un provisoire à combler : c'est le
-résultat du recensement mené en bataille. Le bac à sable Lua ne donne accès ni
-au terrain, ni au moral, ni à la fatigue, ni à la largeur des unités, et aucune
-version future de notre code n'y changera quoi que ce soit.
+`bridge/protocol.py`. Cette pauvreté est le résultat du recensement mené en
+bataille : le bac à sable Lua n'a pas rendu de moral, de fatigue ni de largeur
+d'unité.
+
+> **Cette page a longtemps dit « et aucune version future de notre code n'y
+> changera quoi que ce soit ». C'était faux, et il faut le dire ici.**
+>
+> Le recensement avait essayé `unary_morale` et `fatigue`. WARHAMMER III
+> documente `fatigue_state()`, `is_wavering()`, `is_crumbling()`,
+> `current_target()`, `ordered_width()` — **des noms différents, jamais
+> essayés**. Une absence constatée sous un mauvais nom n'est pas une absence.
+>
+> Le terrain, lui, est déjà tombé : `v_to_ground` fonctionne et
+> `bm:get_terrain_height` est présent, voir
+> [`feasibility.md`](feasibility.md). L'altitude n'est plus « la seule donnée de
+> terrain » par nécessité, mais par recensement inachevé.
+>
+> Ce que le jeu donne est donc une **capacité négociée par la révision du
+> protocole**, jamais une hypothèse permanente.
 
 La sonde a donc cessé d'être une sonde. Elle transporte aujourd'hui la bataille
 entière, des manœuvres complètes, et la délégation à l'IA du jeu — le détail est
@@ -253,10 +268,11 @@ pas disparaître parce qu'une nouvelle bataille commence.
 
 ### Apprendre en regardant jouer l'IA du moteur
 
-Notre agent ne verra jamais le moral ni la fatigue, et du terrain il ne connait que l'altitude — le recensement
-l'a établi accesseur par accesseur. Écrire des règles à la main contre un
-adversaire qui y voit a donc un plafond. La voie retenue est de **l'observer et
-d'apprendre ses décisions**.
+Notre agent voit aujourd'hui moins que l'IA du moteur : ni moral ni fatigue, et
+du terrain seulement l'altitude — mais c'est l'état d'un recensement **inachevé**
+et non une limite prouvée (voir l'encadré plus haut). Écrire des règles à la main
+contre un adversaire qui en voit davantage a donc un plafond. La voie retenue est
+de **l'observer et d'apprendre ses décisions**.
 
 Trois pièces sont en place, aucune n'ayant encore vu une vraie bataille :
 

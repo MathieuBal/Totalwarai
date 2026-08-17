@@ -222,6 +222,13 @@ class BattlePlan:
     power_ratio: float = 1.0
     #: Assaut de secteur en cours. `None` : personne ne concentre nulle part.
     assault: Assault | None = None
+    #: Rapport local **a cet instant**, et nombre d'assaillants au contact.
+    #:
+    #: Le plan etant journalise a chaque recalcul, ces deux chiffres suffisent a
+    #: reconstituer apres coup les phases d'un assaut — choix, premier contact,
+    #: contact principal — sans aucun chemin d'evenements supplementaire.
+    assault_ratio_now: float = 0.0
+    assault_contact: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -233,6 +240,8 @@ class BattlePlan:
             "created_at": self.created_at,
             "power_ratio": self.power_ratio,
             "assault": self.assault.to_dict() if self.assault is not None else None,
+            "assault_ratio_now": round(self.assault_ratio_now, 3),
+            "assault_contact": self.assault_contact,
         }
 
 
@@ -487,6 +496,8 @@ class Planner:
             created_at=state.game_time,
             power_ratio=ratio,
             assault=assault,
+            assault_ratio_now=assault.live_ratio(state) if assault is not None else 0.0,
+            assault_contact=assault.contact(state) if assault is not None else 0,
         )
 
     def _pick_assault(
@@ -517,21 +528,27 @@ class Planner:
           manoeuvre, elle n'en remplace aucune, et c'est ce qui protege les
           scenarios deja gagnes.
         """
-        if withdrawing:
-            # **Les deux manoeuvres se contredisent, et il faut choisir.** Le
-            # repli tirant recule toute la formation pour garder l'ennemi sous le
-            # feu ; l'assaut envoie une partie de la ligne au contact. Menes
-            # ensemble, ils se defont : mesure sur `balanced_clash`, 100 % de
-            # victoires tombees a 0 %, forces restantes 33 % -> 21 %.
-            #
-            # Le repli l'emporte tant qu'il dure, parce qu'il a une fin — les
-            # munitions — apres laquelle l'assaut redevient possible sur un
-            # adversaire deja entame.
-            self._assault = None
-            return None
+        # **Un assaut commence n'est pas annule par le repli ; il n'en commence
+        # simplement aucun pendant.** L'ordre de ces deux tests est le correctif,
+        # et il vient d'une mesure.
+        #
+        # Le repli annulait l'assaut, et cela se voyait : sur `outnumbered`,
+        # **douze assauts sur douze graines, jamais arrives au contact**. Choisi a
+        # t=0 avec un rapport local de 1,50, relache a t=20 s parce que l'ennemi
+        # etait passe a 12 m — bien en deca de `withdraw_trigger`. La manoeuvre
+        # n'echouait ni par manque de vitesse ni par manque de puissance : elle
+        # n'avait jamais lieu.
+        #
+        # Les faire coexister n'est pas une contradiction, c'est l'ordre oblique :
+        # une partie de la ligne refuse le combat et recule sous le feu, l'autre
+        # frappe la ou nous sommes les plus forts. Ce que la mesure precedente
+        # avait pris pour une incompatibilite etait un assaut **lance pendant**
+        # un repli, jamais un assaut poursuivi malgre lui.
         if self._assault is not None and not self._assault.broken(state):
             return self._assault
         self._assault = None
+        if withdrawing:
+            return None
         if posture is Posture.DEFEND:
             # **`DEFEND` est la posture de celui qui a l'avantage du feu**, et sa
             # manoeuvre gagnante est d'attendre sous ce feu puis de reculer en

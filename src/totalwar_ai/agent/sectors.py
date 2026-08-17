@@ -157,6 +157,50 @@ class Assault:
             return True
         return restant <= self.initial_enemy_strength * BREAK_SHARE
 
+    def live_ratio(self, state: BattleState) -> float:
+        """Le rapport local **maintenant**, sur les memes cibles.
+
+        **C'est le chiffre qui manquait.** Le rapport publie jusqu'ici etait celui
+        du *choix* : 1,50 sur `outnumbered`. Personne ne savait ce qu'il valait
+        une fois les assaillants arrives — et sans ce second chiffre, « le
+        probleme est la mobilite » et « le probleme est la conversion » sont
+        indiscernables, alors qu'ils appellent des correctifs opposes.
+
+        Meme formule qu'au choix, soutien adverse compris : c'est la comparaison
+        qui doit avoir un sens, pas le chiffre pris isolement.
+        """
+        vises = set(self.targets)
+        dedans = [unit for unit in state.enemies() if unit.id in vises and unit.is_available]
+        if not dedans:
+            return float("inf")
+        cout = sum(unit.effective_strength for unit in dedans) + sum(
+            unit.effective_strength
+            for unit in state.enemies()
+            if unit.id not in vises
+            and unit.is_available
+            and any(unit.position.distance_2d(autre.position) <= SUPPORT_RADIUS for autre in dedans)
+        )
+        engagee = sum(
+            unit.effective_strength
+            for unit in state.allies()
+            if unit.id in set(self.attackers) and unit.is_available
+        )
+        return engagee / cout if cout > 1e-9 else float("inf")
+
+    def contact(self, state: BattleState) -> int:
+        """Combien d'assaillants sont au contact d'une cible du secteur."""
+        vises = set(self.targets)
+        return sum(
+            1
+            for unit in state.allies()
+            if unit.id in set(self.attackers)
+            and unit.is_engaged
+            and any(
+                autre.id in vises and unit.position.distance_2d(autre.position) <= SUPPORT_RADIUS
+                for autre in state.enemies()
+            )
+        )
+
     def explain(self) -> str:
         return (
             f"assaut du secteur {self.sector} : {len(self.attackers)} unite(s) "
