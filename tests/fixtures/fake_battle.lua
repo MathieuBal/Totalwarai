@@ -90,6 +90,16 @@ local function make_unit(id, unit_type, x, z, controllable)
         -- Un accesseur present mais qui echoue : le recensement doit le
         -- distinguer d'un accesseur absent.
         unary_morale = function(self) error("non disponible dans ce contexte") end,
+
+        -- --- de quoi chronometrer une mise en batterie -----------------------
+        --
+        -- Absents par defaut, comme les munitions et le moral : une unite ne
+        -- devient un tireur que si un test le decide (`FAKE:arm_unit`). Sans
+        -- cela, tout le monde tirerait dans le faux jeu et le chronometrage ne
+        -- pourrait jamais etre distingue d'une absence de tireur.
+        ammo = 20,
+        moving = true,
+        target = nil,
     }
 end
 
@@ -304,6 +314,45 @@ end
 
 function FAKE:make_unit(id, unit_type, x, z, controllable)
     return make_unit(id, unit_type, x, z, controllable)
+end
+
+--- Fait d'une unite un tireur observable, pour le chronometrage.
+---
+--- Les accesseurs sont ajoutes ici et non dans `make_unit` : le vrai jeu ne les
+--- donne pas a tout le monde, et une unite qui tirerait par defaut rendrait le
+--- chronometrage indiscernable d'une absence de tireur.
+function FAKE:arm_unit(unit_id, portee)
+    local units = bm:alliances():item(1):armies():item(1):units()
+    for index = 1, units:count() do
+        local unit = units:item(index)
+        if tostring(unit:unique_ui_id()) == tostring(unit_id) then
+            unit.missile_range = function(self) return portee or 120 end
+            unit.ammo_left = function(self) return self.ammo end
+            unit.is_moving = function(self) return self.moving == true end
+            unit.current_target = function(self) return self.target end
+            return unit
+        end
+    end
+    return nil
+end
+
+--- Immobilise le tireur, lui donne une cible, puis lui fait consommer une salve.
+---
+--- Chaque etape est separee pour que le test puisse verifier que la sonde releve
+--- bien `t1`, `t2` puis `t3` — et surtout dans quel ordre.
+function FAKE:missile_stop(unit_id)
+    local unit = self:arm_unit(unit_id)
+    if unit then unit.moving = false end
+end
+
+function FAKE:missile_acquire(unit_id, target_id)
+    local unit = self:arm_unit(unit_id)
+    if unit then unit.target = target_id or "cible" end
+end
+
+function FAKE:missile_fire(unit_id)
+    local unit = self:arm_unit(unit_id)
+    if unit then unit.ammo = unit.ammo - 1 end
 end
 
 return FAKE

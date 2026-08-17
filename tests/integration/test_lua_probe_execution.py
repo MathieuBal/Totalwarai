@@ -657,21 +657,26 @@ def test_le_cli_mesure_le_deplacement_total_pas_le_premier_pas(
 def test_le_recensement_distingue_present_absent_et_en_erreur(probe: Probe) -> None:
     """Trois issues, trois messages : c'est tout l'interet du recensement.
 
-    Le mod tiers etudie ne lit ni le moral ni la fatigue. Plutot que de
-    supposer, la sonde demande au jeu et journalise ce qu'elle obtient.
+    Le format porte desormais **le motif de l'absence**. Un `nil` silencieux ne
+    dit pas si l'accesseur n'existe pas, s'il a leve, ou s'il a repondu « rien »
+    — trois situations differentes, dont une seule est une absence, et le
+    premier recensement s'y est fait prendre : il avait conclu a l'absence
+    structurelle du moral apres avoir essaye `unary_morale`, quand le jeu nomme
+    `is_wavering`.
     """
     probe.advance(1500)
 
     assert probe.grep("recensement des accesseurs")
     # Present et fonctionnel.
-    assert probe.grep("number_of_men_alive : number 64")
-    assert probe.grep("unary_hitpoints : number 0.800")
-    assert probe.grep("is_routing : boolean false")
-    # Present mais qui leve : distinct d'un accesseur absent.
-    assert probe.grep("unary_morale : ERREUR")
-    # Absent du faux jeu.
-    assert probe.grep("ammo_left : ABSENT")
-    assert probe.grep("fatigue : ABSENT")
+    assert probe.grep("API number_of_men_alive OK value=number 64")
+    assert probe.grep("API unary_hitpoints OK value=number 0.800")
+    assert probe.grep("API is_routing OK value=boolean false")
+    # Present mais qui leve : le motif doit apparaitre, pas seulement l'echec.
+    leve = probe.grep("API unary_morale ABSENT error=")
+    assert leve and "pas une fonction" not in leve[0]
+    # Absent du faux jeu : motif explicite, jamais un silence.
+    assert probe.grep("API ammo_left ABSENT error=pas une fonction")
+    assert probe.grep("API fatigue ABSENT error=pas une fonction")
 
 
 def test_le_recensement_resume_les_accesseurs_utilisables(probe: Probe) -> None:
@@ -1008,8 +1013,8 @@ def test_le_recensement_observe_aussi_une_unite_de_troupe(workdir: Path) -> None
 
     assert probe.grep("premiere unite : wh3_dlc20_chs_cha_daemon_prince_mnur")
     assert probe.grep("unite de troupe : wh3_main_nur_inf_plaguebearers_1")
-    assert probe.grep("number_of_men_alive : number 1")
-    assert probe.grep("number_of_men_alive : number 80")
+    assert probe.grep("API number_of_men_alive OK value=number 1")
+    assert probe.grep("API number_of_men_alive OK value=number 80")
 
 
 def test_une_armee_sans_troupe_le_signale(workdir: Path) -> None:
@@ -1349,3 +1354,57 @@ def test_la_sonde_publie_deux_etats_par_seconde(probe: Probe) -> None:
         for premiere, seconde in itertools.pairwise(etats)
     ]
     assert max(ecarts) <= 500, f"ecarts de publication : {ecarts}"
+
+
+def test_le_chronometrage_du_tir_releve_arret_cible_et_salve(probe: Probe) -> None:
+    """La mesure qui juge une correction deja livree.
+
+    Notre simulateur laisse toute unite de tir non engagee tirer, en mouvement
+    ou non. Si le jeu impose l'arret aux unites depourvues de
+    `fire_while_moving`, le repli tirant qui porte `balanced_clash` a onze
+    victoires sur douze repose sur une permissivite inexistante.
+
+    Ce test ne repond pas a la question — seul le jeu le peut — mais il verifie
+    que la sonde **saura la poser** : les trois instants doivent etre releves, et
+    la ligne de salve doit dire si l'unite marchait encore.
+    """
+    probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.advance(1500)
+    assert probe.grep("chronometrage de la mise en batterie")
+
+    probe.advance(500)
+    probe.fake.missile_stop(probe.fake, "1006")
+    probe.advance(500)
+    assert probe.grep("MISSILE t1 arret")
+
+    probe.fake.missile_acquire(probe.fake, "1006", "2001")
+    probe.advance(500)
+    assert probe.grep("MISSILE t2 cible acquise")
+
+    probe.fake.missile_fire(probe.fake, "1006")
+    probe.advance(500)
+    salve = probe.grep("MISSILE t3 premiere salve")
+    assert salve, "la premiere salve doit etre datee"
+    # C'est cette moitie de ligne qui tranche la question du tir en mouvement.
+    assert "en_marche=false" in salve[0]
+    assert "apres_arret=" in salve[0]
+
+
+def test_une_salve_tiree_en_marche_est_signalee_comme_telle(probe: Probe) -> None:
+    """Le cas oppose doit se distinguer, sinon la mesure ne mesure rien."""
+    probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.advance(1500)
+
+    # L'unite tire sans s'etre jamais arretee.
+    probe.fake.missile_fire(probe.fake, "1006")
+    probe.advance(500)
+    salve = probe.grep("MISSILE t3 premiere salve")
+    assert salve
+    assert "en_marche=true" in salve[0]
+    assert "apres_arret=jamais_arrete" in salve[0]
+
+
+def test_sans_unite_de_tir_le_chronometrage_le_dit(probe: Probe) -> None:
+    """Une absence de tireur ne doit pas se confondre avec une absence de mesure."""
+    probe.advance(1500)
+    assert probe.grep("MISSILE aucune unite de tir")

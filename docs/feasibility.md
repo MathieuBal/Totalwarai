@@ -267,6 +267,66 @@ n'ont aucune donnée sur quoi s'appuyer.
 Tant que ce recensement n'a pas eu lieu, ces manques doivent être reportés dans
 les règles de l'agent — il déciderait sinon sur des champs constamment vides.
 
+### Le recensement de la révision 15 — ce qu'il demande, et pourquoi
+
+La sonde en révision 15 interroge **toute la surface d'état d'une unité**, par
+famille, et non plus une vingtaine de noms choisis. Trois choses ont changé dans
+sa méthode.
+
+**L'absence se journalise avec son motif.** Le format est désormais :
+
+```text
+[totalwar_ai] API fatigue_state OK value=string threshold_fresh
+[totalwar_ai] API is_wavering ABSENT error=pas une fonction
+[totalwar_ai] ATTR fire_while_moving OK value=false
+```
+
+Un `nil` silencieux ne distingue pas « la fonction n'existe pas » de « elle a
+levé » ni de « elle a répondu *rien* » — trois situations dont une seule est une
+absence, et c'est exactement le piège dans lequel le premier recensement est
+tombé.
+
+**Les anciens noms restent interrogés.** `unary_morale`, `fatigue`, `speed`,
+`width` sont conservés dans la liste alors qu'on les sait absents : savoir
+qu'ils le sont fait partie du résultat, et les retirer effacerait la trace de
+l'erreur.
+
+**`has_attribute` a sa propre boucle**, parce qu'il prend un argument — et c'est
+lui qui porte la question la plus lourde du moment.
+
+### Le chronomètre de mise en batterie
+
+Notre simulateur laisse aujourd'hui **toute** unité de tir non engagée tirer, en
+mouvement ou non. L'argument était que `RETREAT` et `MOVE_GROUP` se traduisent
+par la même commande vers le jeu — ce qui reste vrai — mais il masquait une
+question distincte : *le jeu autorise-t-il un tireur ordinaire à tirer en
+marchant ?* WH3 documente l'attribut `fire_while_moving`, ce qui suggère que
+non.
+
+Si c'est le cas, le **repli tirant** qui porte `balanced_clash` à onze victoires
+sur douze repose sur une permissivité que le jeu n'a pas.
+
+La sonde chronomètre donc quatre instants sur une unité de tir :
+
+```text
+[totalwar_ai] MISSILE t1 arret a 500 ms
+[totalwar_ai] MISSILE t2 cible acquise a 1000 ms
+[totalwar_ai] MISSILE t3 premiere salve a 1500 ms en_marche=false apres_arret=1000
+```
+
+`en_marche=true` dirait que la salve est partie pendant le déplacement, et notre
+simulateur aurait raison. `en_marche=false` dirait l'inverse, et il faudra le
+corriger — en republiant ce que le banc devient, effondrement compris.
+
+> Le chronomètre s'arrête de lui-même, à la première salve ou après son quota de
+> relevés : ce n'est pas un coût permanent. Il compte les ticks plutôt que
+> d'appeler `bm:time_stamp()`, qui n'a jamais été recensé — introduire un appel
+> non vérifié dans le script dont le rôle est de ne rien supposer serait le
+> meilleur moyen de perdre la mesure entière sur une erreur Lua.
+
+Les trois chemins sont exercés par le harnais `lupa` avant tout essai en jeu :
+salve après arrêt, salve en marche, et absence d'unité de tir.
+
 ### Le terrain : ce qui est acquis, et ce qui reste à publier
 
 Ce document a longtemps porté « aucune donnée de terrain ». C'était vrai des

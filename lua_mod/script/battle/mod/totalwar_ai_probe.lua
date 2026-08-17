@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 14
+TOTALWAR_AI_PROBE_REVISION = 15
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -656,32 +656,102 @@ end
     par tick.
 ----------------------------------------------------------------------------]]
 
---- Accesseurs sans argument a tester sur une unite alliee.
+--- Accesseurs sans argument a tester sur une unite alliee, par famille.
+---
+--- **Une absence constatee sous un mauvais nom n'est pas une absence.** Le
+--- recensement de la revision 14 avait essaye `unary_morale`, `fatigue`,
+--- `unary_fatigue`, `fatigue_level`, `speed` et `width` — tous absents — puis
+--- conclu que le moral, la fatigue, la vitesse et la formation etaient
+--- structurellement hors de portee. La documentation du jeu nomme pourtant
+--- `fatigue_state`, `is_wavering`, `slow_speed`, `fast_speed` et
+--- `ordered_width`, qui n'ont jamais ete demandes.
+---
+--- Les anciens noms restent dans la liste : savoir qu'ils sont absents fait
+--- partie du resultat, et les retirer effacerait la trace de l'erreur.
 local UNIT_ACCESSORS = {
+    -- Identite et nature.
     "unique_ui_id",
     "type",
     "name",
     "is_controllable",
     "is_valid_target",
     "is_commanding_unit",
+    "strategic_value",
+    "is_infantry",
+    "is_cavalry",
+    "is_artillery",
+    "can_fly",
+    "is_currently_flying",
+    -- Mouvement et formation.
     "is_idle",
+    "is_moving",
+    "is_moving_fast",
+    "bearing",
+    "ordered_bearing",
+    "ordered_position",
+    "ordered_width",
+    "slow_speed",
+    "fast_speed",
+    "speed", -- essaye en revision 14 : absent
+    "width", -- essaye en revision 14 : absent
+    -- Effectifs et sante.
     "number_of_men",
     "number_of_men_alive",
+    "initial_number_of_men",
+    "unary_of_men_alive",
     "unary_hitpoints",
-    "unary_morale",
+    "number_of_enemies_killed",
+    -- Combat en cours.
+    "current_target",
+    "is_in_melee",
+    "is_under_missile_attack",
+    -- Psychologie. Aucun de ces cinq n'a jamais ete demande.
+    "fatigue_state",
+    "is_wavering",
+    "is_crumbling",
+    "is_unstable",
+    "is_rampaging",
     "is_routing",
     "is_shattered",
-    "is_hidden",
-    "is_in_melee",
-    "can_fly",
-    "bearing",
+    "unary_morale", -- essaye en revision 14 : absent
+    "fatigue", -- essaye en revision 14 : absent
+    "unary_fatigue", -- essaye en revision 14 : absent
+    "fatigue_level", -- essaye en revision 14 : absent
+    -- Tir.
     "ammo_left",
+    "starting_ammo",
     "missile_range",
-    "fatigue",
-    "unary_fatigue",
-    "fatigue_level",
-    "speed",
-    "width",
+    -- Visibilite.
+    "is_hidden",
+    "is_visible_to_alliance",
+    -- Capacites.
+    "num_special_abilities",
+    "owned_special_abilities",
+    "owned_passive_special_abilities",
+    "owned_non_passive_special_abilities",
+    "can_use_magic",
+}
+
+--- Attributs a interroger via `has_attribute(cle)`.
+---
+--- Les quatre premiers decident d'une question de fidelite que notre simulateur
+--- tranche aujourd'hui **dans le sens permissif sans preuve** : une unite de tir
+--- y tire en se deplacant. Si le jeu l'interdit aux unites depourvues de
+--- `fire_while_moving`, notre repli tirant repose sur une permissivite qui
+--- n'existe pas — et il porte `balanced_clash` a 11 victoires sur 12.
+local UNIT_ATTRIBUTES = {
+    "fire_while_moving",
+    "mounted_fire",
+    "mounted_fire_move",
+    "mounted_fire_parthian",
+    "causes_fear",
+    "causes_terror",
+    "fatigue_immune",
+    "unbreakable",
+    "undead",
+    "stalk",
+    "snipe",
+    "hide_forest",
 }
 
 --- Methodes candidates de `script_ai_planner`.
@@ -751,18 +821,41 @@ function PROBE:census_unit_accessors(unit, label)
     for index = 1, #UNIT_ACCESSORS do
         local name = UNIT_ACCESSORS[index]
         local method = unit[name]
+        -- **L'absence se journalise comme un fait, avec son motif.** Un `nil`
+        -- silencieux ne dit pas si l'accesseur n'existe pas, s'il a leve une
+        -- erreur, ou s'il a repondu « rien » — trois situations differentes,
+        -- dont une seule est une absence.
         if type(method) ~= "function" then
-            self:log("  " .. name .. " : ABSENT")
+            self:log("  API " .. name .. " ABSENT error=pas une fonction")
         else
             local ok, value = pcall(method, unit)
             if ok then
-                self:log("  " .. name .. " : " .. describe(value))
+                self:log("  API " .. name .. " OK value=" .. describe(value))
                 disponibles[#disponibles + 1] = name
             else
-                self:log("  " .. name .. " : ERREUR " .. tostring(value))
+                self:log("  API " .. name .. " ABSENT error=" .. tostring(value))
             end
         end
     end
+
+    -- `has_attribute` prend un argument : il ne peut pas passer par la boucle
+    -- ci-dessus, et c'est pourtant lui qui porte la question du tir en
+    -- mouvement.
+    if type(unit.has_attribute) ~= "function" then
+        self:log("  API has_attribute ABSENT error=pas une fonction")
+    else
+        for index = 1, #UNIT_ATTRIBUTES do
+            local cle = UNIT_ATTRIBUTES[index]
+            local ok, value = pcall(unit.has_attribute, unit, cle)
+            if ok then
+                self:log("  ATTR " .. cle .. " OK value=" .. tostring(value))
+            else
+                self:log("  ATTR " .. cle .. " ABSENT error=" .. tostring(value))
+            end
+        end
+        disponibles[#disponibles + 1] = "has_attribute"
+    end
+
     self:log("accesseurs utilisables : " .. table.concat(disponibles, ", "))
     self:log("--- fin du recensement ---")
 
@@ -926,6 +1019,108 @@ function PROBE:census_terrain()
     self:log("--- fin du recensement ---")
 end
 
+--- Chronometre la mise en batterie d'une unite de tir.
+---
+--- **C'est la mesure qui juge une correction deja livree.** Notre simulateur
+--- laisse aujourd'hui toute unite de tir non engagee tirer, en mouvement ou non.
+--- L'argument etait qu'un ordre de repli et un ordre de deplacement sont la meme
+--- commande vers le jeu — ce qui reste vrai — mais il masquait une question
+--- distincte : **le jeu autorise-t-il un tireur ordinaire a tirer en marchant ?**
+---
+--- Si la reponse est non, le repli tirant qui porte `balanced_clash` a onze
+--- victoires sur douze repose sur une permissivite que WARHAMMER III n'a pas, et
+--- le simulateur devra se taire.
+---
+--- Quatre instants suffisent a trancher :
+---
+---     t0  ordre de deplacement emis
+---     t1  is_moving passe a faux
+---     t2  current_target devient non nul
+---     t3  ammo_left decroit pour la premiere fois
+---
+--- `t3 - t1` est le delai de mise en batterie ; `t3 - t0` l'attente reelle avant
+--- le premier degat. Et surtout : **`t3` tombe-t-il avant `t1` ?** Une salve
+--- partie avant l'arret repondrait oui au tir en mouvement.
+---
+--- Le suivi s'arrete de lui-meme apres `MISSILE_WATCH_TICKS` releves : ce n'est
+--- pas un cout permanent.
+local MISSILE_WATCH_TICKS = 120
+local MISSILE_WATCH_INTERVAL_MS = 250
+
+function PROBE:watch_missile_readiness(unit)
+    if not unit then
+        self:log("MISSILE aucune unite de tir : chronometrage impossible")
+        return
+    end
+    local depart = self:read_field(unit, "ammo_left")
+    if depart == nil then
+        self:log("MISSILE ammo_left absent : chronometrage impossible")
+        return
+    end
+
+    self:log(
+        "--- chronometrage de la mise en batterie (" .. tostring(unit:type()) .. ") ---"
+    )
+    -- **Le temps se compte en ticks, pas avec `bm:time_stamp()`.** Cet
+    -- accesseur n'a jamais ete recense, et introduire un appel non verifie dans
+    -- le script dont le role est justement de ne rien supposer serait le
+    -- meilleur moyen de perdre la mesure entiere sur une erreur Lua.
+    local suivi = {
+        restant = MISSILE_WATCH_TICKS,
+        munitions = depart,
+        arrete = nil,
+        cible = nil,
+        salve = nil,
+        ecoule = 0,
+    }
+
+    bm:repeat_callback(function()
+        suivi.restant = suivi.restant - 1
+        if suivi.restant <= 0 then
+            bm:remove_process("totalwar_ai_missile")
+            self:log("--- fin du chronometrage ---")
+            return
+        end
+
+        suivi.ecoule = suivi.ecoule + MISSILE_WATCH_INTERVAL_MS
+        local maintenant = suivi.ecoule
+        local bouge = self:read_field(unit, "is_moving")
+        if suivi.arrete == nil and bouge == false then
+            suivi.arrete = maintenant
+            self:log("MISSILE t1 arret a " .. json_number(maintenant) .. " ms")
+        end
+
+        local cible = self:read_field(unit, "current_target")
+        if suivi.cible == nil and cible ~= nil then
+            suivi.cible = maintenant
+            self:log("MISSILE t2 cible acquise a " .. json_number(maintenant) .. " ms")
+        end
+
+        local munitions = self:read_field(unit, "ammo_left")
+        if suivi.salve == nil and munitions ~= nil and munitions < suivi.munitions then
+            suivi.salve = maintenant
+            -- **La ligne qui tranche.** `en_marche=true` signifie qu'une salve
+            -- est partie alors que l'unite se deplacait encore : le tir en
+            -- mouvement serait alors autorise, et notre simulateur aurait
+            -- raison. `en_marche=false` dit l'inverse, et nous devrons le
+            -- corriger.
+            self:log(
+                "MISSILE t3 premiere salve a " .. json_number(maintenant) .. " ms"
+                    .. " en_marche=" .. tostring(bouge == true)
+                    .. " apres_arret="
+                    .. (suivi.arrete and json_number(maintenant - suivi.arrete) or "jamais_arrete")
+            )
+            bm:remove_process("totalwar_ai_missile")
+            self:log("--- fin du chronometrage ---")
+        end
+    end, MISSILE_WATCH_INTERVAL_MS, "totalwar_ai_missile")
+end
+
+--- Lance le chronometrage sur la premiere unite de tir trouvee.
+function PROBE:start_missile_watch()
+    self:watch_missile_readiness(self:find_missile_unit())
+end
+
 --- Appelle un accesseur si le recensement l'a declare utilisable.
 ---
 --- Renvoie `nil` quand il est absent : l'appelant omet alors le champ. C'est
@@ -987,6 +1182,28 @@ function PROBE:find_multi_entity_unit()
         if unit then
             local ok, men = pcall(function() return unit:number_of_men_alive() end)
             if ok and type(men) == "number" and men > 1 then
+                return unit
+            end
+        end
+    end
+    return nil
+end
+
+--- Trouve une unite de tir alliee, pour le chronometrage de mise en batterie.
+---
+--- `missile_range` plutot que le nom : le recensement a etabli que les
+--- identifiants de WARHAMMER III ne disent pas si une unite tire — un
+--- `wh3_main_tze_inf_blue_horrors_0` n'a que le segment `_inf_` et porte
+--- pourtant quatre-vingt-dix de portee.
+function PROBE:find_missile_unit()
+    local alliance = bm:alliances():item(bm:local_alliance())
+    local army = alliance:armies():item(bm:local_army())
+    local units = army:units()
+    for index = 1, units:count() do
+        local unit = units:item(index)
+        if unit then
+            local ok, portee = pcall(function() return unit:missile_range() end)
+            if ok and type(portee) == "number" and portee > 0 then
                 return unit
             end
         end
@@ -1757,6 +1974,11 @@ function PROBE:start()
         else
             self:log("aucune unite de plus d'une entite trouvee : recensement partiel")
         end
+
+        -- Le chronometrage du tir n'est pas un recensement d'accesseur : il
+        -- demande d'observer une unite dans la duree. Il s'arrete de lui-meme,
+        -- soit a la premiere salve, soit au bout de son quota de releves.
+        self:guarded("start_missile_watch")
     end
 
     bm:repeat_callback(function() self:guarded("publish_state") end,
