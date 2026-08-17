@@ -20,6 +20,7 @@ FAKE = {
     controllers = {},      -- unitcontrollers crees, pour inspection
     orders = {},           -- ordres recus : { kind, unit_id, x, z }
     planners = {},         -- script_ai_planner crees, pour inspection
+    terrain_height = 12.5, -- meme altitude que les unites : la concordance doit tenir
 }
 
 function out(msg)
@@ -100,6 +101,26 @@ local function make_unit(id, unit_type, x, z, controllable)
         ammo = 20,
         moving = true,
         target = nil,
+
+        -- --- accesseurs a argument -------------------------------------------
+        --
+        -- **Ils prennent un argument, et c'est tout l'interet du test.** Appeles
+        -- sans, ils levent — et la sonde les journaliserait `ABSENT` alors qu'ils
+        -- existent. C'est l'erreur historique du projet, reproduite ici volontairement
+        -- pour qu'un test puisse verifier qu'elle ne se reproduit plus.
+        visible = true,
+        is_visible_to_alliance = function(self, alliance)
+            if alliance == nil then
+                error("is_visible_to_alliance attend une alliance")
+            end
+            return self.visible == true
+        end,
+        can_reach_position = function(self, position)
+            if position == nil or position.get_x == nil then
+                error("can_reach_position attend un battle_vector")
+            end
+            return true
+        end,
     }
 end
 
@@ -129,9 +150,13 @@ local function make_unit_controller()
                     x = destination.x,
                     z = destination.z,
                 }
-                -- Le faux jeu deplace l'unite immediatement.
+                -- Le faux jeu deplace l'unite immediatement, mais la declare
+                -- **en marche** : c'est `FAKE:missile_stop` qui decide de son
+                -- arrivee. Sans cela, `is_moving` serait faux des le premier
+                -- releve et le chronometrage n'aurait aucun `t1`.
                 self.units[index].pos = make_vector(destination.x, 12.5, destination.z)
                 self.units[index].idle = false
+                self.units[index].moving = true
             end
             return true
         end,
@@ -259,6 +284,10 @@ function FAKE:setup(units, enemies, reinforcements)
         alliances_collection = make_collection(alliances),
         alliances = function(self) return self.alliances_collection end,
         local_alliance = function(self) return 1 end,
+        -- Sonde de relief : rend une altitude constante, la meme que celle des
+        -- unites du faux jeu. La concordance a trois termes doit donc etre
+        -- verifiable ici avant tout essai en bataille.
+        get_terrain_height = function(self, x, z) return FAKE.terrain_height end,
         local_army = function(self) return 1 end,
         is_multiplayer = function(self) return FAKE.multiplayer end,
         time_elapsed_ms = function(self) return FAKE.now_ms end,
@@ -348,6 +377,24 @@ end
 function FAKE:missile_acquire(unit_id, target_id)
     local unit = self:arm_unit(unit_id)
     if unit then unit.target = target_id or "cible" end
+end
+
+--- Rend une unite invisible pour l'alliance qui l'observe.
+function FAKE:hide_unit(unit_id)
+    for a = 1, bm:alliances():count() do
+        local armies = bm:alliances():item(a):armies()
+        for b = 1, armies:count() do
+            local units = armies:item(b):units()
+            for index = 1, units:count() do
+                local unit = units:item(index)
+                if tostring(unit:unique_ui_id()) == tostring(unit_id) then
+                    unit.visible = false
+                    return unit
+                end
+            end
+        end
+    end
+    return nil
 end
 
 function FAKE:missile_fire(unit_id)

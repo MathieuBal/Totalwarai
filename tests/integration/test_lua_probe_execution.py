@@ -1356,49 +1356,74 @@ def test_la_sonde_publie_deux_etats_par_seconde(probe: Probe) -> None:
     assert max(ecarts) <= 500, f"ecarts de publication : {ecarts}"
 
 
-def test_le_chronometrage_du_tir_releve_arret_cible_et_salve(probe: Probe) -> None:
-    """La mesure qui juge une correction deja livree.
+def test_le_chronometrage_attend_la_phase_deployed(probe: Probe) -> None:
+    """Avant `Deployed`, aucun ordre ne prend effet — donc aucune mesure possible.
 
-    Notre simulateur laisse toute unite de tir non engagee tirer, en mouvement
-    ou non. Si le jeu impose l'arret aux unites depourvues de
-    `fire_while_moving`, le repli tirant qui porte `balanced_clash` a onze
-    victoires sur douze repose sur une permissivite inexistante.
-
-    Ce test ne repond pas a la question — seul le jeu le peut — mais il verifie
-    que la sonde **saura la poser** : les trois instants doivent etre releves, et
-    la ligne de salve doit dire si l'unite marchait encore.
+    La premiere ecriture demarrait le chronometrage depuis `PROBE:start()`, donc
+    potentiellement en deploiement : elle aurait releve un arret immediat, aucune
+    cible, puis expire avant le debut de la bataille, sans jamais poser la
+    question qu'elle annoncait.
     """
     probe.fake.arm_unit(probe.fake, "1006", 120)
     probe.advance(1500)
+    assert not probe.grep("chronometrage de la mise en batterie")
+
+    probe.enter_phase("Deployed")
     assert probe.grep("chronometrage de la mise en batterie")
 
+
+def test_le_chronometrage_emet_un_vrai_ordre_de_deplacement(probe: Probe) -> None:
+    """Sans ordre, il n'y a pas de `t0` — et sans `t0`, rien n'est mesure."""
+    probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.advance(1500)
+    probe.enter_phase("Deployed")
+
+    depart = probe.grep("MISSILE t0 ordre envoye")
+    assert depart, "le chronometrage doit emettre un deplacement, pas seulement observer"
+    assert "fire_while_moving=" in depart[0], "l'attribut doit accompagner la mesure"
+    # L'ordre doit avoir reellement atteint le jeu.
+    assert any(order["kind"] == "goto" for order in probe.orders())
+
+
+def test_une_salve_apres_arret_est_datee_et_situee(probe: Probe) -> None:
+    """Le cas ou le jeu imposerait l'arret pour tirer."""
+    probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.advance(1500)
+    probe.enter_phase("Deployed")
     probe.advance(500)
+    assert probe.grep("MISSILE t1")
+
     probe.fake.missile_stop(probe.fake, "1006")
     probe.advance(500)
-    assert probe.grep("MISSILE t1 arret")
+    assert probe.grep("MISSILE t2")
 
     probe.fake.missile_acquire(probe.fake, "1006", "2001")
     probe.advance(500)
-    assert probe.grep("MISSILE t2 cible acquise")
+    assert probe.grep("MISSILE t3")
 
     probe.fake.missile_fire(probe.fake, "1006")
     probe.advance(500)
-    salve = probe.grep("MISSILE t3 premiere salve")
-    assert salve, "la premiere salve doit etre datee"
-    # C'est cette moitie de ligne qui tranche la question du tir en mouvement.
+    salve = probe.grep("MISSILE t4")
+    assert salve
     assert "en_marche=false" in salve[0]
-    assert "apres_arret=" in salve[0]
 
 
 def test_une_salve_tiree_en_marche_est_signalee_comme_telle(probe: Probe) -> None:
-    """Le cas oppose doit se distinguer, sinon la mesure ne mesure rien."""
+    """Le cas oppose doit se distinguer, sinon la mesure ne mesure rien.
+
+    **C'est cette ligne qui juge notre simulateur.** `en_marche=true` dirait
+    qu'un tireur peut tirer en se deplacant, et notre modele aurait raison ;
+    `en_marche=false` dirait l'inverse, et le repli tirant qui porte
+    `balanced_clash` a 11/12 reposerait sur une permissivite inexistante.
+    """
     probe.fake.arm_unit(probe.fake, "1006", 120)
     probe.advance(1500)
+    probe.enter_phase("Deployed")
 
     # L'unite tire sans s'etre jamais arretee.
     probe.fake.missile_fire(probe.fake, "1006")
     probe.advance(500)
-    salve = probe.grep("MISSILE t3 premiere salve")
+    salve = probe.grep("MISSILE t4")
     assert salve
     assert "en_marche=true" in salve[0]
     assert "apres_arret=jamais_arrete" in salve[0]
@@ -1407,4 +1432,56 @@ def test_une_salve_tiree_en_marche_est_signalee_comme_telle(probe: Probe) -> Non
 def test_sans_unite_de_tir_le_chronometrage_le_dit(probe: Probe) -> None:
     """Une absence de tireur ne doit pas se confondre avec une absence de mesure."""
     probe.advance(1500)
+    probe.enter_phase("Deployed")
     assert probe.grep("MISSILE aucune unite de tir")
+
+
+# --- accesseurs qui prennent un argument -------------------------------------
+
+
+def test_un_accesseur_a_argument_est_appele_avec_son_argument(bataille: Probe) -> None:
+    """L'erreur historique du projet, cette fois empechee par un test.
+
+    La revision 14 avait declare le moral « structurellement absent » apres
+    l'avoir demande sous un mauvais nom. `is_visible_to_alliance` prend une
+    alliance : range dans la boucle des accesseurs sans argument, il aurait
+    leve, et la sonde aurait conclu a une absence sur le drapeau meme qui decide
+    si notre general peut respecter le brouillard de guerre.
+    """
+    bataille.advance(1500)
+
+    ligne = bataille.grep("API is_visible_to_alliance")
+    assert ligne, "l'accesseur doit etre recense"
+    assert "OK value=" in ligne[0], f"appele de travers : {ligne[0]}"
+    # Le test n'a de sens que sur une unite adverse : les notres sont toujours
+    # visibles, et la reponse ne prouverait rien.
+    assert "sur=ennemi" in ligne[0]
+
+
+def test_can_reach_position_est_recense_avec_un_vecteur(bataille: Probe) -> None:
+    bataille.advance(1500)
+    ligne = bataille.grep("API can_reach_position")
+    assert ligne
+    assert "OK value=" in ligne[0], f"appele de travers : {ligne[0]}"
+
+
+def test_le_terrain_est_reellement_sonde_et_compare(bataille: Probe) -> None:
+    """« Presente » n'est pas une mesure.
+
+    La revision precedente se contentait de constater qu'une fonction portait ce
+    nom. Toute la valeur est dans la concordance a trois termes, au meme point.
+    """
+    bataille.advance(1500)
+
+    appel = bataille.grep("API bm:get_terrain_height OK value=")
+    assert appel, "la fonction doit etre appelee, pas seulement declaree presente"
+
+    concordance = bataille.grep("CONCORDANCE")
+    assert concordance
+    ligne = concordance[0]
+    assert "unit_y=" in ligne
+    assert "v_to_ground=" in ligne
+    assert "get_terrain_height=" in ligne
+    # Le faux jeu place les unites et le sol a la meme altitude : les trois
+    # termes doivent coincider, sinon le point de controle ne vaut rien.
+    assert "get_terrain_height=12.500" in ligne
