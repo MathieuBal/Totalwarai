@@ -1,0 +1,54 @@
+# Verification reproductible.
+#
+# Jusqu'ici, tous les « tests verts » du projet etaient des resultats locaux
+# rapportes par une session de developpement. Personne d'autre ne pouvait les
+# reproduire, et rien n'empechait une regression de passer inapercue entre deux
+# sessions.
+#
+# **Les graines reservees ne tournent jamais ici.** `bench --hidden` affiche le
+# verdict des pools de controle : le publier a chaque proposition de changement
+# reviendrait a les rendre visibles, donc a les bruler. Ce sont des verdicts
+# d'etape, pas un test continu.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verifier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Installer le projet et ses outils
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Ruff — regles
+        run: python -m ruff check .
+
+      - name: Ruff — mise en forme
+        run: python -m ruff format --check .
+
+      - name: mypy
+        run: python -m mypy src
+
+      # `PYTHONHASHSEED` est fixe a une valeur qui n'est ni 0 ni celle du hasard :
+      # l'ADR 0011 a montre que le banc pouvait dependre de cette graine sans que
+      # personne ne le voie, et que deux valeurs bien choisies passaient malgre le
+      # defaut. Le test de determinisme couvre le cas ; l'epingler ici garantit au
+      # moins que la CI ne varie pas d'une execution a l'autre.
+      - name: pytest
+        run: python -m pytest -q
+        env:
+          PYTHONHASHSEED: "1"
