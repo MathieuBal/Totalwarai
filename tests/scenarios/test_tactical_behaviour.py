@@ -199,3 +199,32 @@ def test_scenarios_favorables_sont_gagnes(
     result = run_battle(get_scenario(scenario_name), config=config, generate_report=False)
     assert result.outcome.value == "victory"
     assert result.summary.ally_remaining >= minimum_share
+
+
+def test_l_agent_cree_une_superiorite_locale_en_etant_inferieur_globalement() -> None:
+    """La manoeuvre doit **exister**, avant d'exiger qu'elle gagne.
+
+    C'est le point de la concentration locale : une armee n'a pas besoin d'etre
+    superieure partout au meme instant, elle doit l'etre la ou ca compte.
+    `outnumbered` oppose un rapport global de 0,67 — nettement inferieur — et
+    l'agent doit malgre tout trouver une tranche du front ou il vaut au moins
+    1,5.
+
+    **Ce test n'exige aucune victoire**, et c'est deliberé. Un taux de victoire
+    ne distingue pas « la manoeuvre ne se declenche jamais » de « elle se
+    declenche et ne change rien » : les deux rendent le meme chiffre. Celui-ci
+    separe les deux, et c'est la seule chose qu'il pretend faire.
+    """
+    resultat = run_battle(get_scenario("outnumbered"), seed=11, keep_states=True, adapt=False)
+
+    global_ratio = resultat.states[0].power_ratio()
+    assert global_ratio < 1.0, "le scenario doit bien nous mettre en inferiorite"
+
+    assauts = int(resultat.summary.metrics.get("sector_assaults", 0))
+    meilleur = float(resultat.summary.metrics.get("assault_best_ratio", 0.0))
+    assert assauts > 0, "aucune superiorite locale n'a ete cherchee"
+    assert meilleur >= 1.5, f"superiorite locale insuffisante : {meilleur:.2f}"
+    assert meilleur > global_ratio, (
+        f"le rapport local ({meilleur:.2f}) doit depasser le rapport global "
+        f"({global_ratio:.2f}) — sinon rien n'a ete concentre"
+    )

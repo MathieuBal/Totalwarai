@@ -31,6 +31,7 @@ from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.learning.checkpoints import CheckpointStore
 from totalwar_ai.learning.evaluation import (
     DEFAULT_SEEDS,
+    HIDDEN_SEEDS,
     BenchmarkReport,
     compare,
     render_table,
@@ -130,6 +131,11 @@ def build_parser() -> argparse.ArgumentParser:
         "bench", help="rejouer le banc de scenarios et detecter les regressions"
     )
     bench.add_argument("--seeds", type=int, default=3, help="nombre de graines par scenario")
+    bench.add_argument(
+        "--hidden",
+        action="store_true",
+        help="jouer les graines reservees (verdict d'etape ; jamais pendant le developpement)",
+    )
     bench.add_argument("--scenario", action="append", help="limiter a ce scenario (repetable)")
     bench.add_argument(
         "--save-baseline", action="store_true", help="enregistrer ce banc comme reference"
@@ -1443,10 +1449,18 @@ def _cmd_bench(args: argparse.Namespace, config: AppConfig) -> int:
         seeds = tuple(DEFAULT_SEEDS) + tuple(
             101 + index for index in range(args.seeds - len(DEFAULT_SEEDS))
         )
+    if args.hidden:
+        seeds = HIDDEN_SEEDS
 
     if args.supervised:
         return _bench_supervised(scenarios, seeds, config)
 
+    if args.hidden:
+        print(
+            "Banc de controle : graines reservees, jamais jouees pendant le\n"
+            "developpement. Ce que ce tableau donne n'est pas un reglage a\n"
+            "ajuster — c'est un verdict.\n"
+        )
     print(f"Banc : {len(scenarios)} scenarios x {len(seeds)} graines {seeds}\n")
     report = run_benchmark(scenarios, seeds=seeds, config=config, label=args.label)
     print(render_table(report))

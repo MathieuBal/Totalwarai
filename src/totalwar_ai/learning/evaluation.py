@@ -25,6 +25,38 @@ from totalwar_ai.simulation.scenarios import Scenario, ScenarioCatalog
 #: Graines par defaut du banc. Fixes : un banc qui bouge ne mesure rien.
 DEFAULT_SEEDS: tuple[int, ...] = (11, 23, 37)
 
+#: Graines **reservees**, jouees seulement au moment de valider une etape.
+#:
+#: .. warning::
+#:
+#:    **Ne jamais les jouer pendant le developpement.** Ni pour regler un seuil,
+#:    ni pour diagnostiquer, ni « juste pour voir ». Une graine qui a servi a
+#:    choisir n'est plus une graine de controle : elle mesure la recherche qu'on
+#:    a faite dessus.
+#:
+#: L'ADR 0013 a coute la lecon : un ecart de +4 points mesure sur les graines de
+#: reglage n'en valait plus qu'un seul sur des graines inedites. Les +4 etaient
+#: du bruit qu'on avait appris par coeur.
+#:
+#: Volontairement hors de portee de `bench --seeds N`, qui prolonge la serie par
+#: 101, 102, … — plage deja brulee par ce meme ADR. Elles ne sont atteignables
+#: que par `bench --hidden`, et ce nom est la pour qu'on ne les tape pas par
+#: distraction.
+HIDDEN_SEEDS: tuple[int, ...] = (
+    9001,
+    9002,
+    9003,
+    9004,
+    9005,
+    9006,
+    9007,
+    9008,
+    9009,
+    9010,
+    9011,
+    9012,
+)
+
 #: Baisse maximale toleree avant de parler de regression.
 DEFAULT_WIN_RATE_TOLERANCE = 0.10
 DEFAULT_STRENGTH_TOLERANCE = 0.10
