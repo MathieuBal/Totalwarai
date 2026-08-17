@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from totalwar_ai.agent.mobility import MobilityTracker
 from totalwar_ai.domain.battle_state import BattleState
 from totalwar_ai.domain.geometry import Vector3, centroid
-from totalwar_ai.domain.unit_state import UnitState
+from totalwar_ai.domain.unit_state import RANGED_ROLES, UnitRole, UnitState
 
 #: Rayon dans lequel une unite pese sur le combat de sa voisine, en metres.
 #:
@@ -102,6 +102,20 @@ ASSAULT_DEADLINE = 90.0
 #: pas un combat a trois contre un — c'est la defaite en detail, appliquee a
 #: nous-memes et de notre propre initiative.
 ASSAULT_WINDOW = 15.0
+
+#: Roles qui peuvent porter un assaut, c'est-a-dire recevoir l'ordre d'attaquer.
+#:
+#: **Le numerateur ne doit compter que ce qui ira au contact.** Les tireurs
+#: appuient l'assaut par le feu — `Planner._assault_target` concentre deja leurs
+#: salves sur le secteur — mais les compter comme de la force de melee ferait
+#: annoncer une superiorite qui ne sera jamais livree.
+#:
+#: La cavalerie **en fait partie**, parce que `_command_cavalry` honore desormais
+#: l'assaut : une charge de flanc concentree est le meilleur usage possible d'une
+#: cavalerie de choc, et c'est precisement la manoeuvre visee. Elle n'y figurait
+#: pas tant qu'elle ne recevait pas l'ordre — compter une force qui ne vient pas
+#: est exactement le defaut que l'archer a revele.
+ASSAULT_ROLES = frozenset(role for role in UnitRole if role not in RANGED_ROLES)
 
 #: Part de la force initiale sous laquelle un secteur est considere rompu.
 BREAK_SHARE = 0.35
@@ -303,6 +317,17 @@ def split_sectors(
     droite = max(projete.values())
     largeur = max(droite - gauche, 1e-6) / count
 
+    # **Seules les unites qui recevront l'ordre d'attaquer comptent.**
+    # `_command_front_line` n'itere que le groupe de front : un tireur ou une
+    # cavalerie figurant parmi les assaillants ne recoit jamais d'ordre d'assaut,
+    # et gonflait pourtant le rapport annonce.
+    #
+    # Mesure sur `outnumbered` : l'assaut annoncait 1,50 — deux lanciers et un
+    # archer, soit 3,00 contre un cout de 2,00 — alors que la melee reelle
+    # opposait les deux lanciers seuls, 2,00 contre 2,00. **La parite, presentee
+    # comme une superiorite de moitie.** L'agent a echange toute sa ligne de
+    # melee contre deux ennemis, puis n'a plus rien fait pendant quatre minutes.
+    combattants = [unit for unit in allies if unit.role in ASSAULT_ROLES]
     ancre = centroid([unit.position for unit in allies]) if allies else Vector3()
     tranches: list[Sector] = []
     for index in range(count):
@@ -334,7 +359,9 @@ def split_sectors(
             if unit.id not in membres
             and any(unit.position.distance_2d(autre.position) <= SUPPORT_RADIUS for autre in dedans)
         )
-        atteignables = [unit for unit in allies if mobility.eta(unit, centre) <= ASSAULT_DEADLINE]
+        atteignables = [
+            unit for unit in combattants if mobility.eta(unit, centre) <= ASSAULT_DEADLINE
+        ]
         tranches.append(
             Sector(
                 index=index,

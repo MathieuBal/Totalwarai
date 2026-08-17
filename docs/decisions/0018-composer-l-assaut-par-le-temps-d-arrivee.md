@@ -82,6 +82,66 @@ arriver du tout — 90 s, une borne qui ne doit pas mordre.
 **L'assaut arrive désormais au-dessus de la parité.** Le banc reste à 82 % de
 victoires, forces restantes 80 %, aucune régression.
 
+## Ce que la mesure d'apres a revele : un rapport qui mentait
+
+Une fois le rapport tenu jusqu'au contact, la question « pourquoi le secteur ne
+rompt-il pas ? » a pu se poser sur les bons termes. La reponse etait plus dure
+que prevu.
+
+Sur `outnumbered` — un **quatre contre six** — l'assaut annoncait 1,50 avec trois
+assaillants : deux lanciers **et un archer**. Or `_command_front_line` n'itere
+que le groupe de front : l'archer ne recevait jamais d'ordre d'assaut. La melee
+reelle opposait les deux lanciers seuls, **2,00 contre 2,00** — la parite,
+presentee comme une superiorite de moitie.
+
+Ce que cela coutait, mesure etat par etat :
+
+```
+t=  0s  secteur 2.00   assaut 3.00
+t= 40s  secteur 0.42   assaut 2.06
+t= 60s  secteur 0.17   assaut 0.98   <- les deux lanciers en deroute
+t=200s  secteur 0.16   assaut 0.75   <- plus rien ne bouge, 400 s durant
+```
+
+Le secteur est bien enfonce. Mais l'agent y a laisse **toute sa ligne de melee**,
+et il ne restait ensuite qu'un archer et un seigneur : 67 ordres en 260 secondes,
+dont 54 pour repositionner le seigneur, et **aucune attaque**.
+
+> Le numerateur ne doit compter que ce qui ira au contact. Les tireurs appuient
+> par le feu — `_assault_target` concentre deja leurs salves sur le secteur —
+> mais les compter comme de la force de melee fait annoncer une superiorite qui
+> ne sera jamais livree.
+
+`ASSAULT_ROLES` restreint donc la composition. Effet mesure : `outnumbered` cesse
+de lancer cet assaut — **ce qui est le bon comportement**, deux lanciers contre
+deux ennemis n'etant pas une superiorite — et les forces restantes du banc
+passent de 80 % a **81 %**.
+
+## La cavalerie, et une branche qui etait morte
+
+Restreindre aux roles qui recoivent l'ordre excluait aussi la cavalerie, menee
+par `_command_cavalry` qui ignorait l'assaut. Elle honore desormais la manoeuvre :
+une charge de flanc concentree est le meilleur usage possible d'une cavalerie de
+choc.
+
+**La branche n'a d'abord rien fait du tout** — zero charge sur tout le banc. La
+cause tient au moment ou l'assaut se compose : le **premier** plan de la
+bataille, quand le suivi de mobilite n'a encore rien observe. Tout le monde
+portait la vitesse par defaut, la cavalerie postee sur l'aile paraissait plus
+lointaine que l'infanterie, et n'etait jamais retenue.
+
+D'ou `ROLE_SPEED_PRIOR` : une vitesse presumee par role, tant que l'unite n'a pas
+ete vue marcher. **Ce n'est pas un canal privilegie** — le role vient de notre
+propre classifieur, qui le deduit de la cle d'unite et des etiquettes, dont
+l'agent dispose aussi en bataille reelle. C'est toute la difference avec
+`template.speed`, que seul le simulateur connait.
+
+Les valeurs n'ont besoin d'etre justes qu'**en ordre** ; l'observation corrige
+les grandeurs des les premieres secondes, et un test verifie qu'elle prime.
+
+Mesure : 3 charges de cavalerie sur `numerical_superiority`, 1 sur
+`rout_pursuit`.
+
 ## Ce que cela ne fait pas
 
 `outnumbered` reste un nul et **Gate A n'est pas franchie** — le verdict le dit à

@@ -1242,7 +1242,47 @@ class Planner:
             for unit in our_missiles
             if state.threats_to(unit, self.settings.ranged_threat_radius)
         ]
+        assaut = plan.assault
+        assaillants = set(assaut.attackers) if assaut is not None else set()
+        vises = (
+            [unit for unit in enemies if assaut is not None and unit.id in set(assaut.targets)]
+            if assaut is not None
+            else []
+        )
+
         for index, rider in enumerate(cavalry):
+            # **La cavalerie porte l'assaut comme le reste de la ligne.** Elle en
+            # etait exclue tant qu'elle ne recevait pas l'ordre : la compter dans
+            # le rapport annonce sans jamais l'envoyer aurait promis une force
+            # qui ne viendrait pas — c'est le defaut que l'archer a revele sur
+            # `outnumbered`, ou 1,50 annonce valait 1,00 livre.
+            #
+            # Une charge de flanc concentree est precisement la manoeuvre visee :
+            # c'est le meilleur usage possible d'une cavalerie de choc, et le
+            # contournement opportuniste ci-dessous ne doit pas lui passer devant.
+            if rider.id in assaillants and vises and not rider.is_engaged:
+                cible = (
+                    self.select_target(rider, state, assignments=assignments, candidates=vises)
+                    or vises[0]
+                )
+                assignments[cible.id] = assignments.get(cible.id, 0) + 1
+                decisions.append(
+                    decide(
+                        AgentAction(
+                            type=ActionType.FLANK,
+                            actor_ids=(rider.id,),
+                            parameters={"target_id": cible.id},
+                            confidence=0.8,
+                        ),
+                        f"assaut du secteur {assaut.sector} : charge de flanc"
+                        if assaut is not None
+                        else "assaut : charge de flanc",
+                        "porter la charge la ou nous sommes deja les plus forts",
+                        confidence=0.8,
+                    )
+                )
+                continue
+
             if threatened and index == 0:
                 protege = threatened[0]
                 decisions.append(

@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from totalwar_ai.agent.mobility import DEFAULT_SPEED, MINIMUM_SPEED, MobilityTracker
+from totalwar_ai.agent.mobility import (
+    DEFAULT_SPEED,
+    MINIMUM_SPEED,
+    ROLE_SPEED_PRIOR,
+    MobilityTracker,
+)
 from totalwar_ai.agent.sectors import ASSAULT_WINDOW, commit, split_sectors
 from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.domain.unit_state import Side, UnitRole
@@ -152,3 +157,36 @@ def test_une_unite_qui_arriverait_trop_tard_ne_compte_pas(make_unit, make_battle
     # L'artillerie arrive a 50 s quand l'infanterie y est en 10 : elle ne doit
     # pas compter dans un rapport local qu'elle ne renforcera pas a temps.
     assert "lente" not in assaut.attackers
+
+
+def test_un_a_priori_de_role_donne_son_avantage_a_la_cavalerie(make_unit) -> None:
+    """Sans lui, la branche de charge de cavalerie etait du code mort.
+
+    L'assaut se compose au **premier** plan de la bataille, quand rien n'a encore
+    ete observe. Tout le monde portait alors la meme vitesse, la cavalerie postee
+    sur l'aile paraissait plus lointaine que l'infanterie, et n'etait jamais
+    retenue : mesure, zero charge de cavalerie sur tout le banc alors que le code
+    existait.
+    """
+    suivi = MobilityTracker()
+    cavalerie = make_unit("cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, 0.0, 0.0)
+    infanterie = make_unit("inf", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0, 0.0)
+    artillerie = make_unit("art", Side.ALLY, UnitRole.ARTILLERY, 0.0, 0.0)
+    cible = Vector3(0.0, 0.0, 200.0)
+
+    # L'ordre est ce qui compte ; les grandeurs se corrigent a l'observation.
+    assert suivi.eta(cavalerie, cible) < suivi.eta(infanterie, cible)
+    assert suivi.eta(infanterie, cible) < suivi.eta(artillerie, cible)
+
+
+def test_l_observation_prime_sur_l_a_priori(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Une cavalerie qu'on a vue trainer n'est plus presumee rapide."""
+    suivi = MobilityTracker()
+    suivi.observe(
+        make_battle([make_unit("cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, 0.0, 0.0)], game_time=0.0)
+    )
+    suivi.observe(
+        make_battle([make_unit("cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, 0.0, 4.0)], game_time=4.0)
+    )
+    presume = ROLE_SPEED_PRIOR[UnitRole.SHOCK_CAVALRY]
+    assert suivi.speed("cav", UnitRole.SHOCK_CAVALRY) < presume
