@@ -431,6 +431,38 @@ def _safety_events(battle_id: str, game_time: float, blocked: tuple[Decision, ..
     ]
 
 
+def _assaults(events: list[Event]) -> list[float]:
+    """Rapports locaux des assauts **reellement lances**, un par assaut.
+
+    Se lit dans les evenements `PLAN_SELECTED`, qui portent deja le plan complet :
+    l'assaut y figure depuis qu'il est un champ de `BattlePlan`. C'est la boucle
+    de decision reelle qui parle ici, et non un rejeu a posteriori — un plan
+    recalcule apres coup sur un etat enregistre n'a pas la memoire qu'avait le
+    planificateur a cet instant, et ne dirait donc pas la meme chose.
+
+    Un assaut est compte une fois : les plans suivants le reconduisent tant qu'il
+    n'a pas rompu, et les compter a chaque tour mesurerait sa duree, pas leur
+    nombre.
+    """
+    rapports: list[float] = []
+    precedent: tuple[Any, ...] | None = None
+    for event in events:
+        if event.type is not EventType.PLAN_SELECTED:
+            continue
+        # `plan_selected` etale le plan dans la charge utile : `assault` est donc
+        # une cle de premier niveau, pas un sous-objet.
+        assaut = event.payload.get("assault")
+        cle = (
+            (assaut.get("sector"), tuple(assaut.get("targets") or ()))
+            if isinstance(assaut, dict)
+            else None
+        )
+        if cle is not None and cle != precedent:
+            rapports.append(float(assaut.get("ratio", 0.0)))  # type: ignore[union-attr]
+        precedent = cle
+    return rapports
+
+
 def _metrics(
     *,
     transitions: int,
@@ -455,8 +487,16 @@ def _metrics(
         if event.type is EventType.UNIT_DESTROYED and event.payload.get("side") == Side.ENEMY.value
     )
     proposed = len(decisions) + len(blocked)
+    assauts = _assaults(events)
     return {
         "transitions": transitions,
+        # **Combien de fois l'agent a cree une superiorite locale, et de combien.**
+        # Un taux de victoire ne dit pas si la manoeuvre a eu lieu : elle peut ne
+        # jamais se declencher, ou se declencher et ne rien changer, et les deux
+        # produisent le meme chiffre. Ces deux-ci les separent.
+        "sector_assaults": len(assauts),
+        "assault_best_ratio": round(max(assauts), 2) if assauts else 0.0,
+        "assault_mean_ratio": round(sum(assauts) / len(assauts), 2) if assauts else 0.0,
         "orders_per_minute": round(len(decisions) / minutes, 2),
         "blocked_ratio": round(len(blocked) / proposed, 3) if proposed else 0.0,
         "allied_units_lost": destroyed_allies,

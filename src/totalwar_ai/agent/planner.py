@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from totalwar_ai.agent.explainability import Decision, decide
 from totalwar_ai.agent.grouping import GroupKind, GroupSet, TacticalGroup, build_groups
+from totalwar_ai.agent.sectors import Assault, commit, split_sectors
 from totalwar_ai.domain.actions import ActionType, AgentAction, Formation
 from totalwar_ai.domain.battle_state import BattlePhase, BattleState
 from totalwar_ai.domain.geometry import Vector3, centroid
@@ -219,6 +220,8 @@ class BattlePlan:
     rationale: str
     created_at: float = 0.0
     power_ratio: float = 1.0
+    #: Assaut de secteur en cours. `None` : personne ne concentre nulle part.
+    assault: Assault | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -229,6 +232,7 @@ class BattlePlan:
             "rationale": self.rationale,
             "created_at": self.created_at,
             "power_ratio": self.power_ratio,
+            "assault": self.assault.to_dict() if self.assault is not None else None,
         }
 
 
@@ -339,6 +343,15 @@ class Planner:
     #: pour trois fois rien. Une preference marginale ne vaut pas un demi-tour.
     _commitments: dict[str, str] = field(default_factory=dict)
 
+    #: Assaut de secteur en cours, d'un plan au suivant.
+    #:
+    #: **Collant comme la reserve, et pour la meme raison.** Un secteur rechoisi
+    #: a chaque plan reproduirait le defaut de la cavalerie qui a recu dix cibles
+    #: de contournement en cent trente secondes (ADR 0013) : les forces bougent,
+    #: le meilleur secteur change pour trois fois rien, et l'assaut n'aboutit
+    #: jamais. Il n'est relache qu'a la rupture.
+    _assault: Assault | None = None
+
     #: Unites actuellement tenues en reserve, d'un plan au suivant.
     #:
     #: **L'appartenance a la reserve doit survivre a la fatigue qu'elle cause.**
@@ -382,6 +395,7 @@ class Planner:
         """Oublie tout ce qui appartenait a la bataille precedente."""
         self._commitments.clear()
         self._reserve_ids.clear()
+        self._assault = None
 
     def build_plan(self, state: BattleState) -> BattlePlan:
         """Choisit la posture et recompose les groupes.
@@ -452,7 +466,8 @@ class Planner:
         if front.length_2d() <= 1e-9:
             front = Vector3(0.0, 0.0, 1.0)
 
-        if self._fighting_withdrawal(state, posture, anchor, allies, enemies):
+        repli = self._fighting_withdrawal(state, posture, anchor, allies, enemies)
+        if repli:
             # **Le repli porte sur l'ancre, donc sur toute la formation.** Reculer
             # la seule ligne de melee laisse les archers sur place : l'ennemi les
             # atteint, `_protect_ranged` les fait fuir, et la manoeuvre se retourne
@@ -461,6 +476,8 @@ class Planner:
             # reculait. Tout ce qui se place par rapport a l'ancre suit ici d'un
             # seul mouvement, en gardant ses distances.
             anchor = anchor - front.scaled(self.settings.withdraw_step)
+        assault = self._pick_assault(state, posture, front, allies, withdrawing=repli)
+
         return BattlePlan(
             posture=posture,
             anchor=anchor,
@@ -469,7 +486,85 @@ class Planner:
             rationale=rationale,
             created_at=state.game_time,
             power_ratio=ratio,
+            assault=assault,
         )
+
+    def _pick_assault(
+        self,
+        state: BattleState,
+        posture: Posture,
+        front: Vector3,
+        allies: Sequence[UnitState],
+        *,
+        withdrawing: bool,
+    ) -> Assault | None:
+        """Y a-t-il un endroit ou l'on peut etre nettement le plus fort ?
+
+        **On ne cherche pas a gagner partout, mais brutalement quelque part.** Le
+        critere n'est plus `force_totale / force_adverse >= 1.0` mais, sur une
+        tranche du front choisie expres, `force_engagee / cout_du_secteur >= 1.5`
+        — voir :mod:`totalwar_ai.agent.sectors`.
+
+        Trois garde-fous, dans cet ordre :
+
+        * **on garde l'assaut en cours** tant qu'il n'a pas rompu. Rechoisir a
+          chaque plan, c'est la cavalerie qui recevait dix cibles en cent trente
+          secondes et n'achevait aucun contournement (ADR 0013).
+        * **on ne concentre pas en reculant** : pendant un repli tirant, la
+          manoeuvre est de garder l'ennemi sous le feu, pas d'aller au contact.
+        * **on ne rend rien si aucun secteur n'atteint le rapport.** L'agent se
+          comporte alors exactement comme avant : la primitive ajoute une
+          manoeuvre, elle n'en remplace aucune, et c'est ce qui protege les
+          scenarios deja gagnes.
+        """
+        if withdrawing:
+            # **Les deux manoeuvres se contredisent, et il faut choisir.** Le
+            # repli tirant recule toute la formation pour garder l'ennemi sous le
+            # feu ; l'assaut envoie une partie de la ligne au contact. Menes
+            # ensemble, ils se defont : mesure sur `balanced_clash`, 100 % de
+            # victoires tombees a 0 %, forces restantes 33 % -> 21 %.
+            #
+            # Le repli l'emporte tant qu'il dure, parce qu'il a une fin — les
+            # munitions — apres laquelle l'assaut redevient possible sur un
+            # adversaire deja entame.
+            self._assault = None
+            return None
+        if self._assault is not None and not self._assault.broken(state):
+            return self._assault
+        self._assault = None
+        if posture is Posture.DEFEND:
+            # **`DEFEND` est la posture de celui qui a l'avantage du feu**, et sa
+            # manoeuvre gagnante est d'attendre sous ce feu puis de reculer en
+            # tirant. Y lancer un assaut revient a aller chercher la melee qu'on
+            # cherchait justement a differer : mesure sur `balanced_clash`, 100 %
+            # de victoires tombees a 0 %, forces restantes 33 % -> 20 %.
+            #
+            # `DELAY` est l'inverse et ne doit pas etre traitee pareil : on y est
+            # **inferieur globalement**, et battre en detail y est le seul chemin.
+            # Mesure sur `outnumbered` : aux trente premieres secondes, deux
+            # secteurs offrent 1,50 et 1,89 pour un rapport global de 0,67 — la
+            # fenetre existe, elle se referme vers la centieme seconde quand leur
+            # ligne se ressoude, et l'agent la dormait entierement.
+            return None
+        if any(unit.is_engaged for unit in allies):
+            # **L'assaut est une manoeuvre de l'approche, pas de la melee.** Une
+            # fois les lignes au contact, redistribuer la ligne entre assaillants
+            # et fixateurs revient a laisser des unites libres immobiles pendant
+            # que leurs voisines se battent — mesure sur `balanced_clash`, 0 %
+            # de victoires et forces restantes 33 % -> 21 %.
+            #
+            # A ce stade, concentrer veut dire **choisir ses cibles**, et c'est
+            # ce que `CONCENTRATION_WEIGHT` et `focus_bonus` font deja. Un assaut
+            # deja lance, lui, se poursuit : c'est lui qui a fixe le lieu du
+            # combat.
+            return None
+
+        carte = split_sectors(state, front, allies)
+        secteur = carte.best()
+        if secteur is None:
+            return None
+        self._assault = commit(secteur, state, allies, game_time=state.game_time)
+        return self._assault
 
     def _fighting_withdrawal(
         self,
@@ -884,7 +979,18 @@ class Planner:
             ]
             station = anchor - plan.front_direction.scaled(offset)
             for shooter in shooters:
-                target = self.select_target(
+                # **Le feu appuie l'assaut.** Concentrer la melee sur un secteur
+                # tout en laissant le tir s'eparpiller sur toute la ligne
+                # reviendrait a payer la concentration sans l'obtenir : les
+                # degats se retrouveraient etales exactement comme le montraient
+                # les batailles reelles — 9,77 unites-equivalent sur 19 regiments,
+                # aucun abattu.
+                #
+                # On ne force rien pour autant : si aucune cible du secteur n'est
+                # a portee, `select_target` rend `None` et l'on repasse au choix
+                # libre plutot que de laisser un tireur muet.
+                target = self._assault_target(shooter, state, plan, assignments)
+                target = target or self.select_target(
                     shooter, state, assignments=assignments, for_missile=True
                 )
                 if target is None:
@@ -927,6 +1033,24 @@ class Planner:
                     )
                 )
 
+    def _assault_target(
+        self,
+        shooter: UnitState,
+        state: BattleState,
+        plan: BattlePlan,
+        assignments: dict[str, int],
+    ) -> UnitState | None:
+        """Meilleure cible **du secteur assailli**, ou `None` si aucune n'est offerte."""
+        if plan.assault is None:
+            return None
+        vises = set(plan.assault.targets)
+        bassin = [unit for unit in state.enemies() if unit.id in vises and unit.is_available]
+        if not bassin:
+            return None
+        return self.select_target(
+            shooter, state, assignments=assignments, for_missile=True, candidates=bassin
+        )
+
     def _command_front_line(
         self,
         state: BattleState,
@@ -944,11 +1068,68 @@ class Planner:
             return
         heading = math.atan2(plan.front_direction.x, plan.front_direction.z)
 
+        assaut = plan.assault
+        assaillants = set(assaut.attackers) if assaut is not None else set()
+        vises = (
+            [unit for unit in enemies if assaut is not None and unit.id in set(assaut.targets)]
+            if assaut is not None
+            else []
+        )
+
         for unit in units:
             nearest = state.nearest(unit.position, enemies)
             if nearest is None:
                 continue
             enemy, distance = nearest
+
+            # **L'assaut passe avant la geometrie du front**, mais jamais avant
+            # une melee deja engagee : decrocher une unite au contact pour la
+            # renvoyer ailleurs, c'est la faire tuer de dos.
+            if assaut is not None and vises and not unit.is_engaged:
+                if unit.id in assaillants:
+                    cible = (
+                        self.select_target(unit, state, assignments=assignments, candidates=vises)
+                        or vises[0]
+                    )
+                    assignments[cible.id] = assignments.get(cible.id, 0) + 1
+                    ecart = unit.position.distance_2d(cible.position)
+                    decisions.append(
+                        decide(
+                            AgentAction(
+                                type=ActionType.ATTACK_TARGET,
+                                actor_ids=(unit.id,),
+                                parameters={"target_id": cible.id},
+                                confidence=0.8,
+                            ),
+                            f"assaut du secteur {assaut.sector} "
+                            f"(rapport local {assaut.ratio:.2f}), cible a {ecart:.0f} metres",
+                            "concentrer nettement plus fort sur une partie de leur ligne",
+                            confidence=0.8,
+                        )
+                    )
+                    continue
+                if distance > self.settings.engagement_distance:
+                    # **La fixation est ce qui rend l'assaut possible.** Sans
+                    # elle, le reste de la ligne suivrait le mouvement et l'on
+                    # aurait simplement charge tout le monde vers une meilleure
+                    # cible — pas concentre.
+                    decisions.append(
+                        decide(
+                            AgentAction(
+                                type=ActionType.HOLD_POSITION,
+                                actor_ids=(unit.id,),
+                                parameters={
+                                    "heading": self._threat_heading(unit, state, enemies) or heading
+                                },
+                                confidence=0.7,
+                            ),
+                            f"hors de l'assaut du secteur {assaut.sector} : fixer l'ennemi ici",
+                            "empecher l'adversaire de renforcer le secteur attaque",
+                            confidence=0.7,
+                        )
+                    )
+                    continue
+
             if unit.is_engaged or distance <= self.settings.engagement_distance:
                 # Seuls les ennemis a portee de charge sont des cibles credibles :
                 # courir a l'autre bout du champ pour une meilleure cible est un piege.
