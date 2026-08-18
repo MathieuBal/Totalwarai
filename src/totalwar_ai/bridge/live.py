@@ -24,7 +24,11 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 
-from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
+from totalwar_ai.agent.tactical_agent import (
+    STAGE_MICRO_MOVE,
+    STAGE_TRANSLATION,
+    DeterministicTacticalAgent,
+)
 from totalwar_ai.bridge.command_models import ProbeBattleState, ProbeUnitObservation
 from totalwar_ai.bridge.file_bridge import FileBridge
 from totalwar_ai.bridge.orders import OrderTranslator, Translation
@@ -74,6 +78,17 @@ class LiveStep:
     #: garde tous : la frequence d'observation n'est pas celle de decision, et
     #: un etat jete est une donnee d'apprentissage perdue pour toujours.
     observed: tuple[ProbeBattleState, ...] = ()
+    #: Etage ou la commande a disparu, quand rien n'est parti vers le jeu.
+    #:
+    #: **Deux de ces etages n'existent que dans le pont**, et le banc ne peut donc
+    #: structurellement pas les reveler : la traduction, et le filtre de
+    #: micro-deplacements. Or c'est precisement la que `_drop_micro_moves`
+    #: documente une paralysie deja constatee — « douze deplacements a t=3 s, puis
+    #: cent quatre-vingt-dix secondes sans un ordre, jusqu'a ce que l'operateur
+    #: deplace une unite a la souris ».
+    no_command_stage: str | None = None
+    #: Comptes par etage, repris du tour de l'agent puis completes par le pont.
+    stages: dict[str, int] = field(default_factory=dict)
     #: Ce que notre agent aurait decide, sans que rien ne parte vers le jeu.
     shadow: ShadowDecision | None = None
     #: Ordres que l'agent a tus parce qu'il les jugeait deja en cours.
@@ -136,6 +151,22 @@ class LiveStep:
         if self.suppressed:
             detail.append(f"{self.suppressed} deja en cours")
 
+        # **« Rien a faire » etait un mensonge par omission.** Un tour muet
+        # ressemblait a un tour ou l'agent n'avait rien a dire, alors que la
+        # commande pouvait avoir ete tuee a n'importe lequel des sept etages. En
+        # bataille reelle, 364 secondes de ces lignes-la se sont succede sans que
+        # rien n'indique ou la commande disparaissait.
+        # **L'etage prime sur le detail quand rien n'est parti.** Un tour muet
+        # affichait « 2 deja en cours » et rien d'autre : un motif de silence
+        # deguise en compte rendu d'activite. Or « deja en cours », « refusee par
+        # la securite » et « action perdue » ne sont pas des commandes emises —
+        # ce sont precisement les raisons pour lesquelles il n'y en a eu aucune.
+        if self.no_command_stage is not None:
+            comptes = ", ".join(f"{nom}={valeur}" for nom, valeur in self.stages.items() if valeur)
+            ligne = f"{entete} — NO_COMMAND stage={self.no_command_stage}"
+            if comptes:
+                ligne += f" [{comptes}]"
+            return ligne + (f" ({', '.join(detail)})" if detail else "")
         return f"{entete} — " + (", ".join(detail) if detail else "rien a faire")
 
 
@@ -246,18 +277,43 @@ class LiveSession:
         translation = self.translator.translate(tour.actions, domaine)
         for action_type, motif in translation.untranslated:
             LOGGER.debug("action non traduite : %s (%s)", action_type.value, motif)
+        traduits = translation.order_count
         translation = self._drop_micro_moves(translation, domaine)
 
         prises = tuple(decision.explain() for decision in tour.decisions)
         refusees = tuple(decision.explain() for decision in tour.blocked)
 
+        etages = {
+            "proposed": tour.proposed,
+            "below_confidence": tour.below_confidence,
+            "safety_blocked": tour.safety_blocked,
+            "duplicates": tour.duplicates,
+            "throttled": tour.throttled,
+            "emitted_by_agent": tour.emitted,
+            "untranslated": len(translation.untranslated),
+            "micro_dropped": traduits - translation.order_count,
+        }
+
         if translation.is_empty:
+            # **Le pont peut vider une commande que l'agent avait bien decidee.**
+            # Nommer lequel des deux etages l'a fait est tout l'objet de
+            # LIVE-001 : sans cela, un agent qui decide correctement et un pont
+            # qui n'envoie rien produisent le meme silence.
+            etage: str | None
+            if tour.emitted and etages["micro_dropped"]:
+                etage = STAGE_MICRO_MOVE
+            elif tour.emitted:
+                etage = STAGE_TRANSLATION
+            else:
+                etage = tour.no_command_stage
             return LiveStep(
                 state=state,
                 decisions=prises,
                 blocked=refusees,
                 translation=translation,
                 suppressed=tour.suppressed,
+                no_command_stage=etage,
+                stages=etages,
             )
 
         # Un seul message : deux commandes successives se perdraient, le
@@ -276,6 +332,7 @@ class LiveSession:
             sent=translation.order_count,
             suppressed=tour.suppressed,
             refused=self._refusals(commande.sequence),
+            stages=etages,
         )
 
     def _refusals(self, sequence: int) -> tuple[tuple[str, str], ...]:

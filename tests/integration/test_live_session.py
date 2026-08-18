@@ -992,3 +992,55 @@ def test_une_unite_qui_n_est_pas_arrivee_est_relancee(bataille: Probe, tmp_path:
     arrivee = Vector3(unite.position.x, 0.0, unite.position.z + MIN_REORDER_DISTANCE / 2)
     session._last_destination[unite.id] = arrivee
     assert not session._drop_micro_moves(Translation(moves=((unite.id, arrivee),)), domaine).moves
+
+
+# --- LIVE-001 : nommer l'etage ou la commande disparait -----------------------
+
+
+def test_un_tour_muet_nomme_l_etage_ou_la_commande_a_disparu(
+    session: LiveSession, bataille: Probe
+) -> None:
+    """Le defaut que le banc ne peut structurellement pas voir.
+
+    En bataille reelle, l'agent est reste **364 secondes** sans emettre une
+    commande pendant que son armee passait de 12 a 9 unites. Le banc, lui, ne
+    depasse jamais 11 s de silence — parce qu'il appelle l'agent directement et
+    **ne traverse ni la traduction ni le filtre de micro-deplacements**.
+
+    Or `_drop_micro_moves` documente exactement cette paralysie, deja constatee :
+    « douze deplacements a t=3 s, puis cent quatre-vingt-dix secondes sans un
+    ordre, jusqu'a ce que l'operateur deplace une unite a la souris ».
+
+    Un tour muet doit donc dire **ou** la commande est morte, sinon un agent qui
+    decide correctement et un pont qui n'envoie rien produisent le meme silence.
+    """
+    premier = session.step()
+    assert premier.sent, "le premier tour doit lancer l'armee"
+
+    # Rejoue sans laisser le temps aux unites d'avancer : les destinations
+    # recalculees sont les memes, et le pont les ecarte.
+    muets = []
+    for _ in range(6):
+        bataille.advance(500)
+        etape = session.step()
+        if etape.state is not None and not etape.sent and not etape.skipped:
+            muets.append(etape)
+
+    assert muets, "au moins un tour doit rester muet"
+    for etape in muets:
+        assert etape.no_command_stage is not None, (
+            "un tour muet sans etage nomme est exactement le silence "
+            "qu'on a passe une session a ne pas savoir expliquer"
+        )
+        assert etape.stages, "les comptes par etage doivent accompagner le verdict"
+        assert "NO_COMMAND stage=" in etape.summary()
+
+
+def test_un_tour_qui_commande_ne_porte_aucun_etage(session: LiveSession) -> None:
+    """`no_command_stage` ne se remplit que quand rien n'est parti.
+
+    Sans cela, le champ se remplirait a chaque tour et ne designerait plus rien.
+    """
+    etape = session.step()
+    assert etape.sent
+    assert etape.no_command_stage is None

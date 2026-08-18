@@ -31,6 +31,27 @@ if TYPE_CHECKING:
     from totalwar_ai.learning.targeting import TargetingModel
 
 
+#: Etages de la chaine de decision, dans l'ordre ou une commande peut y mourir.
+#:
+#: **Nommer l'etage est tout l'objet de LIVE-001.** En bataille reelle, l'agent
+#: est reste 364 secondes sans emettre une seule commande pendant que son armee
+#: passait de 12 a 9 unites. Le journal du jeu prouve le silence ; il ne dit pas
+#: ou, dans la chaine, la commande a disparu. Sans ce champ, chercher la cause
+#: revient a deviner.
+STAGE_PLANNER = "planner"
+STAGE_CONFIDENCE = "confidence"
+STAGE_SAFETY = "safety"
+STAGE_DUPLICATES = "duplicate_suppression"
+STAGE_THROTTLE = "throttle"
+#: Deux etages qui n'existent que dans le pont, et que le banc ne traverse jamais.
+#:
+#: Le banc appelle l'agent directement : ni traduction en ordres du jeu, ni filtre
+#: de micro-deplacements. Une paralysie logee la serait donc **structurellement
+#: invisible** au banc, quel que soit le nombre de scenarios.
+STAGE_TRANSLATION = "translation"
+STAGE_MICRO_MOVE = "micro_move"
+
+
 @dataclass(frozen=True, slots=True)
 class AgentTurn:
     """Ce que l'agent a decide pour un etat donne."""
@@ -42,6 +63,44 @@ class AgentTurn:
     blocked: tuple[Decision, ...] = ()
     suppressed: int = 0
     skipped_reason: str | None = None
+    #: Une decision etait-elle **reellement due** a ce tour ?
+    #:
+    #: **La cadence nominale n'est pas une panne.** L'agent ne decide qu'une fois
+    #: par `decision_interval` ; compter chaque releve intermediaire comme une
+    #: abstention ferait de « cadence » l'etage responsable de tout, et
+    #: designerait le fonctionnement normal comme coupable.
+    decision_due: bool = False
+    #: Comptes par etage, du planificateur a l'emission.
+    proposed: int = 0
+    below_confidence: int = 0
+    safety_blocked: int = 0
+    duplicates: int = 0
+    throttled: int = 0
+
+    @property
+    def emitted(self) -> int:
+        return len(self.decisions)
+
+    @property
+    def no_command_stage(self) -> str | None:
+        """Ou la commande a disparu, quand une decision etait due et rien n'est sorti.
+
+        `None` quand une commande est sortie, ou quand aucune decision n'etait
+        due : dans ce dernier cas il n'y a rien a expliquer.
+        """
+        if not self.decision_due or self.emitted:
+            return None
+        if self.proposed == 0:
+            return STAGE_PLANNER
+        if self.below_confidence >= self.proposed:
+            return STAGE_CONFIDENCE
+        if self.safety_blocked >= self.proposed - self.below_confidence:
+            return STAGE_SAFETY
+        if self.throttled:
+            return STAGE_THROTTLE
+        if self.duplicates:
+            return STAGE_DUPLICATES
+        return STAGE_SAFETY
 
     @property
     def actions(self) -> tuple[AgentAction, ...]:
@@ -63,6 +122,14 @@ class AgentTurn:
             "blocked": [decision.to_dict() for decision in self.blocked],
             "suppressed": self.suppressed,
             "skipped_reason": self.skipped_reason,
+            "decision_due": self.decision_due,
+            "proposed": self.proposed,
+            "below_confidence": self.below_confidence,
+            "safety_blocked": self.safety_blocked,
+            "duplicates": self.duplicates,
+            "throttled": self.throttled,
+            "emitted": self.emitted,
+            "no_command_stage": self.no_command_stage,
         }
 
 
@@ -206,10 +273,13 @@ class DeterministicTacticalAgent:
         plan = self.plan
         assert plan is not None  # garanti par _refresh_plan
 
+        # **Chaque etage est compte separement.** Une commande peut mourir a six
+        # endroits, et le journal du jeu ne montre que le silence qui en resulte.
+        # Sans ces comptes, nommer le responsable du trou de 364 secondes revient
+        # a deviner.
+        brutes = self.planner.decisions_for(state, plan)
         proposals = [
-            decision
-            for decision in self.planner.decisions_for(state, plan)
-            if decision.confidence >= self.confidence_threshold
+            decision for decision in brutes if decision.confidence >= self.confidence_threshold
         ]
         rear = plan.anchor - plan.front_direction.scaled(self.planner.settings.reserve_offset)
         outcome = self.safety.filter(proposals, state, rear=rear)
@@ -229,6 +299,12 @@ class DeterministicTacticalAgent:
             decisions=throttled.allowed,
             blocked=(*blocked, *throttled.blocked),
             suppressed=suppressed + repeated,
+            decision_due=True,
+            proposed=len(brutes),
+            below_confidence=len(brutes) - len(proposals),
+            safety_blocked=len(outcome.blocked),
+            duplicates=suppressed,
+            throttled=len(throttled.blocked),
         )
 
     # --- cadence -------------------------------------------------------------
