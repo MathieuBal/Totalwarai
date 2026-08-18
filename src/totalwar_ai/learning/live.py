@@ -331,7 +331,15 @@ def read(lines: Iterable[str], *, silence_seconds: float = SILENCE_SECONDS) -> L
 
         if (found := _ACK.search(corps)) is not None:
             charge = _payload(found.group("payload"))
-            if charge is None or charge.get("status") != "accepted":
+            # **`rejected` compte aussi.** Un lot dont tous les ordres ont ete
+            # refuses est une commande **partie** et morte au jeu, pas une
+            # absence de commande : l'ecarter allongeait artificiellement les
+            # fenetres de silence et masquait un refus integral. Mesure sur le
+            # journal du 18/08 : quatre lots entierement refuses, invisibles.
+            #
+            # `released` en revanche n'est pas une commande : c'est le jeu qui
+            # rend une unite au bout de `release_after_ms`.
+            if charge is None or charge.get("status") not in ("accepted", "rejected"):
                 continue
             detail = charge.get("detail")
             note = str(detail.get("note", "")) if isinstance(detail, dict) else ""

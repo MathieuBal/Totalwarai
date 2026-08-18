@@ -229,3 +229,39 @@ def test_le_decompte_de_victoire_borne_la_fenetre_avant_la_fin_reelle() -> None:
     complete = "<99.9s><1000000ms> \tBattle is now entering phase: Complete"
     lecture = read([DEPLOYED, _ack(1, ms=10000), COUNTDOWN, complete])
     assert lecture.closing_at == 900.0, "le decompte prime sur la fin reelle"
+
+
+def test_un_lot_entierement_refuse_reste_une_commande() -> None:
+    """Une commande partie et morte au jeu n'est pas une absence de commande.
+
+    Le journal du 18/08 contient quatre accuses `rejected` — « 0 ordre(s)
+    lance(s), 1 refuse(s) » — que le lecteur ecartait. Les ignorer allongeait
+    artificiellement les fenetres de silence et rendait un refus integral
+    invisible, alors que c'est exactement le genre d'evenement que LIVE-001
+    cherche.
+    """
+    refuse = (
+        '<50.0s><50000ms> [totalwar_ai] ACK {"protocol_version":"0.1.0",'
+        '"type":"action_result","sequence":9,"status":"rejected",'
+        '"error":"1002 : unite non controlable",'
+        '"detail":{"note":"0 ordre(s) lance(s), 1 refuse(s)"}}'
+    )
+    lecture = read([DEPLOYED, _ack(1, ms=10000), refuse])
+    assert len(lecture.batches) == 2, "le lot refuse compte comme une commande"
+    assert lecture.refused == 1
+    assert lecture.batches[-1].launched == 0
+
+
+def test_un_relachement_de_controle_n_est_toujours_pas_une_commande() -> None:
+    """Le garde-fou doit rester ferme sur `released`.
+
+    Le journal du 18/08 en contient 679 : les compter ferait passer une bataille
+    de cent lots pour une bataille de huit cents.
+    """
+    relache = (
+        '<51.0s><51000ms> [totalwar_ai] ACK {"protocol_version":"0.1.0",'
+        '"type":"action_result","sequence":10,"status":"released","error":null,'
+        '"detail":{"note":"controle rendu apres delai"}}'
+    )
+    lecture = read([DEPLOYED, _ack(1, ms=10000), relache])
+    assert len(lecture.batches) == 1
