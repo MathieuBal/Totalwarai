@@ -42,6 +42,14 @@ Trois précautions, chacune tirée d'un défaut passé :
 * **le seuil d'immobilité** vaut `STILL_DISTANCE = 3.0`, la même valeur que
   `learning.observation` — décider sur un seuil et mesurer sur un autre ne
   validerait rien ;
+
+  > **Corrigé par l'ADR 0019 : cet accord n'a jamais existé en fait.**
+  > `learning.observation` travaille sur le relevé à 2 Hz, `MobilityTracker` sur
+  > des plans à 10 s. Partager le nombre donnait l'apparence de la cohérence
+  > sans la chose — et le seuil, exprimé en mètres, prenait un tassement de
+  > formation de 7,98 m en 10 s pour une marche à 0,80 m/s. Le garde-fou
+  > s'exprime désormais en vitesse (`WALK_SPEED`), ce qui ne dépend pas de
+  > l'intervalle entre deux relevés.
 * **on retient le plus rapide observé**, lissé : une unité montre sa vraie
   vitesse quand elle marche librement, jamais quand elle contourne un obstacle,
   et une moyenne sous-estimerait systématiquement ce dont elle est capable ;

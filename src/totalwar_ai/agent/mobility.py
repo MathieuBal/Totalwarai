@@ -77,12 +77,61 @@ ROLE_SPEED_PRIOR: dict[UnitRole, float] = {
     UnitRole.ARTILLERY: 1.5,
 }
 
-#: Deplacement en deca duquel une unite est consideree immobile, en metres.
+#: Deplacement en deca duquel un releve n'est que du bruit de position, en metres.
 #:
-#: Meme valeur que `learning.observation.STILL_DISTANCE`, et c'est deliberé : la
-#: mesure a posteriori et la decision doivent s'accorder sur ce qui compte comme
-#: un deplacement, sinon la premiere ne valide pas la seconde.
+#: **Ce seuil ne protege que contre le tremblement**, aux echantillonnages fins :
+#: une formation qui se resserre d'un metre ne dit rien de sa vitesse de marche.
+#: Il ne protege de rien aux echantillonnages larges — voir `WALK_SPEED`.
 STILL_DISTANCE = 3.0
+
+#: Vitesse en deca de laquelle un releve n'est pas une marche, en metres/seconde.
+#:
+#: **Ce garde-fou vient d'un defaut mesure, et d'une erreur de raisonnement qui
+#: l'avait laisse passer.** `STILL_DISTANCE` est une *distance* : ce qu'elle
+#: signifie depend entierement de l'intervalle entre deux releves. Elle a ete
+#: calibree pour le pas de simulation — 3 m en 0,5 s valent 6 m/s, une vraie
+#: marche — puis employee dans un module alimente **une fois par plan, soit
+#: toutes les dix secondes**. Au meme seuil, 3 m en 10 s valent 0,3 m/s : une
+#: unite pratiquement immobile.
+#:
+#: Mesure sur `skirmish_standoff`, releves bruts du premier plan :
+#:
+#: .. code-block:: text
+#:
+#:     a_inf2    parcouru=  7.98m en 10.0s ->  0.80 m/s   RETENU
+#:     a_cav1    parcouru= 15.96m en 10.0s ->  1.60 m/s   RETENU
+#:
+#: Un tassement de formation au deploiement, pris pour la vitesse de marche —
+#: **et definitivement**, puisque ces unites tiennent ensuite leur position et ne
+#: fournissent plus aucun releve. Consequence : une ETA de 240 a 270 secondes
+#: vers un secteur distant de deux cents metres, tout le monde ecarte par
+#: `ASSAULT_DEADLINE`, et **aucun secteur jamais tenable**.
+#:
+#: Un seuil exprime en vitesse ne depend pas de l'intervalle, ce qui est
+#: precisement la propriete qui manquait.
+#:
+#: .. rubric:: Pourquoi deux metres par seconde
+#:
+#: La valeur n'est pas un reglage libre : elle est encadree des deux cotes.
+#:
+#: * **au-dessus** de tout ce qui a ete mesure comme tassement — 0,80 m/s pour
+#:   l'infanterie, 1,60 pour la cavalerie ;
+#: * **en dessous** de l'a priori du role le plus lent qui puisse porter un
+#:   assaut, l'infanterie a 4,0 m/s. Aucune unite dont l'ETA sert reellement a
+#:   decider ne se voit donc interdire d'etre mesuree.
+#:
+#: L'artillerie, a 1,5 m/s, ne franchira jamais ce seuil et gardera son a priori.
+#: **C'est sans consequence** : elle appartient a `RANGED_ROLES`, donc jamais a
+#: `ASSAULT_ROLES`, et son ETA n'entre dans aucune decision.
+#:
+#: .. rubric:: Ce que l'ADR 0018 affirmait a tort
+#:
+#: Il justifiait `STILL_DISTANCE` par l'accord avec `learning.observation` : « la
+#: mesure a posteriori et la decision doivent s'accorder sur ce qui compte comme
+#: un deplacement ». **Cet accord n'a jamais existe en fait** — ce module-la
+#: travaille sur le releve a 2 Hz, celui-ci sur des plans a 10 s. Deux constantes
+#: de meme valeur, et de sens incomparables.
+WALK_SPEED = 2.0
 
 #: Poids du dernier releve dans la vitesse lissee.
 #:
@@ -110,9 +159,10 @@ class MobilityTracker:
     def observe(self, state: BattleState) -> None:
         """Releve le deplacement depuis le dernier etat vu.
 
-        Ne retient que les deplacements **au-dela du seuil d'immobilite** : sous
-        trois metres, il s'agit de tassement de formation, pas de marche, et en
-        tenir compte ferait chuter la vitesse de toute unite arretee.
+        **Ne retient que ce qui est une marche**, au sens d'une vitesse et non
+        d'une distance : un tassement de formation franchit n'importe quel seuil
+        en metres des lors que les releves sont assez espaces, et s'installe
+        alors comme la vitesse de l'unite pour le reste de la bataille.
         """
         for unit in state.side_units(Side.ALLY):
             precedente = self._positions.get(unit.id)
@@ -130,6 +180,12 @@ class MobilityTracker:
                 continue
 
             mesuree = parcouru / ecoule
+            # **Le seuil qui decide est celui-ci, et non la distance.** Voir
+            # `WALK_SPEED` : un tassement de formation franchit les trois metres
+            # des que les releves sont espaces, et s'installe alors comme la
+            # vitesse de l'unite pour toute la bataille.
+            if mesuree < WALK_SPEED:
+                continue
             connue = self._speeds.get(unit.id)
             if connue is None:
                 self._speeds[unit.id] = mesuree

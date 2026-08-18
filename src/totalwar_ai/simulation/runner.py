@@ -463,6 +463,26 @@ def _assaults(events: list[Event]) -> list[float]:
     return rapports
 
 
+def _permissions(events: list[Event]) -> int:
+    """Nombre de plans ou l'interdiction d'assaut defensif a ete levee.
+
+    **Compte les plans, pas les decisions.** `PLAN_SELECTED` est journalise a
+    chaque decision — deux fois par seconde — et reconduit le meme plan tant
+    qu'il n'a pas ete recalcule : compter les evenements donnerait la *duree* de
+    la permission, pas le nombre de fois qu'elle a ete accordee, et ce chiffre ne
+    serait pas comparable a `sector_assaults`, qui deduplique deja. `created_at`
+    est l'horodatage du plan lui-meme, et ne change qu'au recalcul.
+    """
+    vus: set[float] = set()
+    for event in events:
+        if event.type is not EventType.PLAN_SELECTED:
+            continue
+        if not bool(event.payload.get("assault_permitted")):
+            continue
+        vus.add(float(event.payload.get("created_at", 0.0)))
+    return len(vus)
+
+
 def _metrics(
     *,
     transitions: int,
@@ -495,6 +515,11 @@ def _metrics(
         # jamais se declencher, ou se declencher et ne rien changer, et les deux
         # produisent le meme chiffre. Ces deux-ci les separent.
         "sector_assaults": len(assauts),
+        # **Combien de fois l'interdiction defensive a ete levee.** A cote du
+        # compte d'assauts, il separe deux diagnostics opposes qui produisent le
+        # meme banc : « la permission n'est jamais accordee » et « elle l'est,
+        # et aucun assaut ne passe les garde-fous ».
+        "assault_permissions": _permissions(events),
         "assault_best_ratio": round(max(assauts), 2) if assauts else 0.0,
         "assault_mean_ratio": round(sum(assauts) / len(assauts), 2) if assauts else 0.0,
         "orders_per_minute": round(len(decisions) / minutes, 2),

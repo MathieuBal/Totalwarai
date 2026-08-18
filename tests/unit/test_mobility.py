@@ -180,13 +180,53 @@ def test_un_a_priori_de_role_donne_son_avantage_a_la_cavalerie(make_unit) -> Non
 
 
 def test_l_observation_prime_sur_l_a_priori(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
-    """Une cavalerie qu'on a vue trainer n'est plus presumee rapide."""
+    """Une cavalerie qu'on a vue marcher moins vite que prevu l'est moins.
+
+    **Ce test portait d'abord sur une cavalerie parcourant 4 m en 4 s**, et sa
+    premisse etait fausse : un metre par seconde n'est pas une marche lente,
+    c'est un tassement de formation, et le module refuse desormais d'y voir une
+    information sur la vitesse. La propriete visee — une observation reelle
+    l'emporte sur un a priori trop optimiste — reste vraie et reste pincee ici,
+    sur un deplacement qui est vraiment une marche.
+    """
     suivi = MobilityTracker()
     suivi.observe(
         make_battle([make_unit("cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, 0.0, 0.0)], game_time=0.0)
     )
     suivi.observe(
-        make_battle([make_unit("cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, 0.0, 4.0)], game_time=4.0)
+        make_battle([make_unit("cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, 0.0, 20.0)], game_time=4.0)
     )
     presume = ROLE_SPEED_PRIOR[UnitRole.SHOCK_CAVALRY]
+    assert suivi.observed("cav")
+    assert suivi.speed("cav", UnitRole.SHOCK_CAVALRY) == pytest.approx(5.0)
     assert suivi.speed("cav", UnitRole.SHOCK_CAVALRY) < presume
+
+
+def test_un_tassement_reste_un_tassement_meme_sur_un_releve_espace(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Le defaut qui rendait la concentration locale inoperante, dans sa forme nue.
+
+    Le seuil d'immobilite etait une **distance**, et le sens d'une distance
+    depend entierement de l'intervalle entre deux releves. Calibree pour le pas
+    de simulation — 3 m en 0,5 s valent 6 m/s — elle etait employee dans un
+    module alimente une fois par plan, toutes les dix secondes, ou les memes 3 m
+    valent 0,3 m/s.
+
+    Mesure sur `skirmish_standoff` : une infanterie se resserrant de 7,98 m
+    pendant les dix premieres secondes etait enregistree a **0,80 m/s**, puis
+    tenait sa position et ne fournissait plus jamais de releve. Son ETA vers un
+    secteur a deux cents metres valait des lors plus de quatre minutes, toute
+    l'armee etait ecartee par `ASSAULT_DEADLINE`, et **aucun secteur n'etait
+    jamais tenable** — la primitive de concentration locale ne pouvait pas
+    s'exercer du tout.
+    """
+    suivi = MobilityTracker()
+    suivi.observe(
+        make_battle([make_unit("a", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0, 0.0)], game_time=0.0)
+    )
+    # Huit metres en dix secondes : bien au-dela des trois metres du seuil de
+    # bruit, et pourtant 0,80 m/s — personne ne marche a cette vitesse.
+    suivi.observe(
+        make_battle([make_unit("a", Side.ALLY, UnitRole.MELEE_INFANTRY, 0.0, 8.0)], game_time=10.0)
+    )
+    assert not suivi.observed("a"), "un tassement n'est pas une marche, quel que soit l'intervalle"
+    assert suivi.speed("a", UnitRole.MELEE_INFANTRY) == ROLE_SPEED_PRIOR[UnitRole.MELEE_INFANTRY]
