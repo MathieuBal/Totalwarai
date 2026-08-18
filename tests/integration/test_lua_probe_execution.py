@@ -42,6 +42,16 @@ FAKE_BATTLE = ROOT / "tests" / "fixtures" / "fake_battle.lua"
 class Probe:
     """Sonde Lua chargee dans un interpreteur, pilotable depuis Python."""
 
+    def allow_experiments(self) -> None:
+        """Depose la sentinelle qui autorise les experiences **actives**.
+
+        Sans elle, le chronometrage du tir ne demarre pas : il commande des
+        unites, et une seule chose doit les commander a la fois.
+        """
+        dossier = self.workdir / "totalwar_ai"
+        dossier.mkdir(parents=True, exist_ok=True)
+        (dossier / "totalwar_ai_experiment").write_text("test\n", encoding="utf-8")
+
     def __init__(
         self,
         workdir: Path,
@@ -1365,6 +1375,7 @@ def test_le_chronometrage_attend_la_phase_deployed(probe: Probe) -> None:
     question qu'elle annoncait.
     """
     probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.allow_experiments()
     probe.advance(1500)
     assert not probe.grep("chronometrage de la mise en batterie")
 
@@ -1374,63 +1385,106 @@ def test_le_chronometrage_attend_la_phase_deployed(probe: Probe) -> None:
 
 def test_le_chronometrage_emet_un_vrai_ordre_de_deplacement(probe: Probe) -> None:
     """Sans ordre, il n'y a pas de `t0` — et sans `t0`, rien n'est mesure."""
+    probe.allow_experiments()
     probe.fake.arm_unit(probe.fake, "1006", 120)
     probe.advance(1500)
     probe.enter_phase("Deployed")
 
-    depart = probe.grep("MISSILE t0 ordre envoye")
-    assert depart, "le chronometrage doit emettre un deplacement, pas seulement observer"
+    depart = probe.grep("MISSILE A0")
+    assert depart, "le chronometrage doit s'annoncer avant d'observer"
     assert "fire_while_moving=" in depart[0], "l'attribut doit accompagner la mesure"
-    # L'ordre doit avoir reellement atteint le jeu.
+
+    # Phase A : l'unite tire a l'arret. Sans cela, rien ne peut etre conclu.
+    probe.fake.missile_fire(probe.fake, "1006")
+    probe.advance(13000)
+    assert probe.grep("MISSILE A "), "la phase A doit se conclure sur des salves"
+    # L'ordre de deplacement de la phase B doit avoir reellement atteint le jeu.
     assert any(order["kind"] == "goto" for order in probe.orders())
 
 
-def test_une_salve_apres_arret_est_datee_et_situee(probe: Probe) -> None:
-    """Le cas ou le jeu imposerait l'arret pour tirer."""
+def test_une_unite_qui_ne_tire_pas_a_l_arret_invalide_l_experience(probe: Probe) -> None:
+    """Le defaut de la revision 15, cette fois empeche par le protocole.
+
+    L'experience precedente eloignait l'unite de l'ennemi puis attendait une
+    salve : les quatre tireurs ordinaires se sont arretes sans cible a portee,
+    et n'ont rien tire du tout. Comparer l'arret et la marche ne compare rien si
+    l'unite ne tire pas deja a l'arret.
+    """
+    probe.allow_experiments()
     probe.fake.arm_unit(probe.fake, "1006", 120)
     probe.advance(1500)
     probe.enter_phase("Deployed")
-    probe.advance(500)
-    assert probe.grep("MISSILE t1")
+    probe.advance(13000)
 
+    verdict = probe.grep("MISSILE VERDICT")
+    assert verdict, "l'experience doit rendre un verdict, meme negatif"
+    assert "EXPERIENCE_INVALID" in verdict[0]
+    assert "aucune salve a l'arret" in verdict[0]
+    assert "FIRES_WHILE_MOVING" not in verdict[0]
+
+
+def test_une_salve_en_marche_donne_le_verdict_du_tir_en_mouvement(probe: Probe) -> None:
+    """Le cas qui jugerait notre simulateur.
+
+    Notre modele laisse toute unite de tir non engagee tirer en marchant. Si le
+    jeu le confirme, le repli tirant qui porte `balanced_clash` repose sur une
+    permissivite reelle ; sinon il repose sur une permissivite inventee.
+    """
+    probe.allow_experiments()
+    probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.advance(1500)
+    probe.enter_phase("Deployed")
+
+    # Phase A : elle tire bien a l'arret.
     probe.fake.missile_stop(probe.fake, "1006")
-    probe.advance(500)
-    assert probe.grep("MISSILE t2")
+    probe.fake.missile_fire(probe.fake, "1006")
+    probe.advance(13000)
+    assert probe.grep("MISSILE A ")
 
-    probe.fake.missile_acquire(probe.fake, "1006", "2001")
-    probe.advance(500)
-    assert probe.grep("MISSILE t3")
+    # Phase B : elle tire **en marchant**.
+    probe.fake.missile_walk(probe.fake, "1006")
+    probe.fake.missile_fire(probe.fake, "1006")
+    probe.advance(1000)
+    probe.fake.missile_stop(probe.fake, "1006")
+    probe.advance(1000)
+    assert probe.grep("MISSILE B ")
 
     probe.fake.missile_fire(probe.fake, "1006")
-    probe.advance(500)
-    salve = probe.grep("MISSILE t4")
-    assert salve
-    assert "en_marche=false" in salve[0]
+    probe.advance(13000)
+    verdict = probe.grep("MISSILE VERDICT")
+    assert verdict
+    assert "FIRES_WHILE_MOVING" in verdict[0]
 
 
-def test_une_salve_tiree_en_marche_est_signalee_comme_telle(probe: Probe) -> None:
-    """Le cas oppose doit se distinguer, sinon la mesure ne mesure rien.
+def test_sans_sentinelle_aucune_experience_ne_confisque_d_unite(probe: Probe) -> None:
+    """Le contrat d'isolation causale de LIVE-001.
 
-    **C'est cette ligne qui juge notre simulateur.** `en_marche=true` dirait
-    qu'un tireur peut tirer en se deplacant, et notre modele aurait raison ;
-    `en_marche=false` dirait l'inverse, et le repli tirant qui porte
-    `balanced_clash` a 11/12 reposerait sur une permissivite inexistante.
+    Le chronometrage du tir appelle `start_move` et confisque des tireurs jusqu'a
+    trente secondes. Lance pendant un pilotage, il produirait des « unite non
+    controlable » **imputables a nous-memes**, au moment precis ou LIVE-001
+    cherche pourquoi des ordres disparaissent : on aurait mesure sa propre
+    interference.
+
+    Le recensement passif, lui, continue : il observe et ne touche a rien.
     """
     probe.fake.arm_unit(probe.fake, "1006", 120)
     probe.advance(1500)
     probe.enter_phase("Deployed")
+    probe.advance(13000)
 
-    # L'unite tire sans s'etre jamais arretee.
-    probe.fake.missile_fire(probe.fake, "1006")
-    probe.advance(500)
-    salve = probe.grep("MISSILE t4")
-    assert salve
-    assert "en_marche=true" in salve[0]
-    assert "apres_arret=jamais_arrete" in salve[0]
+    assert not probe.grep("chronometrage de la mise en batterie")
+    assert not probe.grep("MISSILE A0")
+    assert probe.grep("experiences actives desactivees")
+    assert not any(order["kind"] == "goto" for order in probe.orders()), (
+        "aucune unite ne doit avoir ete confisquee"
+    )
+    # Le recensement passif n'est pas concerne : il n'a jamais commande personne.
+    assert probe.grep("recensement des accesseurs")
 
 
 def test_sans_unite_de_tir_le_chronometrage_le_dit(probe: Probe) -> None:
     """Une absence de tireur ne doit pas se confondre avec une absence de mesure."""
+    probe.allow_experiments()
     probe.advance(1500)
     probe.enter_phase("Deployed")
     assert probe.grep("MISSILE aucune unite de tir")

@@ -992,3 +992,84 @@ def test_une_unite_qui_n_est_pas_arrivee_est_relancee(bataille: Probe, tmp_path:
     arrivee = Vector3(unite.position.x, 0.0, unite.position.z + MIN_REORDER_DISTANCE / 2)
     session._last_destination[unite.id] = arrivee
     assert not session._drop_micro_moves(Translation(moves=((unite.id, arrivee),)), domaine).moves
+
+
+# --- LIVE-001 : nommer l'etage ou la commande disparait -----------------------
+
+
+def test_un_tour_muet_nomme_l_etage_ou_la_commande_a_disparu(
+    session: LiveSession, bataille: Probe
+) -> None:
+    """Le defaut que le banc ne peut structurellement pas voir.
+
+    En bataille reelle, l'agent est reste **364 secondes** sans emettre une
+    commande pendant que son armee passait de 12 a 9 unites. Le banc, lui, ne
+    depasse jamais 11 s de silence — parce qu'il appelle l'agent directement et
+    **ne traverse ni la traduction ni le filtre de micro-deplacements**.
+
+    Or `_drop_micro_moves` documente exactement cette paralysie, deja constatee :
+    « douze deplacements a t=3 s, puis cent quatre-vingt-dix secondes sans un
+    ordre, jusqu'a ce que l'operateur deplace une unite a la souris ».
+
+    Un tour muet doit donc dire **ou** la commande est morte, sinon un agent qui
+    decide correctement et un pont qui n'envoie rien produisent le meme silence.
+    """
+    premier = session.step()
+    assert premier.sent, "le premier tour doit lancer l'armee"
+
+    # Rejoue sans laisser le temps aux unites d'avancer : les destinations
+    # recalculees sont les memes, et le pont les ecarte.
+    muets = []
+    for _ in range(6):
+        bataille.advance(500)
+        etape = session.step()
+        if etape.state is not None and not etape.sent and not etape.skipped:
+            muets.append(etape)
+
+    assert muets, "au moins un tour doit rester muet"
+    for etape in muets:
+        assert etape.no_command_stage is not None, (
+            "un tour muet sans etage nomme est exactement le silence "
+            "qu'on a passe une session a ne pas savoir expliquer"
+        )
+        assert etape.stages, "les comptes par etage doivent accompagner le verdict"
+        assert "NO_COMMAND stage=" in etape.summary()
+
+
+def test_un_tour_qui_commande_ne_porte_aucun_etage(session: LiveSession) -> None:
+    """`no_command_stage` ne se remplit que quand rien n'est parti.
+
+    Sans cela, le champ se remplirait a chaque tour et ne designerait plus rien.
+    """
+    etape = session.step()
+    assert etape.sent
+    assert etape.no_command_stage is None
+
+
+def test_un_ordre_jamais_acquitte_ne_passe_pas_pour_un_succes(
+    session: LiveSession, bataille: Probe
+) -> None:
+    """`ACK absent` valait `ACK accepte`.
+
+    Le code rendait le meme tuple vide dans les deux cas, si bien que « Python a
+    ecrit quatre ordres » et « le Lua n'a jamais vu le fichier » se lisaient
+    pareil — et l'instrument annoncait que tout allait bien.
+    """
+    session.ack_timeout = 0.0  # le jeu n'aura pas le temps de repondre
+    etape = session.step()
+    assert etape.sent, "Python a bien ecrit des ordres"
+    assert etape.acknowledgement.sent_by_python == etape.sent
+    assert etape.acknowledgement.ack_timeout is True
+    assert etape.acknowledgement.acknowledged_by_lua == 0
+
+
+def test_chaque_tour_laisse_un_battement_a_deux_horloges(session: LiveSession) -> None:
+    """Le `script_log` prouve que le Lua publiait, pas que Python lisait.
+
+    Une boucle suspendue puis rattrapant son arriere produirait exactement le
+    meme silence de commandes ; seule l'horloge murale les separe.
+    """
+    etape = session.step()
+    assert etape.heartbeat.wall_clock > 0.0
+    assert etape.heartbeat.state_sequence > 0
+    assert etape.heartbeat.decision_due is True

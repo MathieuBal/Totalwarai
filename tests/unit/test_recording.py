@@ -584,3 +584,119 @@ def test_deux_armees_differentes_n_ont_pas_la_meme_empreinte() -> None:
     assert cavalerie != infanterie, "deux armees differentes partagent une empreinte"
     # Et l'empreinte decrit bien des roles, comme celle du simulateur.
     assert "x1" in cavalerie and "ally:" in cavalerie
+
+
+# --- LIVE-001 : le diagnostic doit survivre a la fermeture du terminal --------
+
+
+def test_le_diagnostic_par_etage_est_ecrit_dans_le_journal(tmp_path: Path) -> None:
+    """Le contrat bloquant avant la prochaine session de jeu.
+
+    `LiveStep` portait `no_command_stage` et `stages`, et le terminal les
+    affichait — mais le `BattleRecorder` ne les ecrivait pas. Une session jouee
+    **exprès** pour LIVE-001 aurait donc perdu exactement la donnee pour laquelle
+    on l'aurait jouee, a la fermeture de la fenetre.
+    """
+    from totalwar_ai.bridge.live import Acknowledgement, Heartbeat
+
+    recorder = BattleRecorder(directory=tmp_path)
+    recorder.observe(
+        _tour(
+            _etat(9, 10, ms=400_000),
+            no_command_stage="micro_move",
+            stages={"proposed": 5, "emitted": 2, "micro_dropped": 2},
+            suppressed=3,
+            sent=0,
+            heartbeat=Heartbeat(
+                wall_clock=1234.5, game_time_ms=400_000, state_sequence=812, decision_due=True
+            ),
+            acknowledgement=Acknowledgement(sent_by_python=4, ack_timeout=True),
+            planner_reasons=(("NO_FEASIBLE_SECTOR", 2),),
+        )
+    )
+    recorder.close()
+
+    assert recorder.path is not None
+    entree = json.loads(
+        next(
+            ligne
+            for ligne in recorder.path.read_text(encoding="utf-8").splitlines()
+            if '"decision": true' in ligne
+        )
+    )
+    assert entree["no_command_stage"] == "micro_move"
+    assert entree["stages"]["micro_dropped"] == 2
+    assert entree["suppressed"] == 3
+    assert entree["sent"] == 0
+    assert entree["decision_due"] is True
+    assert entree["planner_reasons"] == {"NO_FEASIBLE_SECTOR": 2}
+    assert entree["acknowledgement"]["ack_timeout"] is True
+    assert entree["consumed_wall_clock"] == 1234.5
+
+
+def test_tous_les_etats_d_un_meme_tour_portent_le_meme_instant_de_consommation(
+    tmp_path: Path,
+) -> None:
+    """La preuve d'un rattrapage, et elle etait invisible.
+
+    Un `step()` lit tous les etats publies depuis le precedent. Le battement
+    n'etait ecrit que sur celui de **decision** : les intermediaires passaient a
+    `_record(..., None)` et n'en portaient aucun.
+
+    Or c'est precisement leur regroupement au meme instant mural qui trahit une
+    boucle Python qui vient de se debloquer — quatre etats de jeu espaces d'une
+    demi-seconde, tous avales au meme moment reel. Sans cela, un backlog se lit
+    exactement comme un flux normal.
+    """
+    from totalwar_ai.bridge.live import Heartbeat
+
+    recorder = BattleRecorder(directory=tmp_path)
+    lot = tuple(_etat(5, 5, ms=10_000 + index * 500) for index in range(4))
+    recorder.observe(
+        LiveStep(
+            state=lot[-1],
+            observed=lot,
+            heartbeat=Heartbeat(wall_clock=500.0, decision_due=True),
+        )
+    )
+    recorder.close()
+
+    assert recorder.path is not None
+    entrees = [
+        json.loads(ligne)
+        for ligne in recorder.path.read_text(encoding="utf-8").splitlines()
+        if "consumed_wall_clock" in ligne
+    ]
+    assert len(entrees) == 4, "les quatre etats sont enregistres"
+    assert all(entree["consumed_wall_clock"] == 500.0 for entree in entrees), (
+        "avales au meme instant reel : c'est la signature d'un rattrapage"
+    )
+    assert [entree["game_time_ms"] for entree in entrees] == [10_000, 10_500, 11_000, 11_500]
+    assert [entree.get("decision", False) for entree in entrees] == [False, False, False, True]
+
+
+def test_l_horloge_murale_accompagne_chaque_etat(tmp_path: Path) -> None:
+    """Deux horloges, parce qu'une seule ne peut pas distinguer les deux pannes.
+
+    Le `script_log` prouve que le Lua publiait ; il ne prouve pas que Python
+    lisait. Une boucle suspendue puis rattrapant son arriere montre des
+    `game_time_ms` continus et un `wall_clock` troue — sans la seconde horloge,
+    les deux situations se lisent pareil.
+    """
+    from totalwar_ai.bridge.live import Heartbeat
+
+    recorder = BattleRecorder(directory=tmp_path)
+    for instant, murale in ((1000, 10.0), (2000, 374.0)):
+        recorder.observe(_tour(_etat(9, 10, ms=instant), heartbeat=Heartbeat(wall_clock=murale)))
+    recorder.close()
+
+    assert recorder.path is not None
+    entrees = [
+        json.loads(ligne)
+        for ligne in recorder.path.read_text(encoding="utf-8").splitlines()
+        if "consumed_wall_clock" in ligne
+    ]
+    jeu = entrees[1]["game_time_ms"] - entrees[0]["game_time_ms"]
+    murale = entrees[1]["consumed_wall_clock"] - entrees[0]["consumed_wall_clock"]
+    assert jeu == 1000, "une seconde de jeu"
+    assert murale == 364.0, "mais six minutes de temps reel"

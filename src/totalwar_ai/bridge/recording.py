@@ -146,10 +146,27 @@ class BattleRecorder:
 
         # `observed` est vide chez les appelants qui ne le remplissent pas :
         # on retombe alors sur le seul etat de decision.
+        #
+        # **L'instant de consommation va sur *tous* les etats, pas seulement sur
+        # celui de decision.** C'est leur regroupement au meme instant mural qui
+        # revele un rattrapage : quatre etats de jeu espaces d'une demi-seconde
+        # tous avales au meme moment reel signalent une boucle Python qui vient
+        # de se debloquer. Ne l'ecrire que sur l'etat de decision rendait cette
+        # preuve-la invisible, et c'est precisement celle qui manquait.
         for state in step.observed or (step.state,):
-            self._record(state, step if state is step.state else None)
+            self._record(
+                state,
+                step if state is step.state else None,
+                consumed_at=step.heartbeat.wall_clock,
+            )
 
-    def _record(self, state: ProbeBattleState, step: LiveStep | None) -> None:
+    def _record(
+        self,
+        state: ProbeBattleState,
+        step: LiveStep | None,
+        *,
+        consumed_at: float = 0.0,
+    ) -> None:
         """Un etat publie. `step` n'est fourni que pour l'etat de decision."""
         self._open()
         self.observations += 1
@@ -177,6 +194,10 @@ class BattleRecorder:
             "ally_strength": _strength(state, "allies"),
             "enemy_strength": _strength(state, "enemies"),
         }
+        # Ce que le `script_log` ne pouvait pas dire : a quel instant reel Python
+        # a lu cet etat. Deux horloges valent mieux qu'une — un blocage laisse le
+        # temps de jeu continu et l'horloge murale trouee.
+        entry["consumed_wall_clock"] = round(consumed_at, 3)
         if step is not None:
             entry.update(
                 {
@@ -199,6 +220,18 @@ class BattleRecorder:
                         {"action": action.value, "reason": reason}
                         for action, reason in step.translation.untranslated
                     ],
+                    # **LIVE-001 : le diagnostic ne doit pas dependre d'un
+                    # terminal reste ouvert.** Ces champs s'affichaient a l'ecran
+                    # sans etre ecrits nulle part : une session parfaite, jouee
+                    # exprès pour eux, les aurait perdus a la fermeture de la
+                    # fenetre.
+                    "decision_due": step.heartbeat.decision_due,
+                    "no_command_stage": step.no_command_stage,
+                    "stages": dict(step.stages),
+                    "suppressed": step.suppressed,
+                    "sent": step.sent,
+                    "acknowledgement": step.acknowledgement.to_dict(),
+                    "planner_reasons": dict(step.planner_reasons),
                 }
             )
             # Ce que nous aurions fait, l'IA du moteur menant la bataille. C'est

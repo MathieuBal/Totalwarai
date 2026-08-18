@@ -27,7 +27,7 @@ from pathlib import Path
 #: Doit valoir `TOTALWAR_AI_PROBE_REVISION` dans
 #: `lua_mod/script/battle/mod/totalwar_ai_probe.lua`. Un test verifie l'egalite,
 #: pour que les deux ne puissent pas diverger en silence.
-EXPECTED_PROBE_REVISION = 15
+EXPECTED_PROBE_REVISION = 16
 
 #: Source canonique du script de sonde, relative a la racine du depot.
 #:
@@ -48,6 +48,15 @@ STATE_FILENAME = "totalwar_ai_state.jsonl"
 COMMAND_FILENAME = "totalwar_ai_command.json"
 ACK_FILENAME = "totalwar_ai_ack.jsonl"
 STOP_FILENAME = "totalwar_ai_stop"
+
+#: Sentinelle qui autorise les experiences **agissant** sur la bataille.
+#:
+#: **Absente par defaut, et c'est le contrat.** Le chronometrage missile appelle
+#: `start_move` et confisque des tireurs jusqu'a trente secondes. Lance pendant
+#: un pilotage, il produirait des « unite non controlable » imputables a
+#: nous-memes — au moment precis ou LIVE-001 cherche pourquoi des ordres
+#: disparaissent. On aurait mesure notre propre interference.
+EXPERIMENT_FILENAME = "totalwar_ai_experiment"
 
 #: Contenu qui marque une sentinelle d'arret **deja honoree**.
 #:
@@ -152,6 +161,11 @@ class BridgePaths:
     def ack(self) -> Path:
         """Accuses ecrits par le Lua, lus par Python (append-only)."""
         return self.directory / ACK_FILENAME
+
+    @property
+    def experiment(self) -> Path:
+        """Sentinelle d'activation des experiences actives. Voir le module."""
+        return self.directory / EXPERIMENT_FILENAME
 
     @property
     def stop(self) -> Path:

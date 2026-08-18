@@ -227,6 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="laisser l'agent piloter la bataille pendant N secondes (defaut 120)",
     )
     probe.add_argument(
+        "--missile-test",
+        action="store_true",
+        help="autoriser les experiences qui commandent des unites (chronometrage du tir). "
+        "Incompatible avec --play : une seule chose commande a la fois",
+    )
+    probe.add_argument(
         "--supervise",
         type=float,
         nargs="?",
@@ -551,6 +557,9 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         bridge.abort("arret demande depuis le CLI")
         print("Arret d'urgence publie : le script Lua doit tout liberer.")
         return 0
+
+    if args.missile_test:
+        return _cmd_missile_test(bridge)
 
     # Les trois modes de pilotage attendent des etats du jeu. Une sentinelle
     # d'arret oubliee les fait tourner a vide, sans qu'aucun n'en dise rien.
@@ -974,6 +983,26 @@ def _reclaim(bridge: FileBridge) -> int:
     return 0
 
 
+def _cmd_missile_test(bridge: FileBridge) -> int:
+    """Autorise le chronometrage du tir, qui **commande** des unites.
+
+    **Deux mesures, deux batailles.** Le protocole A/B/A prend un tireur, le fait
+    marcher, l'arrete, et regarde quand une munition part. Pendant ce temps, rien
+    d'autre ne doit commander cette unite — sans quoi le verdict porterait sur
+    une trajectoire qui n'est pas celle de l'experience.
+    """
+    bridge.paths.ensure()
+    bridge.paths.experiment.write_text("chronometrage du tir autorise\n", encoding="utf-8")
+    print(f"Experiences actives autorisees : {bridge.paths.experiment}")
+    print(
+        "Lancer une bataille **sans** `--play` : le protocole A/B/A demarre seul\n"
+        "au passage en `Deployed`, et rendra son verdict dans le script_log\n"
+        "(FIRES_WHILE_MOVING, HALT_REQUIRED ou EXPERIENCE_INVALID).\n"
+    )
+    print("Supprimer ce fichier avant toute session de pilotage.")
+    return 0
+
+
 def _play(
     bridge: FileBridge,
     duration: float,
@@ -994,6 +1023,21 @@ def _play(
     jeu, dont les verdicts divergent (voir `docs/decisions/0005`).
     """
     from totalwar_ai.bridge.live import LiveSession
+
+    # **Une seule chose commande les unites a la fois.** Le chronometrage missile
+    # appelle `start_move` et confisque des tireurs jusqu'a trente secondes :
+    # lance pendant un pilotage, il produirait des « unite non controlable »
+    # imputables a nous-memes, exactement la ou LIVE-001 cherche pourquoi des
+    # ordres disparaissent. Une mesure dont on ne peut pas exclure sa propre
+    # interference ne mesure rien.
+    if bridge.paths.experiment.exists():
+        print(
+            "Sentinelle d'experience presente : le chronometrage missile "
+            "confisquerait des unites pendant le pilotage.\n"
+            f"Supprimer {bridge.paths.experiment} avant de piloter.",
+            file=sys.stderr,
+        )
+        return 2
 
     config = load_config()
     agent = DeterministicTacticalAgent.from_config(config)
