@@ -25,6 +25,23 @@ from totalwar_ai.simulation.scenarios import Scenario, ScenarioCatalog
 #: Graines par defaut du banc. Fixes : un banc qui bouge ne mesure rien.
 DEFAULT_SEEDS: tuple[int, ...] = (11, 23, 37)
 
+
+def widen_seeds(count: int) -> tuple[int, ...]:
+    """Les `count` premieres graines du banc, elargies de facon deterministe.
+
+    **Une seule regle d'elargissement, partagee.** Le banc et la sonde de
+    secteurs doivent tirer les memes graines, sans quoi leurs chiffres ne se
+    comparent pas — et deux regles de meme intention finissent toujours par
+    deriver l'une de l'autre (ADR 0019).
+
+    Les pools reserves (`9001+`, `9101+`, `9201+`) ne sont jamais atteints : ils
+    ne se tirent que par `--hidden`, et jamais pendant le developpement.
+    """
+    if count <= len(DEFAULT_SEEDS):
+        return tuple(DEFAULT_SEEDS[:count]) or DEFAULT_SEEDS
+    return tuple(DEFAULT_SEEDS) + tuple(101 + index for index in range(count - len(DEFAULT_SEEDS)))
+
+
 #: Graines **reservees**, jouees seulement au moment de valider une etape.
 #:
 #: .. warning::

@@ -385,6 +385,7 @@ def commit(
     game_time: float,
     *,
     mobility: MobilityTracker | None = None,
+    slide: bool = False,
 ) -> Assault | None:
     """Compose l'assaut : le necessaire, qui arrive ensemble, et pas davantage.
 
@@ -419,21 +420,44 @@ def commit(
     # reproductible (ADR 0011).
     disponibles.sort(key=lambda unit: (suivi.eta(unit, sector.centre), unit.id))
 
+    besoin = sector.cost * ASSAULT_RATIO
+    # **La fenetre glissante est un canal de mesure, eteint en production.**
+    #
+    # Ancree sur la premiere arrivee, la fenetre laisse l'unite la plus rapide
+    # opposer son veto au groupe : sur `skirmish_standoff`, une cavalerie
+    # devancant l'infanterie de dix-huit secondes faisait refuser les trois
+    # unites qui, elles, arrivaient a cinq secondes les unes des autres, et
+    # `commit()` rendait `None` a chacun des cinquante-six plans.
+    #
+    # La faire glisser leve ce veto sans rien relacher — tout assaut compose
+    # arrive toujours dans une seule fenetre. Mesure a l'ADR 0019 : 56 assauts
+    # la ou il n'y en avait aucun, et `skirmish_standoff` passant du nul a la
+    # **defaite**, forces restantes 100 % -> 74 % pour 2 % des leurs.
+    #
+    # Elle reste donc eteinte : le defaut qu'elle a revele est ailleurs, dans le
+    # choix du secteur. Mais sans elle, aucune donnee n'existe sur ce que les
+    # secteurs valent, puisqu'aucun assaut ne s'y compose. Elle sert la sonde de
+    # mesure, et rien d'autre.
+    departs = range(len(disponibles)) if slide else range(1)
     engagees: list[str] = []
     force = 0.0
-    besoin = sector.cost * ASSAULT_RATIO
-    premier: float | None = None
-    for unit in disponibles:
-        if force >= besoin:
+    for depart in departs:
+        origine = suivi.eta(disponibles[depart], sector.centre) if disponibles else 0.0
+        groupe: list[str] = []
+        cumul = 0.0
+        for unit in disponibles[depart:]:
+            if cumul >= besoin:
+                break
+            if suivi.eta(unit, sector.centre) - origine > ASSAULT_WINDOW:
+                # Les suivantes sont plus lentes encore : le tri le garantit.
+                break
+            groupe.append(unit.id)
+            cumul += unit.effective_strength
+        if groupe and (sector.cost <= 1e-9 or cumul >= besoin):
+            engagees, force = groupe, cumul
             break
-        arrivee = suivi.eta(unit, sector.centre)
-        if premier is None:
-            premier = arrivee
-        elif arrivee - premier > ASSAULT_WINDOW:
-            # Les suivantes sont plus lentes encore : le tri le garantit.
-            break
-        engagees.append(unit.id)
-        force += unit.effective_strength
+        if not slide:
+            engagees, force = groupe, cumul
     if not engagees or (sector.cost > 1e-9 and force < besoin):
         return None
 

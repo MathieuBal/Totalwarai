@@ -348,6 +348,22 @@ class Planner:
     #: La raison affichee le dit explicitement, pour qu'aucun compte rendu ne
     #: laisse croire que l'agent a choisi cette posture.
     forced_posture: Posture | None = None
+    #: Secteur impose, et fenetre glissante : **canal de mesure seulement**.
+    #:
+    #: `best()` ne choisit jamais qu'un secteur par etat, si bien qu'aucune
+    #: donnee n'existe sur ce que les autres auraient donne. Or c'est exactement
+    #: la question ouverte : sur `skirmish_standoff`, le seul secteur atteignant
+    #: 1,5 est un regiment **isole** a 4,92, et l'enfoncer transforme le nul en
+    #: defaite. Savoir si c'etait un mauvais choix ou un mauvais assaut demande
+    #: de rejouer la meme bataille en imposant chaque secteur tour a tour.
+    #:
+    #: Sur le modele de `forced_posture` : un canal d'operateur, jamais emprunte
+    #: en bataille, et un test verifie que les plans sont identiques quand il
+    #: n'est pas renseigne.
+    forced_sector: int | None = None
+    #: Composer l'assaut en faisant glisser la fenetre d'arrivee. Voir
+    #: :func:`totalwar_ai.agent.sectors.commit`. Mesure seulement.
+    sliding_window: bool = False
 
     #: Cible en cours pour chaque unite, tant qu'elle reste valable.
     #:
@@ -630,11 +646,26 @@ class Planner:
             return None
 
         carte = split_sectors(state, front, allies, mobility=self._mobility)
-        secteur = carte.best()
+        if self.forced_sector is None:
+            secteur = carte.best()
+        else:
+            # **La sonde impose le secteur sans imposer l'assaut.** Les autres
+            # garde-fous restent en vigueur : si le secteur demande n'existe pas
+            # a cet instant, ou si l'assaut ne s'y compose pas, il ne se passe
+            # rien — sans quoi la mesure repondrait a une question que personne
+            # ne pose, celle d'un assaut lance quoi qu'il arrive.
+            secteur = next(
+                (item for item in carte.sectors if item.index == self.forced_sector), None
+            )
         if secteur is None:
             return None
         self._assault = commit(
-            secteur, state, allies, game_time=state.game_time, mobility=self._mobility
+            secteur,
+            state,
+            allies,
+            game_time=state.game_time,
+            mobility=self._mobility,
+            slide=self.sliding_window,
         )
         return self._assault
 
