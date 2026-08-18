@@ -106,12 +106,25 @@ Trois précautions, chacune tirée d'un défaut de cette session :
 * **`no_command_stage` reste `None` quand une commande est partie**, sinon le
   champ se remplirait à chaque tour et ne désignerait plus rien.
 
-## La chaîne, une fois complète
+## La chaîne, une fois complète — et ce que `no_command_stage` recouvre
+
+**Deux mesures distinctes, et j'avais annoncé une seule chaîne.** Un compte rendu
+précédent affirmait que la chaîne « peut désigner `PUBLISH` ou `ACK` ». C'est
+faux : ces deux étages n'existent pas comme `no_command_stage`, et le code n'en a
+jamais porté.
 
 ```
-PYTHON_LOOP -> PLANNER -> CONFIDENCE -> SAFETY -> DUPLICATES -> THROTTLE
-            -> TRANSLATION -> MICRO_MOVE -> PUBLISH -> ACK
+NO_COMMAND_STAGE — pourquoi rien n'est parti
+  planner -> confidence -> safety -> duplicates -> throttle
+          -> translation -> micro_move
+
+DELIVERY — ce qu'est devenu ce qui est parti
+  sent_by_python -> acknowledged_by_lua | refused_by_lua | ack_timeout
 ```
+
+Le découpage est le bon : un ordre **envoyé** n'a pas de `no_command_stage`, par
+construction, puisqu'une commande est bien sortie. Ce qui lui arrive ensuite est
+un résultat de livraison, mesuré à part. Il fallait seulement le décrire ainsi.
 
 Quatre précautions supplémentaires, chacune fermant une façon de mentir :
 

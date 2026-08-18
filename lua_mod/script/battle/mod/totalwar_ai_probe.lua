@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 15
+TOTALWAR_AI_PROBE_REVISION = 16
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -511,6 +511,43 @@ function PROBE:unit_snapshot(unit)
     add_number("bearing", "bearing")
     add_number("ammo", "ammo_left")
     add_number("missile_range", "missile_range")
+
+    -- Revision 16 : ce que le recensement du 18/08 a confirme present.
+    --
+    -- **La vitesse se lit enfin.** L'ADR 0018 avait ecrit « le jeu ne la donne
+    -- pas » apres avoir essaye `speed`, absent. `fast_speed` et `slow_speed`
+    -- repondent : 4,6 et 1,5 pour un Storm Dragon, 2,8 et 1,5 pour des Jade
+    -- Warriors. Les lire n'est donc plus un canal privilegie -- c'etait un canal
+    -- demande sous le mauvais nom, exactement comme le moral en revision 14.
+    add_number("fast_speed", "fast_speed")
+    add_number("slow_speed", "slow_speed")
+    -- Effectifs et munitions **initiaux**, pour des ratios exacts plutot que
+    -- supposes : `number_of_men_alive / initial_number_of_men` et
+    -- `ammo_left / starting_ammo`.
+    add_number("initial_men", "initial_number_of_men")
+    add_number("starting_ammo", "starting_ammo")
+    add_number("strategic_value", "strategic_value")
+    add_bool("wavering", "is_wavering")
+    -- **Chaine brute, sans conversion.** `fatigue_state` rend `threshold_fresh`
+    -- et consorts ; inventer une echelle numerique avant de savoir combien de
+    -- seuils existent serait une doctrine deguisee en mesure.
+    local fatigue = self:read_field(unit, "fatigue_state")
+    if type(fatigue) == "string" then
+        parts[#parts + 1] = '"fatigue_state":"' .. fatigue .. '"'
+    end
+    -- **La cible se publie par son identifiant, jamais par l'objet Lua.**
+    -- `current_target()` rend une unite ; seul son `unique_ui_id()` traverse le
+    -- pont. Le recensement a prouve que l'accesseur existe et rend `nil` sans
+    -- cible ; la conversion avec une cible reelle reste a verifier en bataille.
+    local cible = self:read_field(unit, "current_target")
+    if cible ~= nil and type(cible) == "userdata" then
+        local ok, identifiant = pcall(function()
+            return cible:unique_ui_id()
+        end)
+        if ok and identifiant ~= nil then
+            parts[#parts + 1] = '"current_target_id":"' .. tostring(identifiant) .. '"'
+        end
+    end
 
     return "{" .. table.concat(parts, ",") .. "}"
 end
@@ -1210,98 +1247,164 @@ end
 local MISSILE_WATCH_TICKS = 240
 local MISSILE_WATCH_INTERVAL_MS = 250
 local MISSILE_WALK_METRES = 50
+--- Duree de chaque phase d'observation immobile, en millisecondes.
+---
+--- Douze secondes : assez pour qu'un tireur a portee decoche plusieurs
+--- salves, assez court pour que les trois phases tiennent dans une escarmouche.
+local MISSILE_PHASE_MS = 12000
 
+--- Protocole controle A/B/A : le tir en mouvement, enfin mesurable.
+---
+--- **L'experience de la revision 15 ne pouvait pas repondre.** Elle eloignait
+--- l'unite de l'ennemi puis attendait une salve : les quatre tireurs ordinaires
+--- se sont arretes sans aucune cible a portee, `current_target` est reste `nil`,
+--- et zero munition a ete consommee. Une experience qui ne peut pas produire
+--- l'evenement qu'elle mesure ne mesure rien.
+---
+--- Trois phases, cible a portee **tout du long** :
+---
+---     A   immobile         -> tire-t-elle deja ?   sinon EXPERIENCE_INVALID
+---     B   deplacement court -> `ammo_left` baisse-t-il pendant `is_moving` ?
+---     A2  apres l'arret     -> les tirs reprennent-ils ?
+---
+--- Lecture :
+---
+---     A tire / B tire            -> tir en mouvement confirme
+---     A tire / B non / A2 tire   -> l'arret est requis
+---     A ne tire pas              -> EXPERIENCE_INVALID, aucune conclusion
+---
+--- Le deplacement est **lateral et court** : il ne doit ni rapprocher l'unite de
+--- l'ennemi — une salve ne dirait alors pas si elle part parce que l'unite bouge
+--- ou parce qu'une cible vient d'entrer a portee — ni l'en eloigner assez pour
+--- lui faire perdre sa cible, ce qui etait le defaut de la revision 15.
 function PROBE:watch_missile_readiness(unit)
-    if not unit then
-        self:log("MISSILE aucune unite de tir : chronometrage impossible")
-        return
-    end
     local unit_id = self:unit_identifier(unit)
-    local depart = self:read_field(unit, "ammo_left")
-    if depart == nil then
+    local munitions = self:read_field(unit, "ammo_left")
+    if type(munitions) ~= "number" then
         self:log("MISSILE " .. unit_id .. " ammo_left absent : chronometrage impossible")
         return
     end
-
-    -- L'ordre d'abord : sans lui il n'y a pas de `t0`, et sans `t0` la mesure
-    -- ne mesure rien.
-    local ok_pos, position = pcall(function() return unit:position() end)
-    if not ok_pos or not position then
+    local depart = self:unit_position(unit)
+    if not depart then
         self:log("MISSILE " .. unit_id .. " position illisible : chronometrage impossible")
         return
     end
-    local destination = {
-        x = position:get_x() + MISSILE_WALK_METRES,
-        y = position:get_y(),
-        z = position:get_z(),
-    }
-    local envoye, motif = self:start_move(unit_id, destination, 30000)
-    if not envoye then
-        self:log("MISSILE " .. unit_id .. " aucun deplacement : " .. tostring(motif))
-        return
-    end
 
-    local attribut = "inconnu"
-    if type(unit.has_attribute) == "function" then
-        local ok_attr, valeur = pcall(unit.has_attribute, unit, "fire_while_moving")
-        attribut = ok_attr and tostring(valeur) or "erreur"
-    end
+    -- `has_attribute` prend un argument : il ne passe pas par `read_field`, qui
+    -- appelle sans parametre.
+    local ok_attr, attribut_brut = pcall(unit.has_attribute, unit, "fire_while_moving")
+    local attribut = ok_attr and tostring(attribut_brut) or "inconnu"
     self:log(
-        "MISSILE t0 ordre envoye unite=" .. unit_id .. " type=" .. tostring(unit:type())
-            .. " fire_while_moving=" .. attribut .. " ammo=" .. json_number(depart)
+        "MISSILE A0 " .. unit_id .. " type=" .. tostring(unit:type())
+            .. " fire_while_moving=" .. attribut .. " ammo=" .. json_number(munitions)
     )
 
-    local processus = "totalwar_ai_missile_" .. unit_id
     local suivi = {
-        restant = MISSILE_WATCH_TICKS,
-        munitions = depart,
-        parti = nil,
-        arrete = nil,
-        cible = nil,
+        phase = "A",
         ecoule = 0,
+        munitions = munitions,
+        tirs_a = 0,
+        tirs_b = 0,
+        tirs_a2 = 0,
+        b_en_marche = 0,
+        ordre_emis = false,
     }
+    local processus = "totalwar_ai_missile_" .. unit_id
 
     bm:repeat_callback(function()
-        suivi.restant = suivi.restant - 1
         suivi.ecoule = suivi.ecoule + MISSILE_WATCH_INTERVAL_MS
-        if suivi.restant <= 0 then
-            bm:remove_process(processus)
-            self:log("MISSILE " .. unit_id .. " fin du chronometrage sans salve")
+        local restantes = self:read_field(unit, "ammo_left")
+        local bouge = self:read_field(unit, "is_moving")
+        local cible = self:read_field(unit, "current_target")
+        local salve = type(restantes) == "number" and restantes < suivi.munitions
+        if type(restantes) == "number" then
+            suivi.munitions = restantes
+        end
+
+        if suivi.phase == "A" then
+            if salve then
+                suivi.tirs_a = suivi.tirs_a + 1
+            end
+            if suivi.ecoule >= MISSILE_PHASE_MS then
+                if suivi.tirs_a == 0 then
+                    -- **Le seul verdict honnete quand l'unite ne tire deja pas.**
+                    -- Sans salve a l'arret, comparer l'arret et la marche ne
+                    -- compare rien : c'est l'experience qui a echoue, pas le jeu
+                    -- qui a repondu.
+                    self:log(
+                        "MISSILE VERDICT " .. unit_id .. " EXPERIENCE_INVALID"
+                            .. " raison=aucune salve a l'arret"
+                            .. " cible=" .. tostring(cible ~= nil)
+                    )
+                    bm:remove_process(processus)
+                    return
+                end
+                self:log("MISSILE A " .. unit_id .. " salves=" .. suivi.tirs_a .. " -> phase B")
+                -- Deplacement **lateral**, pour ne changer ni la distance a la
+                -- cible ni donc les conditions de tir.
+                local destination = {
+                    x = depart.x + MISSILE_WALK_METRES,
+                    y = depart.y,
+                    z = depart.z,
+                }
+                local envoye, motif = self:start_move(unit_id, destination, 30000)
+                suivi.ordre_emis = envoye and true or false
+                if not envoye then
+                    self:log(
+                        "MISSILE VERDICT " .. unit_id .. " EXPERIENCE_INVALID"
+                            .. " raison=deplacement refuse : " .. tostring(motif)
+                    )
+                    bm:remove_process(processus)
+                    return
+                end
+                suivi.phase = "B"
+                suivi.ecoule = 0
+            end
             return
         end
-        local maintenant = suivi.ecoule
-        local bouge = self:read_field(unit, "is_moving")
 
-        if suivi.parti == nil and bouge == true then
-            suivi.parti = maintenant
-            self:log("MISSILE t1 " .. unit_id .. " en marche a " .. json_number(maintenant) .. " ms")
-        end
-        if suivi.parti ~= nil and suivi.arrete == nil and bouge == false then
-            suivi.arrete = maintenant
-            self:log("MISSILE t2 " .. unit_id .. " arret a " .. json_number(maintenant) .. " ms")
+        if suivi.phase == "B" then
+            if bouge == true then
+                suivi.b_en_marche = suivi.b_en_marche + 1
+                if salve then
+                    suivi.tirs_b = suivi.tirs_b + 1
+                end
+            end
+            -- On quitte B des que l'unite s'arrete, pas au bout d'un delai fixe :
+            -- ce qui compte est le temps passe **en marche**, pas le temps passe.
+            if suivi.ordre_emis and bouge == false and suivi.b_en_marche > 0 then
+                self:log(
+                    "MISSILE B " .. unit_id .. " releves_en_marche=" .. suivi.b_en_marche
+                        .. " salves_en_marche=" .. suivi.tirs_b .. " -> phase A2"
+                )
+                suivi.phase = "A2"
+                suivi.ecoule = 0
+            end
+            return
         end
 
-        local cible = self:read_field(unit, "current_target")
-        if suivi.cible == nil and cible ~= nil then
-            suivi.cible = maintenant
-            self:log("MISSILE t3 " .. unit_id .. " cible a " .. json_number(maintenant) .. " ms")
+        if salve then
+            suivi.tirs_a2 = suivi.tirs_a2 + 1
         end
-
-        local munitions = self:read_field(unit, "ammo_left")
-        if munitions ~= nil and munitions < suivi.munitions then
-            -- **La ligne qui tranche.** `en_marche=true` signifie qu'une salve
-            -- est partie alors que l'unite se deplacait encore : le tir en
-            -- mouvement serait alors autorise, et notre simulateur aurait
-            -- raison. `en_marche=false` dit l'inverse, et il faudra le corriger.
+        if suivi.ecoule >= MISSILE_PHASE_MS then
+            local verdict
+            if suivi.tirs_b > 0 then
+                verdict = "FIRES_WHILE_MOVING"
+            elseif suivi.tirs_a2 > 0 then
+                verdict = "HALT_REQUIRED"
+            else
+                verdict = "EXPERIENCE_INVALID raison=aucune salve apres l'arret"
+            end
             self:log(
-                "MISSILE t4 " .. unit_id .. " premiere salve a " .. json_number(maintenant) .. " ms"
-                    .. " en_marche=" .. tostring(bouge == true)
-                    .. " apres_arret="
-                    .. (suivi.arrete and json_number(maintenant - suivi.arrete) or "jamais_arrete")
+                "MISSILE VERDICT " .. unit_id .. " " .. verdict
+                    .. " A=" .. suivi.tirs_a
+                    .. " B=" .. suivi.tirs_b .. "/" .. suivi.b_en_marche
+                    .. " A2=" .. suivi.tirs_a2
+                    .. " fire_while_moving=" .. attribut
             )
             bm:remove_process(processus)
         end
-    end, MISSILE_WATCH_INTERVAL_MS, processus)
+    end, MISSILE_WATCH_INTERVAL_MS / 1000, processus)
 end
 
 --- Appelle un accesseur si le recensement l'a declare utilisable.

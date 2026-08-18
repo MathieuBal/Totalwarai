@@ -631,7 +631,48 @@ def test_le_diagnostic_par_etage_est_ecrit_dans_le_journal(tmp_path: Path) -> No
     assert entree["decision_due"] is True
     assert entree["planner_reasons"] == {"NO_FEASIBLE_SECTOR": 2}
     assert entree["acknowledgement"]["ack_timeout"] is True
-    assert entree["wall_clock"] == 1234.5
+    assert entree["consumed_wall_clock"] == 1234.5
+
+
+def test_tous_les_etats_d_un_meme_tour_portent_le_meme_instant_de_consommation(
+    tmp_path: Path,
+) -> None:
+    """La preuve d'un rattrapage, et elle etait invisible.
+
+    Un `step()` lit tous les etats publies depuis le precedent. Le battement
+    n'etait ecrit que sur celui de **decision** : les intermediaires passaient a
+    `_record(..., None)` et n'en portaient aucun.
+
+    Or c'est precisement leur regroupement au meme instant mural qui trahit une
+    boucle Python qui vient de se debloquer — quatre etats de jeu espaces d'une
+    demi-seconde, tous avales au meme moment reel. Sans cela, un backlog se lit
+    exactement comme un flux normal.
+    """
+    from totalwar_ai.bridge.live import Heartbeat
+
+    recorder = BattleRecorder(directory=tmp_path)
+    lot = tuple(_etat(5, 5, ms=10_000 + index * 500) for index in range(4))
+    recorder.observe(
+        LiveStep(
+            state=lot[-1],
+            observed=lot,
+            heartbeat=Heartbeat(wall_clock=500.0, decision_due=True),
+        )
+    )
+    recorder.close()
+
+    assert recorder.path is not None
+    entrees = [
+        json.loads(ligne)
+        for ligne in recorder.path.read_text(encoding="utf-8").splitlines()
+        if "consumed_wall_clock" in ligne
+    ]
+    assert len(entrees) == 4, "les quatre etats sont enregistres"
+    assert all(entree["consumed_wall_clock"] == 500.0 for entree in entrees), (
+        "avales au meme instant reel : c'est la signature d'un rattrapage"
+    )
+    assert [entree["game_time_ms"] for entree in entrees] == [10_000, 10_500, 11_000, 11_500]
+    assert [entree.get("decision", False) for entree in entrees] == [False, False, False, True]
 
 
 def test_l_horloge_murale_accompagne_chaque_etat(tmp_path: Path) -> None:
@@ -653,9 +694,9 @@ def test_l_horloge_murale_accompagne_chaque_etat(tmp_path: Path) -> None:
     entrees = [
         json.loads(ligne)
         for ligne in recorder.path.read_text(encoding="utf-8").splitlines()
-        if '"wall_clock"' in ligne
+        if "consumed_wall_clock" in ligne
     ]
     jeu = entrees[1]["game_time_ms"] - entrees[0]["game_time_ms"]
-    murale = entrees[1]["wall_clock"] - entrees[0]["wall_clock"]
+    murale = entrees[1]["consumed_wall_clock"] - entrees[0]["consumed_wall_clock"]
     assert jeu == 1000, "une seconde de jeu"
     assert murale == 364.0, "mais six minutes de temps reel"

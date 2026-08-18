@@ -1378,55 +1378,68 @@ def test_le_chronometrage_emet_un_vrai_ordre_de_deplacement(probe: Probe) -> Non
     probe.advance(1500)
     probe.enter_phase("Deployed")
 
-    depart = probe.grep("MISSILE t0 ordre envoye")
-    assert depart, "le chronometrage doit emettre un deplacement, pas seulement observer"
+    depart = probe.grep("MISSILE A0")
+    assert depart, "le chronometrage doit s'annoncer avant d'observer"
     assert "fire_while_moving=" in depart[0], "l'attribut doit accompagner la mesure"
-    # L'ordre doit avoir reellement atteint le jeu.
+
+    # Phase A : l'unite tire a l'arret. Sans cela, rien ne peut etre conclu.
+    probe.fake.missile_fire(probe.fake, "1006")
+    probe.advance(13000)
+    assert probe.grep("MISSILE A "), "la phase A doit se conclure sur des salves"
+    # L'ordre de deplacement de la phase B doit avoir reellement atteint le jeu.
     assert any(order["kind"] == "goto" for order in probe.orders())
 
 
-def test_une_salve_apres_arret_est_datee_et_situee(probe: Probe) -> None:
-    """Le cas ou le jeu imposerait l'arret pour tirer."""
+def test_une_unite_qui_ne_tire_pas_a_l_arret_invalide_l_experience(probe: Probe) -> None:
+    """Le defaut de la revision 15, cette fois empeche par le protocole.
+
+    L'experience precedente eloignait l'unite de l'ennemi puis attendait une
+    salve : les quatre tireurs ordinaires se sont arretes sans cible a portee,
+    et n'ont rien tire du tout. Comparer l'arret et la marche ne compare rien si
+    l'unite ne tire pas deja a l'arret.
+    """
     probe.fake.arm_unit(probe.fake, "1006", 120)
     probe.advance(1500)
     probe.enter_phase("Deployed")
-    probe.advance(500)
-    assert probe.grep("MISSILE t1")
+    probe.advance(13000)
 
-    probe.fake.missile_stop(probe.fake, "1006")
-    probe.advance(500)
-    assert probe.grep("MISSILE t2")
-
-    probe.fake.missile_acquire(probe.fake, "1006", "2001")
-    probe.advance(500)
-    assert probe.grep("MISSILE t3")
-
-    probe.fake.missile_fire(probe.fake, "1006")
-    probe.advance(500)
-    salve = probe.grep("MISSILE t4")
-    assert salve
-    assert "en_marche=false" in salve[0]
+    verdict = probe.grep("MISSILE VERDICT")
+    assert verdict, "l'experience doit rendre un verdict, meme negatif"
+    assert "EXPERIENCE_INVALID" in verdict[0]
+    assert "aucune salve a l'arret" in verdict[0]
+    assert "FIRES_WHILE_MOVING" not in verdict[0]
 
 
-def test_une_salve_tiree_en_marche_est_signalee_comme_telle(probe: Probe) -> None:
-    """Le cas oppose doit se distinguer, sinon la mesure ne mesure rien.
+def test_une_salve_en_marche_donne_le_verdict_du_tir_en_mouvement(probe: Probe) -> None:
+    """Le cas qui jugerait notre simulateur.
 
-    **C'est cette ligne qui juge notre simulateur.** `en_marche=true` dirait
-    qu'un tireur peut tirer en se deplacant, et notre modele aurait raison ;
-    `en_marche=false` dirait l'inverse, et le repli tirant qui porte
-    `balanced_clash` a 11/12 reposerait sur une permissivite inexistante.
+    Notre modele laisse toute unite de tir non engagee tirer en marchant. Si le
+    jeu le confirme, le repli tirant qui porte `balanced_clash` repose sur une
+    permissivite reelle ; sinon il repose sur une permissivite inventee.
     """
     probe.fake.arm_unit(probe.fake, "1006", 120)
     probe.advance(1500)
     probe.enter_phase("Deployed")
 
-    # L'unite tire sans s'etre jamais arretee.
+    # Phase A : elle tire bien a l'arret.
+    probe.fake.missile_stop(probe.fake, "1006")
     probe.fake.missile_fire(probe.fake, "1006")
-    probe.advance(500)
-    salve = probe.grep("MISSILE t4")
-    assert salve
-    assert "en_marche=true" in salve[0]
-    assert "apres_arret=jamais_arrete" in salve[0]
+    probe.advance(13000)
+    assert probe.grep("MISSILE A ")
+
+    # Phase B : elle tire **en marchant**.
+    probe.fake.missile_walk(probe.fake, "1006")
+    probe.fake.missile_fire(probe.fake, "1006")
+    probe.advance(1000)
+    probe.fake.missile_stop(probe.fake, "1006")
+    probe.advance(1000)
+    assert probe.grep("MISSILE B ")
+
+    probe.fake.missile_fire(probe.fake, "1006")
+    probe.advance(13000)
+    verdict = probe.grep("MISSILE VERDICT")
+    assert verdict
+    assert "FIRES_WHILE_MOVING" in verdict[0]
 
 
 def test_sans_unite_de_tir_le_chronometrage_le_dit(probe: Probe) -> None:

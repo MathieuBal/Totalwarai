@@ -27,7 +27,7 @@ from pathlib import Path
 #: Doit valoir `TOTALWAR_AI_PROBE_REVISION` dans
 #: `lua_mod/script/battle/mod/totalwar_ai_probe.lua`. Un test verifie l'egalite,
 #: pour que les deux ne puissent pas diverger en silence.
-EXPECTED_PROBE_REVISION = 15
+EXPECTED_PROBE_REVISION = 16
 
 #: Source canonique du script de sonde, relative a la racine du depot.
 #:

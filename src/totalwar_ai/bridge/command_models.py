@@ -216,6 +216,27 @@ class ProbeUnitObservation:
     bearing: float | None = None
     ammo: int | None = None
     missile_range: float | None = None
+    #: Revision 16 — ce que le recensement du 18/08 a confirme present.
+    #:
+    #: **`fast_speed` renverse une premisse de l'ADR 0018**, qui avait ecrit « le
+    #: jeu ne donne pas la vitesse » apres avoir essaye `speed`, absent. Le jeu la
+    #: donne sous deux noms : 4,6 et 1,5 pour un Storm Dragon, 2,8 et 1,5 pour des
+    #: Jade Warriors. La lire n'est donc pas un canal privilegie — c'etait un
+    #: canal demande sous le mauvais nom, comme le moral en revision 14.
+    fast_speed: float | None = None
+    slow_speed: float | None = None
+    #: Effectifs et munitions **initiaux** : des ratios exacts, non supposes.
+    initial_men: int | None = None
+    starting_ammo: int | None = None
+    strategic_value: float | None = None
+    wavering: bool = False
+    #: Etat de fatigue **brut** : `threshold_fresh` et consorts.
+    #:
+    #: Aucune conversion numerique : inventer une echelle avant de savoir combien
+    #: de seuils existent serait une doctrine deguisee en mesure.
+    fatigue_state: str | None = None
+    #: Cible en cours, par son `unique_ui_id`. Jamais l'objet Lua.
+    current_target_id: str | None = None
 
     @property
     def is_ranged(self) -> bool:
@@ -242,6 +263,10 @@ class ProbeUnitObservation:
         """
         if measured is not None:
             return measured
+        # Revision 16 : les deux bornes venant du jeu, le rapport est exact et
+        # n'a plus besoin d'etre reconstruit par le pont.
+        if self.men_alive is not None and self.initial_men:
+            return max(0.0, min(1.0, self.men_alive / self.initial_men))
         if self.hitpoints is not None:
             return self.hitpoints
         return 1.0
@@ -257,6 +282,8 @@ class ProbeUnitObservation:
         """
         if measured is not None:
             return measured
+        if self.ammo is not None and self.starting_ammo:
+            return max(0.0, min(1.0, self.ammo / self.starting_ammo))
         if self.ammo is not None:
             return 1.0 if self.ammo > 0 else 0.0
         return 1.0 if self.is_ranged else 0.0
@@ -308,6 +335,14 @@ class ProbeUnitObservation:
             bearing=_optional_float(data, "bearing"),
             ammo=_optional_int(data, "ammo"),
             missile_range=_optional_float(data, "missile_range"),
+            fast_speed=_optional_float(data, "fast_speed"),
+            slow_speed=_optional_float(data, "slow_speed"),
+            initial_men=_optional_int(data, "initial_men"),
+            starting_ammo=_optional_int(data, "starting_ammo"),
+            strategic_value=_optional_float(data, "strategic_value"),
+            wavering=as_bool(data, "wavering", default=False),
+            fatigue_state=as_str(data, "fatigue_state", default="") or None,
+            current_target_id=as_str(data, "current_target_id", default="") or None,
         )
 
     def to_unit_state(
@@ -332,7 +367,12 @@ class ProbeUnitObservation:
             # explicitement qu'elles n'en sont pas — toute regle de l'agent qui
             # s'en sert doit d'abord verifier ces drapeaux.
             "morale_available": False,
-            "fatigue_available": False,
+            # **La fatigue existe desormais, mais sous forme de seuils.** Le
+            # recensement du 18/08 a rendu `fatigue_state = "threshold_fresh"` :
+            # une chaine, pas un nombre. On signale donc sa presence sans la
+            # convertir — inventer une echelle avant de savoir combien de seuils
+            # existent serait une doctrine deguisee en mesure.
+            "fatigue_available": self.fatigue_state is not None,
             # **Peut-on lui donner un ordre d'attaque maintenant ?** C'est la
             # seule question a laquelle `is_valid_target` reponde correctement :
             # elle ne dit pas si l'unite est vivante (voir `alive_from`), mais
@@ -349,10 +389,25 @@ class ProbeUnitObservation:
             # du sol — entrait dans la mesure du relief.
             "can_fly": self.can_fly,
         }
-        for name in ("hitpoints", "men_alive", "bearing", "ammo", "missile_range"):
+        for name in (
+            "hitpoints",
+            "men_alive",
+            "bearing",
+            "ammo",
+            "missile_range",
+            # Revision 16.
+            "fast_speed",
+            "slow_speed",
+            "initial_men",
+            "starting_ammo",
+            "strategic_value",
+            "fatigue_state",
+        ):
             value = getattr(self, name)
             if value is not None:
                 metadata[name] = value
+        if self.wavering:
+            metadata["wavering"] = True
         return UnitState(
             id=self.unit_id,
             side=side,
@@ -367,6 +422,11 @@ class ProbeUnitObservation:
             is_routing=self.routing or self.shattered,
             is_engaged=self.in_melee,
             is_hidden=self.hidden,
+            # **Par identifiant, jamais par objet.** `current_target()` rend une
+            # unite Lua ; seul son `unique_ui_id()` traverse le pont. Le
+            # recensement a prouve que l'accesseur existe et rend `nil` sans
+            # cible — la conversion avec une cible reelle reste a verifier.
+            current_target_id=self.current_target_id,
             metadata=metadata,
         )
 

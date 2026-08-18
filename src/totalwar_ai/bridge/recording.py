@@ -146,10 +146,27 @@ class BattleRecorder:
 
         # `observed` est vide chez les appelants qui ne le remplissent pas :
         # on retombe alors sur le seul etat de decision.
+        #
+        # **L'instant de consommation va sur *tous* les etats, pas seulement sur
+        # celui de decision.** C'est leur regroupement au meme instant mural qui
+        # revele un rattrapage : quatre etats de jeu espaces d'une demi-seconde
+        # tous avales au meme moment reel signalent une boucle Python qui vient
+        # de se debloquer. Ne l'ecrire que sur l'etat de decision rendait cette
+        # preuve-la invisible, et c'est precisement celle qui manquait.
         for state in step.observed or (step.state,):
-            self._record(state, step if state is step.state else None)
+            self._record(
+                state,
+                step if state is step.state else None,
+                consumed_at=step.heartbeat.wall_clock,
+            )
 
-    def _record(self, state: ProbeBattleState, step: LiveStep | None) -> None:
+    def _record(
+        self,
+        state: ProbeBattleState,
+        step: LiveStep | None,
+        *,
+        consumed_at: float = 0.0,
+    ) -> None:
         """Un etat publie. `step` n'est fourni que pour l'etat de decision."""
         self._open()
         self.observations += 1
@@ -177,14 +194,10 @@ class BattleRecorder:
             "ally_strength": _strength(state, "allies"),
             "enemy_strength": _strength(state, "enemies"),
         }
-        if step is not None:
-            # **L'horloge murale va sur *chaque* entree, pas seulement sur les
-            # tours de decision.** C'est elle qui separe « le Lua publiait et
-            # Python ne consommait pas » de « Python consommait et n'avait rien a
-            # dire » : une boucle bloquee puis rattrapant son arriere montre des
-            # `game_time_ms` continus et un `wall_clock` troue. Le `script_log`
-            # seul ne pouvait pas trancher.
-            entry["wall_clock"] = step.heartbeat.wall_clock
+        # Ce que le `script_log` ne pouvait pas dire : a quel instant reel Python
+        # a lu cet etat. Deux horloges valent mieux qu'une — un blocage laisse le
+        # temps de jeu continu et l'horloge murale trouee.
+        entry["consumed_wall_clock"] = round(consumed_at, 3)
         if step is not None:
             entry.update(
                 {

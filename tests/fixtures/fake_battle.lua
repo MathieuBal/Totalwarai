@@ -402,4 +402,14 @@ function FAKE:missile_fire(unit_id)
     if unit then unit.ammo = unit.ammo - 1 end
 end
 
+--- Remet le tireur en marche : le pendant de `missile_stop`.
+---
+--- Le protocole A/B/A a besoin de faire marcher **puis** arreter une unite, et
+--- de constater une salve dans chacun des deux etats. Sans cette moitie-la, le
+--- harnais ne pouvait produire que le cas « tire a l'arret ».
+function FAKE:missile_walk(unit_id)
+    local unit = self:arm_unit(unit_id)
+    if unit then unit.moving = true end
+end
+
 return FAKE

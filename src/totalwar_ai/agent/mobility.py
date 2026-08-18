@@ -198,15 +198,37 @@ class MobilityTracker:
                 cible = max(connue, mesuree)
                 self._speeds[unit.id] = connue + SMOOTHING * (cible - connue)
 
-    def speed(self, unit_id: str, role: UnitRole | None = None) -> float:
+    def speed(
+        self,
+        unit_id: str,
+        role: UnitRole | None = None,
+        declared: float | None = None,
+    ) -> float:
         """Vitesse observee, en metres par seconde. Jamais nulle.
 
-        A defaut d'observation, l'a priori du role — puis, a defaut de role, la
-        vitesse par defaut.
+        .. rubric:: La chaine, du plus sur au moins sur
+
+        .. code-block:: text
+
+            observation  ->  fast_speed declaree  ->  a priori de role
+
+        **`fast_speed` renverse une premisse de l'ADR 0018.** Elle affirmait « le
+        jeu ne donne pas la vitesse » apres avoir essaye `speed`, absent — et en
+        concluait que la lire serait un canal privilegie. Le recensement du 18/08
+        a montre que le jeu la donne sous deux autres noms : 4,6 m/s pour un Storm
+        Dragon, 2,8 pour des Jade Warriors. C'etait un canal demande sous le
+        mauvais nom, exactement comme le moral en revision 14.
+
+        L'observation garde le dessus quand elle existe. Le simulateur publie
+        `metadata["speed"]`, un regime nominal unique, la ou le jeu distingue lent
+        et rapide : les deux noms restent donc distincts plutot que d'etre
+        confondus, et l'appelant fournit ce dont il dispose.
         """
         observee = self._speeds.get(unit_id)
         if observee is not None:
             return max(MINIMUM_SPEED, observee)
+        if declared is not None and declared > 0.0:
+            return max(MINIMUM_SPEED, declared)
         presumee = ROLE_SPEED_PRIOR.get(role, DEFAULT_SPEED) if role is not None else DEFAULT_SPEED
         return max(MINIMUM_SPEED, presumee)
 
@@ -222,10 +244,26 @@ class MobilityTracker:
         trajet reel ne peut qu'etre plus long. C'est suffisant pour comparer deux
         unites entre elles, ce qui est le seul usage.
         """
-        return unit.position.distance_2d(destination) / self.speed(unit.id, unit.role)
+        return unit.position.distance_2d(destination) / self.speed(
+            unit.id, unit.role, _declared_speed(unit)
+        )
 
     def reset(self) -> None:
         """Oublie ce qui appartenait a la bataille precedente."""
         self._positions.clear()
         self._instants.clear()
         self._speeds.clear()
+
+
+def _declared_speed(unit: UnitState) -> float | None:
+    """Vitesse annoncee par la source, quel que soit son nom.
+
+    Le jeu publie `fast_speed` depuis la revision 16 ; le simulateur publie
+    `speed`, un regime nominal unique. Ce ne sont pas le meme concept, donc on
+    les cherche dans cet ordre plutot que de renommer l'un en l'autre.
+    """
+    for cle in ("fast_speed", "speed"):
+        valeur = unit.metadata.get(cle)
+        if isinstance(valeur, (int, float)) and valeur > 0.0:
+            return float(valeur)
+    return None
