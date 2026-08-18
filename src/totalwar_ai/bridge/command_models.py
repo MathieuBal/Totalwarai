@@ -100,10 +100,22 @@ class ProbeUnitState:
 
         Avant `Deployed`, le moteur accepte l'ordre et l'acquitte, mais l'unite
         ne bouge pas — constate en jeu, immobile 33 s durant apres un ordre
-        accepte. Une phase inconnue est traitee comme jouable : c'est le cas
-        d'une sonde plus ancienne, ou l'on ne veut pas bloquer a tort.
+        accepte.
+
+        .. rubric:: `unknown` n'est plus jouable
+
+        Cette phase etait traitee comme jouable, au motif qu'une sonde plus
+        ancienne pouvait ne pas transmettre la phase et qu'il ne fallait pas
+        bloquer a tort. Le compromis a coute **treize ordres acquittes et sans
+        effet** au demarrage de la bataille du 18/08, qui occupaient malgre tout
+        une signature d'anti-repetition et une destination memorisee.
+
+        Python exige desormais la revision 16, qui publie toujours la phase :
+        `unknown` ne veut donc plus dire « sonde ancienne » mais « le jeu n'a pas
+        encore annonce `Deployed` ». La chaine vide reste toleree — c'est le
+        champ absent d'un enregistrement relu, non une bataille en cours.
         """
-        return self.phase in ("", "unknown", "Deployed", "Complete")
+        return self.phase in ("", "Deployed", "Complete")
 
     def to_dict(self) -> dict[str, Any]:
         return {

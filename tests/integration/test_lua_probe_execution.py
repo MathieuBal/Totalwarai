@@ -765,7 +765,13 @@ def test_la_phase_est_publiee_dans_l_etat(probe: Probe, workdir: Path) -> None:
 
     etat = bridge.read_states()[-1]
     assert etat.phase == "unknown"
-    assert etat.orders_take_effect  # dans le doute, on ne bloque pas
+    # **`unknown` n'est plus jouable.** Elle l'etait au motif qu'une sonde plus
+    # ancienne pouvait taire la phase et qu'il ne fallait pas bloquer a tort. Ce
+    # compromis a coute treize ordres acquittes et sans effet au demarrage du
+    # 18/08, occupant malgre tout une signature d'anti-repetition et une
+    # destination memorisee. La revision 16 publie toujours la phase : `unknown`
+    # veut dire « le jeu n'a pas encore annonce `Deployed` ».
+    assert not etat.orders_take_effect
 
     probe.enter_phase("Deployment")
     probe.advance(2000)

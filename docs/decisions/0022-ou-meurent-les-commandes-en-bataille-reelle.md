@@ -104,15 +104,20 @@ absents et les cibles non finies — pas vers « les attaques ne fonctionnent pa
 
 ## Une trace qui manquait au corpus
 
-Les capteurs de la révision 16 n'étaient **archivés nulle part** :
-`_unit_entry` les écrit désormais. Correction utile pour le rejeu et
-l'apprentissage — **et rien de plus** : elle ne corrige aucune absence de
-perception en direct.
+Les capteurs de la révision 16 **existent bien dans le flux brut de la sonde** —
+`fast_speed`, `slow_speed`, `initial_men`, `starting_ammo`, `strategic_value`,
+`fatigue_state`, et de vrais `current_target_id` sur les ennemis en cours de
+bataille. Ce qui manquait est ailleurs : ils n'étaient **pas archivés dans le
+corpus du `BattleRecorder`**, donc absents de tout rejeu ultérieur.
+`_unit_entry` les écrit désormais.
 
-> J'avais écrit que le `totalwar_ai_state.jsonl` reçu datait de la révision 15.
-> **Je n'avais pas vérifié cette provenance** : les deux exemplaires en ma
-> possession viennent de sessions antérieures, plus courtes que celle du 22h20,
-> et ne prouvent rien dans un sens ni dans l'autre.
+C'est une correction d'archivage, **pas de perception** : rien ne manquait à
+l'agent en direct.
+
+> Deux formulations à retirer de mes comptes rendus. J'ai écrit que ces capteurs
+> « n'étaient archivés nulle part », ce qui laissait croire à une absence de
+> perception ; et que le `totalwar_ai_state.jsonl` reçu datait de la révision 15,
+> **provenance que je n'avais pas vérifiée**.
 
 ## Ce qui suit
 
@@ -123,5 +128,19 @@ La dispersion des dégâts ne fait **pas** l'objet d'un chantier séparé : elle
 être une conséquence directe de l'engagement au compte-gouttes. On mesurera si
 elle s'améliore d'elle-même une fois la cohésion obtenue.
 
-Ensuite seulement : phase `unknown` avant `Deployed`, archivage v16 complet,
-expérience missile A/B/A, puis Sector Value.
+L'ordre est donc :
+
+```
+phase unknown  ->  instrumentation LIVE-002  ->  correction LIVE-002
+               ->  missile A/B/A  ->  Sector Value
+```
+
+**`phase unknown` passe devant**, et c'est un correctif de protocole, pas un
+changement tactique : le diagnostic de LIVE-001 étant clos, plus rien ne justifie
+de conserver les treize ordres pré-`Deployed`. Les garder polluerait les
+premières secondes de la mesure de cohésion — ordres fictifs, signatures
+d'anti-répétition occupées, destinations mémorisées.
+
+Ni `duplicate_suppression` ni « les 93 attaques » ne font l'objet d'un chantier
+séparé : les deux se remesurent après LIVE-002, parce que les deux peuvent en
+être des conséquences.
