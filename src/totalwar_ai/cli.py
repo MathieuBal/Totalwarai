@@ -46,6 +46,8 @@ from totalwar_ai.learning.evaluation import (
     run_benchmark,
     widen_seeds,
 )
+from totalwar_ai.learning.live import SILENCE_SECONDS
+from totalwar_ai.learning.live import read as read_live
 from totalwar_ai.learning.sector_value import probe
 from totalwar_ai.memory.replay_buffer import ReplayBuffer
 from totalwar_ai.memory.repository import MemoryRepository
@@ -184,6 +186,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--scenario", action="append", default=None, help="limiter a ce scenario (repetable)"
     )
 
+    live = subparsers.add_parser(
+        "live",
+        help="ce que l'agent a reellement commande en bataille, et ses silences",
+    )
+    live.add_argument(
+        "journal",
+        nargs="?",
+        help="chemin du script_log (defaut : le plus recent du dossier de jeu)",
+    )
+    live.add_argument(
+        "--bridge-dir",
+        help="dossier d'installation du jeu (defaut : $TOTALWAR_AI_BRIDGE_DIR)",
+    )
+    live.add_argument(
+        "--silence",
+        type=float,
+        default=SILENCE_SECONDS,
+        metavar="SECONDES",
+        help=f"duree minimale d'une fenetre sans ordre (defaut {SILENCE_SECONDS:.0f})",
+    )
+
     probe = subparsers.add_parser("probe", help="piloter la sonde d'integration au jeu (prototype)")
     probe.add_argument(
         "--bridge-dir",
@@ -292,6 +315,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_bench(args, config)
     if args.command == "census":
         return _cmd_census(args)
+    if args.command == "live":
+        return _cmd_live(args)
     if args.command == "sectors":
         return _cmd_sectors(args, config)
     if args.command == "probe":
@@ -422,6 +447,27 @@ def _cmd_sectors(args: argparse.Namespace, config: AppConfig) -> int:
     )
     etude = probe(scenarios, seeds=graines, config=config)
     print(etude.render())
+    return 0
+
+
+def _cmd_live(args: argparse.Namespace) -> int:
+    """Lots de commandes, silences, et delai avant la premiere attaque.
+
+    **Une seule source canonique.** Chaque lot est journalise deux fois — un
+    `ACK` structure, puis une ligne `manoeuvre` lisible — et les compter tous les
+    deux double la realite : c'est l'erreur qui a fait annoncer « 204 manoeuvres,
+    4 refus » la ou il y en avait 102 et 2.
+    """
+    journal = _resoudre_journal(args)
+    if journal is None:
+        return 1
+
+    print(f"Journal : {journal.name} ({journal.stat().st_size} octets)\n")
+    lecture = read_live(
+        journal.read_text(encoding="utf-8", errors="replace").splitlines(),
+        silence_seconds=args.silence,
+    )
+    print(lecture.render())
     return 0
 
 

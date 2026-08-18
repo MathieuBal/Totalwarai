@@ -11,6 +11,7 @@ from pathlib import Path
 
 from totalwar_ai.learning.census import (
     ABSENT,
+    ERROR,
     OK,
     UNTESTED,
     expected_accessors,
@@ -115,16 +116,74 @@ def test_la_liste_attendue_se_lit_dans_la_source_lua() -> None:
 def test_le_chronometre_du_tir_est_reconstitue() -> None:
     """La mesure qui juge un correctif du simulateur."""
     census = read(JOURNAL)
-    tir = census.missile
-    assert tir.conclusive
+    assert census.missile.conclusive
+    tir = census.missile.watches[0]
     assert tir.unit == "1234"
+    assert tir.ordinary, "un arbalétrier d'infanterie est un tireur ordinaire"
     assert tir.moving_at == 400.0
     assert tir.stopped_at == 5200.0
     assert tir.target_at == 5600.0
     assert tir.volley_at == 6100.0
     assert tir.volley_while_moving is False
     assert tir.volley_after_stop == 900.0
-    assert "n'est partie qu'a l'arret" in tir.explain()
+    assert "L'arret est requis" in census.missile.explain()
+
+
+def test_chaque_unite_a_son_propre_chronometre(make_unit=None) -> None:  # type: ignore[no-untyped-def]
+    """Le defaut que le journal du 18/08 a revele.
+
+    Cinq chronometres tournent en parallele et leurs etapes s'entrelacent. Un
+    enregistrement unique gardait la derniere valeur vue de chaque champ, tous
+    tireurs confondus : le journal se lisait comme **une seule** unite ayant
+    marche, s'etre arretee, puis avoir tire — alors que quatre n'avaient rien
+    tire et que la cinquieme ne s'etait jamais arretee.
+    """
+    census = read(
+        [
+            "[totalwar_ai] MISSILE t0 ordre envoye unite=1 type=wh_main_emp_inf_archers "
+            "fire_while_moving=false ammo=100",
+            "[totalwar_ai] MISSILE t0 ordre envoye unite=2 type=wh_main_emp_veh_lantern "
+            "fire_while_moving=false ammo=100",
+            "[totalwar_ai] MISSILE t1 1 en marche a 250 ms",
+            "[totalwar_ai] MISSILE t1 2 en marche a 250 ms",
+            "[totalwar_ai] MISSILE t2 1 arret a 9000 ms",
+            "[totalwar_ai] MISSILE t4 2 premiere salve a 9500 ms en_marche=true "
+            "apres_arret=jamais_arrete",
+            "[totalwar_ai] MISSILE 1 fin du chronometrage sans salve",
+        ]
+    )
+    assert len(census.missile.watches) == 2
+    fantassin = next(item for item in census.missile.watches if item.unit == "1")
+    vehicule = next(item for item in census.missile.watches if item.unit == "2")
+
+    assert fantassin.stopped_at == 9000.0
+    assert fantassin.volley_at is None, "l'infanterie n'a rien tire"
+    assert vehicule.volley_at == 9500.0
+    assert vehicule.stopped_at is None, "le vehicule ne s'est jamais arrete"
+
+
+def test_un_vehicule_volant_ne_parle_pas_pour_un_arbaletrier() -> None:
+    """Le verdict que la premiere lecture a publie a tort.
+
+    Sur le journal reel, quatre tireurs d'infanterie n'ont jamais tire et le seul
+    Sky Lantern a tire en marchant. La lecture concluait « le jeu autorise le tir
+    en mouvement » depuis cette unique unite hors normes.
+    """
+    census = read(
+        [
+            "[totalwar_ai] MISSILE t0 ordre envoye unite=1 type=wh3_main_cth_inf_crossbowmen_0 "
+            "fire_while_moving=false ammo=100",
+            "[totalwar_ai] MISSILE t0 ordre envoye unite=2 type=wh3_main_cth_veh_sky_lantern_0 "
+            "fire_while_moving=false ammo=100",
+            "[totalwar_ai] MISSILE t4 2 premiere salve a 9500 ms en_marche=true "
+            "apres_arret=jamais_arrete",
+            "[totalwar_ai] MISSILE 1 fin du chronometrage sans salve",
+        ]
+    )
+    assert not census.missile.conclusive, "aucun tireur ordinaire n'a tire"
+    rendu = census.missile.explain()
+    assert "Non tranche" in rendu
+    assert "exclu du verdict" in rendu
 
 
 def test_sans_salve_le_chronometre_refuse_de_conclure() -> None:
@@ -136,13 +195,13 @@ def test_sans_salve_le_chronometre_refuse_de_conclure() -> None:
     partiel = [ligne for ligne in JOURNAL if "MISSILE t4" not in ligne]
     census = read(partiel)
     assert not census.missile.conclusive
-    assert "non tranche" in census.missile.explain()
+    assert "Non tranche" in census.missile.explain()
 
 
 def test_un_chronometrage_avorte_dit_pourquoi() -> None:
     census = read(["[totalwar_ai] MISSILE aucune unite de tir : chronometrage impossible"])
-    assert census.missile.aborted is not None
-    assert "Chronometrage impossible" in census.missile.explain()
+    assert census.missile.watches[0].aborted is not None
+    assert "chronometrage impossible" in census.missile.explain()
 
 
 def test_la_revision_du_pack_est_relevee() -> None:
@@ -178,3 +237,130 @@ def test_le_camp_se_distingue_d_une_valeur_qui_finit_par_un_mot() -> None:
     trouvaille = census.findings[0]
     assert trouvaille.value == "true"
     assert trouvaille.target == "ennemi"
+
+
+# --- ERREUR n'est pas une absence --------------------------------------------
+
+
+def test_un_accesseur_qui_leve_n_est_pas_un_accesseur_absent() -> None:
+    """Le Lua ecrit `ABSENT error=` dans deux cas qui n'ont rien de commun.
+
+    L'un dit que le jeu n'expose pas l'accesseur, l'autre qu'il l'expose et que
+    **notre appel** est en cause. C'est la confusion qui a fait declarer le moral
+    « structurellement absent » en revision 14, apres l'avoir demande sous un
+    mauvais nom — une session de jeu perdue pour une distinction manquante.
+    """
+    census = read(
+        [
+            "[totalwar_ai]   API speed ABSENT error=pas une fonction",
+            "[totalwar_ai]   API fatigue_state ABSENT error=attempt to index a nil value",
+            "[totalwar_ai]   ATTR causes_terror ABSENT error=attribut inconnu",
+        ]
+    )
+    assert _par_nom(census, "speed").verdict == ABSENT
+    assert _par_nom(census, "fatigue_state").verdict == ERROR
+    assert _par_nom(census, "causes_terror").verdict == ERROR
+    assert len(census.absent) == 1
+    assert len(census.failed) == 2
+    assert "l'accesseur existe et l'appel a leve" in census.render()
+
+
+# --- familles que le lecteur ignorait ----------------------------------------
+
+
+def test_les_methodes_recensees_par_presence_sont_lues() -> None:
+    """`script_ai_planner` et les methodes d'armee ne sont pas appelees.
+
+    Les appeler aurait des effets de bord, et un recensement doit rester sans
+    consequence sur la bataille : le verdict porte donc sur l'existence seule.
+    """
+    census = read(
+        [
+            "[totalwar_ai]   rush_force : presente",
+            "[totalwar_ai]   attack_force : ABSENT",
+        ]
+    )
+    assert _par_nom(census, "rush_force").verdict == OK
+    assert _par_nom(census, "attack_force").verdict == ABSENT
+    assert _par_nom(census, "rush_force").kind == "meth"
+
+
+def test_le_handicap_d_armee_porte_sa_valeur_et_son_camp() -> None:
+    census = read(
+        [
+            "[totalwar_ai]   nous alliance 1 armee 1 army_handicap : 0",
+            "[totalwar_ai]   eux alliance 2 armee 1 unit_count : 8",
+        ]
+    )
+    handicap = _par_nom(census, "army_handicap")
+    assert handicap.verdict == OK
+    assert handicap.value == "0"
+    assert handicap.target == "nous"
+    assert _par_nom(census, "unit_count").target == "eux"
+
+
+def test_une_ligne_d_alliance_n_est_pas_prise_pour_une_methode() -> None:
+    """`alliances : 2, locale = 1` a la meme forme qu'un verdict de presence.
+
+    Sans discrimination sur le verdict lui-meme, elle serait comptee comme un
+    accesseur nomme « alliances » — un accesseur invente de toutes pieces.
+    """
+    census = read(["[totalwar_ai]   alliances : 2, locale = 1"])
+    assert census.findings == []
+
+
+# --- le relief ----------------------------------------------------------------
+
+
+def test_les_trois_sources_d_altitude_sont_comparees() -> None:
+    """Savoir laquelle croire decide de tout usage du relief par l'agent."""
+    census = read(
+        ["[totalwar_ai]   CONCORDANCE unit_y=118.62 v_to_ground=118.50 get_terrain_height=118.55"]
+    )
+    assert len(census.terrain.available) == 3
+    assert census.terrain.consistent is True
+    assert census.terrain.spread is not None and census.terrain.spread < 0.2
+    assert "s'accordent" in census.terrain.explain()
+
+
+def test_un_desaccord_d_altitude_est_annonce_comme_tel() -> None:
+    """Deux sources qui divergent ne mesurent pas la meme chose."""
+    census = read(
+        ["[totalwar_ai]   CONCORDANCE unit_y=130.00 v_to_ground=118.50 get_terrain_height=118.55"]
+    )
+    assert census.terrain.consistent is False
+    assert "divergent" in census.terrain.explain()
+
+
+def test_une_source_seule_ne_permet_aucune_concordance() -> None:
+    """Inconnu n'est pas la meme chose que desaccord.
+
+    Le Lua ecrit `indisponible` quand une source n'a pas repondu. Conclure a
+    l'accord sur une seule valeur serait trancher sur une case vide.
+    """
+    census = read(
+        [
+            "[totalwar_ai]   CONCORDANCE unit_y=118.62 v_to_ground=indisponible "
+            "get_terrain_height=indisponible"
+        ]
+    )
+    assert census.terrain.consistent is None
+    assert "reste inconnue" in census.terrain.explain()
+
+
+def test_le_relief_compte_comme_teste_pour_les_accesseurs_muets() -> None:
+    """La concordance prouve que les deux sources ont ete demandees.
+
+    Sans cela, `v_to_ground` et `get_terrain_height` seraient signales « attendus
+    et muets » alors qu'ils viennent precisement de repondre.
+    """
+    census = read(
+        ["[totalwar_ai]   CONCORDANCE unit_y=118.62 v_to_ground=118.50 get_terrain_height=118.55"],
+        expected=("v_to_ground", "get_terrain_height", "fatigue_state"),
+    )
+    assert census.silent == ("fatigue_state",)
+
+
+def test_les_sondes_de_sol_sont_conservees() -> None:
+    census = read(["[totalwar_ai]   sol en (100, 200) : 121.4"])
+    assert census.soil == ("(100, 200) -> 121.4",)
