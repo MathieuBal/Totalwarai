@@ -491,6 +491,19 @@ def compare(
     )
 
 
+#: Abreviation de chaque issue dans le tableau du banc.
+#:
+#: **Le tableau abregeait par la premiere lettre, et `defeat` comme `draw`
+#: donnaient « d ».** Les deux issues etaient donc indiscernables a la lecture,
+#: sur la seule colonne qui dit qui a gagne.
+#:
+#: Ce n'est pas un detail cosmetique : `skirmish_standoff` est passe du nul a la
+#: defaite sur ses trois graines sans que la colonne bouge d'un caractere — il a
+#: fallu un script separe pour s'en apercevoir. Une ligne « 2d, 1d » ne se lit
+#: meme pas comme une anomalie, alors qu'elle annonce deux defaites et un nul.
+OUTCOME_TAGS = {"victory": "v", "draw": "n", "defeat": "d"}
+
+
 def render_table(report: BenchmarkReport) -> str:
     """Tableau texte du banc, lisible dans un terminal."""
     header = (
@@ -499,7 +512,10 @@ def render_table(report: BenchmarkReport) -> str:
     )
     lines = [header, "-" * len(header)]
     for entry in report.scenarios:
-        outcomes = ", ".join(f"{count}{name[0]}" for name, count in sorted(entry.outcomes.items()))
+        outcomes = ", ".join(
+            f"{count}{OUTCOME_TAGS.get(name, name[0])}"
+            for name, count in sorted(entry.outcomes.items())
+        )
         lines.append(
             f"{entry.scenario:24} {outcomes:>18} {entry.win_rate:>9.0%} "
             f"{entry.average_ally_remaining:>7.0%} {entry.average_enemy_remaining:>7.0%} "

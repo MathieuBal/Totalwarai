@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from totalwar_ai.agent.explainability import Decision, decide
 from totalwar_ai.agent.grouping import GroupKind, GroupSet, TacticalGroup, build_groups
 from totalwar_ai.agent.mobility import MobilityTracker
+from totalwar_ai.agent.passivity import PassivityWatch
 from totalwar_ai.agent.sectors import Assault, commit, split_sectors
 from totalwar_ai.domain.actions import ActionType, AgentAction, Formation
 from totalwar_ai.domain.battle_state import BattlePhase, BattleState
@@ -230,6 +231,15 @@ class BattlePlan:
     #: contact principal — sans aucun chemin d'evenements supplementaire.
     assault_ratio_now: float = 0.0
     assault_contact: int = 0
+    #: L'interdiction d'assaut en posture defensive a-t-elle ete levee ?
+    #:
+    #: **Sans ce champ, la permission n'etait mesurable que par un script ad hoc.**
+    #: Or « la permission n'est jamais accordee » et « elle est accordee et aucun
+    #: assaut ne passe les garde-fous » sont deux diagnostics opposes qui
+    #: produisent le meme banc — celui ou il ne se passe rien. Les separer
+    #: demandait de l'instrumenter, comme `sector_assaults` avait du l'etre pour
+    #: la manoeuvre elle-meme.
+    assault_permitted: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -243,6 +253,7 @@ class BattlePlan:
             "assault": self.assault.to_dict() if self.assault is not None else None,
             "assault_ratio_now": round(self.assault_ratio_now, 3),
             "assault_contact": self.assault_contact,
+            "assault_permitted": self.assault_permitted,
         }
 
 
@@ -361,6 +372,10 @@ class Planner:
     #: bataille. Voir :mod:`totalwar_ai.agent.mobility`.
     _mobility: MobilityTracker = field(default_factory=MobilityTracker)
 
+    #: Depuis quand l'adversaire ne fait-il plus rien ? Voir
+    #: :mod:`totalwar_ai.agent.passivity`.
+    _passivity: PassivityWatch = field(default_factory=PassivityWatch)
+
     #: Assaut de secteur en cours, d'un plan au suivant.
     #:
     #: **Collant comme la reserve, et pour la meme raison.** Un secteur rechoisi
@@ -415,6 +430,7 @@ class Planner:
         self._reserve_ids.clear()
         self._assault = None
         self._mobility.reset()
+        self._passivity.reset()
 
     def build_plan(self, state: BattleState) -> BattlePlan:
         """Choisit la posture et recompose les groupes.
@@ -488,6 +504,7 @@ class Planner:
         if front.length_2d() <= 1e-9:
             front = Vector3(0.0, 0.0, 1.0)
 
+        self._passivity.observe(state, anchor)
         repli = self._fighting_withdrawal(state, posture, anchor, allies, enemies)
         if repli:
             # **Le repli porte sur l'ancre, donc sur toute la formation.** Reculer
@@ -498,7 +515,15 @@ class Planner:
             # reculait. Tout ce qui se place par rapport a l'ancre suit ici d'un
             # seul mouvement, en gardant ses distances.
             anchor = anchor - front.scaled(self.settings.withdraw_step)
-        assault = self._pick_assault(state, posture, front, allies, withdrawing=repli)
+        passif = self._passivity.passive(state.game_time)
+        assault = self._pick_assault(
+            state,
+            posture,
+            front,
+            allies,
+            withdrawing=repli,
+            passive=passif,
+        )
 
         return BattlePlan(
             posture=posture,
@@ -511,6 +536,9 @@ class Planner:
             assault=assault,
             assault_ratio_now=assault.live_ratio(state) if assault is not None else 0.0,
             assault_contact=assault.contact(state) if assault is not None else 0,
+            # La permission ne se constate qu'en posture defensive : ailleurs
+            # l'assaut n'est pas interdit, et il n'y a rien a lever.
+            assault_permitted=passif and posture is Posture.DEFEND,
         )
 
     def _pick_assault(
@@ -521,6 +549,7 @@ class Planner:
         allies: Sequence[UnitState],
         *,
         withdrawing: bool,
+        passive: bool = False,
     ) -> Assault | None:
         """Y a-t-il un endroit ou l'on peut etre nettement le plus fort ?
 
@@ -562,7 +591,7 @@ class Planner:
         self._assault = None
         if withdrawing:
             return None
-        if posture is Posture.DEFEND:
+        if posture is Posture.DEFEND and not passive:
             # **`DEFEND` est la posture de celui qui a l'avantage du feu**, et sa
             # manoeuvre gagnante est d'attendre sous ce feu puis de reculer en
             # tirant. Y lancer un assaut revient a aller chercher la melee qu'on
@@ -575,6 +604,17 @@ class Planner:
             # secteurs offrent 1,50 et 1,89 pour un rapport global de 0,67 — la
             # fenetre existe, elle se referme vers la centieme seconde quand leur
             # ligne se ressoude, et l'agent la dormait entierement.
+            #
+            # **`passive` leve cette interdiction, et rien d'autre.** Toute la
+            # posture defensive repose sur une supposition — que l'adversaire
+            # viendra. Quand il est prouve immobile et intact, la supposition est
+            # fausse : attendre ne rapporte plus rien, et l'assaut redevient
+            # examinable. Il garde alors chacun de ses garde-fous, si bien qu'une
+            # permission accordee ne produit pas necessairement une manoeuvre.
+            #
+            # C'est ce qui distingue cette regle du detecteur d'enlisement que
+            # l'ADR 0015 a mesure sous quatre formes puis supprime : celui-la
+            # **ordonnait une avance**, et perdait a chaque fois.
             return None
         if any(unit.is_engaged for unit in allies):
             # **L'assaut est une manoeuvre de l'approche, pas de la melee.** Une
