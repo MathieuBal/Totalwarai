@@ -109,16 +109,66 @@ def test_les_api_du_jeu_sont_appelees_directement(lua_source: str) -> None:
         assert api in lua_source, api
 
 
+#: Repertoires qui ne sont pas du contenu de depot, et que la garde ignore.
+#:
+#: **Cette liste vient d'un echec de la garde elle-meme.** Le balayage des
+#: `.pack` ne sautait rien, et `.git/objects/pack/` contient les *packfiles* de
+#: git : un depot aux objets compactes fait echouer la garde, un depot aux
+#: objets libres la fait passer. La CI voyait le premier, le poste de
+#: developpement le second — le meme commit, deux verdicts, et le mot « pack »
+#: pour toute parente entre une archive Total War et un format interne de git.
+#:
+#: Le defaut de fond etait ailleurs : **les deux balayages de la meme
+#: arborescence n'excluaient pas les memes choses** — celui des `.lua` sautait
+#: `.venv`, celui des `.pack` ne sautait rien. Une seule definition les sert
+#: desormais tous les deux.
+HORS_DEPOT = frozenset({".git", ".venv", "venv", "__pycache__"})
+
+
+def fichiers_du_depot(racine: Path, motif: str) -> list[Path]:
+    """Les fichiers versionnables correspondant au motif.
+
+    **On balaie l'arborescence, et non l'index de git, deliberement.** Ce que la
+    garde doit empecher n'est pas seulement un `.pack` *commite* : c'est qu'il
+    arrive ici du tout. Un fichier depose dans la copie de travail pour etre
+    inspecte est precisement l'accident vise, et il doit etre signale avant
+    d'etre ajoute.
+    """
+    return [
+        chemin
+        for chemin in racine.rglob(motif)
+        if not HORS_DEPOT.intersection(chemin.relative_to(racine).parts)
+    ]
+
+
+def test_la_garde_voit_un_depot_de_fichier_mais_pas_la_plomberie_de_git(
+    tmp_path: Path,
+) -> None:
+    """La garde doit pouvoir echouer, et pour la bonne raison.
+
+    Sans ce test, corriger le faux positif de `.git` pouvait tout aussi bien
+    avoir rendu la garde aveugle : elle serait restee verte en toutes
+    circonstances, ce qui est le seul etat qu'un garde-fou ne doit jamais
+    atteindre.
+    """
+    (tmp_path / ".git" / "objects" / "pack").mkdir(parents=True)
+    (tmp_path / ".git" / "objects" / "pack" / "pack-abc.pack").write_bytes(b"")
+    assert fichiers_du_depot(tmp_path, "*.pack") == [], "la plomberie de git n'est pas du contenu"
+
+    (tmp_path / "lua_mod").mkdir()
+    depose = tmp_path / "lua_mod" / "data.pack"
+    depose.write_bytes(b"")
+    assert fichiers_du_depot(tmp_path, "*.pack") == [depose], "un depot reel doit etre vu"
+
+
 def test_le_depot_ne_contient_aucun_fichier_tiers() -> None:
     """Aucun `.pack`, et aucun Lua qui ne soit le notre."""
     racine = Path(__file__).resolve().parents[2]
-    assert list(racine.rglob("*.pack")) == []
+    assert fichiers_du_depot(racine, "*.pack") == []
 
     autorises = {"totalwar_ai_probe.lua", "fake_battle.lua"}
     interdits = ("aigeneral", "pancake", "modder_api_uc_manager", "pan_util")
-    for chemin in racine.rglob("*.lua"):
-        if ".venv" in chemin.parts:
-            continue
+    for chemin in fichiers_du_depot(racine, "*.lua"):
         assert chemin.name in autorises, chemin
         contenu = chemin.read_text(encoding="utf-8").lower()
         for terme in interdits:
