@@ -1,76 +1,127 @@
 # 0022 — Où meurent les commandes en bataille réelle
 
-**Statut :** retenu — LIVE-001 répondu, deux tiers des commandes muettes meurent
-dans le pont — 18/08/2026
+**Statut :** diagnostic **clos** ; comportement **non corrigé**, repris par
+LIVE-002 — 18/08/2026
 
-## La réponse
+```
+LIVE-001 / DIAGNOSTIC : CLOSED
+LIVE-001 / BEHAVIOR   : superseded by LIVE-002
+```
 
-Session du 18/08 22h20, causalement propre (expériences actives désactivées,
-zéro ligne `MISSILE`). Sur **102 tours où une décision était due et où rien n'est
+Le silence est désormais **expliqué**. Il n'est pas réparé : la bataille contient
+toujours une fenêtre de 110,5 s sans commande.
+
+## Le compte
+
+Session du 18/08 22h20, causalement propre — expériences actives désactivées,
+zéro ligne `MISSILE`. Sur **102 tours où une décision était due et où rien n'est
 sorti** :
 
-| étage | tours muets | où il vit |
+| étage | tours | où il vit |
 | --- | ---: | --- |
 | `duplicate_suppression` | 40 | agent |
-| **`micro_move`** | **36** | **pont** |
-| **`translation`** | **26** | **pont** |
-| `planner` | 0 | — |
-| `confidence` | 0 | — |
-| `safety` | 0 | — |
-| `throttle` | 0 | — |
-| `INVARIANT_VIOLATION` | 0 | — |
+| `micro_move` | 36 | pont |
+| `translation` | 26 | pont |
+| `planner`, `confidence`, `safety`, `throttle`, `INVARIANT_VIOLATION` | 0 | — |
 
-**Soixante-deux des cent deux tours muets — 61 % — meurent dans le pont**, aux
-deux étages que le banc ne traverse jamais puisqu'il appelle l'agent directement.
+## Ce que ce compte ne dit **pas**
 
-C'est ce que l'ADR 0021 annonçait comme structurellement invisible au banc, et
-c'est maintenant mesuré plutôt que supposé.
+> **« 61 % des commandes meurent dans le pont »** — cette formulation était
+> fausse, et je l'avais publiée.
+
+Un tour `translation`, relevé tel quel à t=86,6 s :
+
+```
+decisions  : tenir la position (1010), (1011), (1012)
+untranslated : []
+```
+
+**Rien n'a échoué à se traduire.** Le traducteur conclut, correctement, qu'
+immobiliser une unité déjà immobile ne demande aucun ordre moteur. Même chose
+pour `micro_move`, qui écarte des repositionnements de quelques mètres déjà
+pratiquement atteints.
+
+La formulation juste est donc :
+
+> **61 % des tours sans commande atteignent les deux filtres du pont avec
+> uniquement des intentions déjà satisfaites, ou sans ordre moteur utile.**
+
+Le pont **révèle** le symptôme ; la cause est en amont, dans ce que l'agent
+décide de vouloir.
+
+## La cause, lue dans le journal
+
+À **t=10,1 s**, sept décisions et trois ordres partis :
+
+```
+tenir la position (1003, 1004, 1005)     <- la ligne de front
+prendre a revers  (1010, 1011, 1012)     <- les trois unités rapides
+constituer une reserve (1002)
+                                          <- les tireurs : rien
+```
+
+Seules les trois unités mobiles partent réellement. À **t=77,6 s**, la sécurité
+les arrête toutes les trois — leur rapport local était devenu suicidaire, et elle
+a raison.
+
+La chaîne est cohérente de bout en bout :
+
+1. la doctrine `DEFEND` fait **attendre** la masse ;
+2. les seules unités parties le sont **seules**, et sont arrêtées ;
+3. le planificateur répète alors des `HOLD` et de la réserve ;
+4. ces intentions sont **déjà satisfaites** ;
+5. le pont n'a plus rien à envoyer.
+
+Ce n'est pas un bug mystérieux. C'est une armée qui n'attaque pas ensemble.
 
 ## Ce que la mesure écarte
 
-**`PYTHON_LOOP` est écarté.** Aucun écart d'horloge murale supérieur à dix
-secondes sur toute la bataille : la boucle Python n'a jamais décroché. Le
-scénario « Lua publie, Python ne consomme plus, puis rattrape » ne s'est pas
-produit — et il ne pouvait être tranché qu'avec les deux horloges.
+* **`PYTHON_LOOP`** — aucun écart d'horloge murale au-delà de dix secondes sur
+  toute la bataille. La boucle n'a jamais décroché. C'est ce que le `script_log`
+  seul ne pouvait pas trancher, et pourquoi il fallait deux horloges ;
+* **la livraison** — 262 envoyés, 260 acquittés, 2 refusés, **zéro
+  `ack_timeout`** : le pont livre ce qu'il envoie ;
+* **le planificateur** — jamais l'étage. Il propose toujours quelque chose.
 
-**La livraison est saine.** 262 ordres envoyés, **260 acquittés**, 2 refusés,
-**zéro `ack_timeout`**. Le pont livre ce qu'il envoie ; ce qui manque n'est jamais
-parti.
+## Ce que les 93 attaques ont produit
 
-**Le planificateur n'est jamais l'étage.** Il propose toujours quelque chose. Ses
-motifs d'abstention ne portent que sur l'assaut de secteur —
-`ASSAULT_ALREADY_RUNNING` 57, `DEFEND_WAITING` 45 — et n'ont donc jamais vidé le
-tuyau à eux seuls.
+> **« 93 attaques, zéro conversion »** — trop sévère, et faux.
 
-## Ce qui a changé depuis le 18/08 au matin
+| | début | fin |
+| --- | ---: | ---: |
+| unités ennemies | 10 | **10** |
+| force ennemie | 10,000 | **8,256** |
+| hommes ennemis | 490 | **438** |
+| force alliée | 12,000 | **3,648** |
 
-| | 13h24 | **22h20** |
-| --- | --- | --- |
-| plus longue fenêtre sans commande | 364,0 s | **110,5 s** |
-| première attaque | 852,1 s | **188,6 s** |
-| unités disparues avant la 1ʳᵉ attaque | 3 contre 0 | **0 contre 0** |
+Aucun régiment adverse détruit, mais **cinquante-deux hommes tombés** et un
+sixième de leur force retirée. Le diagnostic juste est donc :
 
-Et le mode d'échec a changé de nature : l'agent a émis **93 ordres d'attaque**, et
-la bataille se termine tout de même 8 contre 10, l'adversaire **n'ayant perdu
-aucune unité**. Ce n'est plus la paralysie, c'est la non-conversion.
+> **des dégâts réels mais dispersés, et aucune unité achevée.**
 
-## Ce que cela ne dit pas
-
-Le taux de non-conversion n'a pas été mesuré ; « 93 attaques pour zéro perte
-adverse » demande sa propre mesure avant toute hypothèse. Et une bataille n'est
-pas un échantillon.
-
-**Aucun correctif n'est appliqué dans cette ADR.** L'étage est nommé ; ce qui
-suit doit se mesurer avant de se coder, comme le reste.
+Ce qui pointe vers la concentration, l'engagement séquentiel, les soutiens
+absents et les cibles non finies — pas vers « les attaques ne fonctionnent pas ».
 
 ## Une trace qui manquait au corpus
 
-Les capteurs de la révision 16 — vitesses, effectifs initiaux, munitions
-initiales, cible en cours — arrivent jusqu'à l'agent mais n'étaient **archivés
-nulle part** : le corpus de cette bataille n'en porte aucun. Une bataille rejouée
-plus tard n'aurait rien vu. Corrigé : `_unit_entry` les écrit, avec la convention
-habituelle — un champ absent veut dire que le jeu ne l'expose pas, jamais zéro.
+Les capteurs de la révision 16 n'étaient **archivés nulle part** :
+`_unit_entry` les écrit désormais. Correction utile pour le rejeu et
+l'apprentissage — **et rien de plus** : elle ne corrige aucune absence de
+perception en direct.
 
-Reste à vérifier sur une session en révision 16 que le pont les reçoit
-effectivement : le journal du 22h20 ne les montre que dans les lignes de
-recensement, et l'état complet n'y est pas journalisé.
+> J'avais écrit que le `totalwar_ai_state.jsonl` reçu datait de la révision 15.
+> **Je n'avais pas vérifié cette provenance** : les deux exemplaires en ma
+> possession viennent de sessions antérieures, plus courtes que celle du 22h20,
+> et ne prouvent rien dans un sens ni dans l'autre.
+
+## Ce qui suit
+
+**P0 — LIVE-002 : cohésion de la manœuvre.** Faire arriver une force cohérente
+au même endroit au même moment.
+
+La dispersion des dégâts ne fait **pas** l'objet d'un chantier séparé : elle peut
+être une conséquence directe de l'engagement au compte-gouttes. On mesurera si
+elle s'améliore d'elle-même une fois la cohésion obtenue.
+
+Ensuite seulement : phase `unknown` avant `Deployed`, archivage v16 complet,
+expérience missile A/B/A, puis Sector Value.
