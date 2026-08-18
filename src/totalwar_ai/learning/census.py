@@ -43,7 +43,23 @@ PREFIX = "[totalwar_ai]"
 
 OK = "OK"
 ABSENT = "ABSENT"
+ERROR = "ERREUR"
 UNTESTED = "NON TESTE"
+
+#: Motif exact par lequel le Lua signale un accesseur **inexistant**.
+#:
+#: **C'est la seule absence veritable.** Le script journalise `ABSENT error=…`
+#: dans deux situations qui n'ont rien de commun : l'accesseur n'existe pas, ou
+#: il existe et a leve. L'un dit que le jeu ne l'expose pas, l'autre qu'on l'a
+#: mal appele — et confondre les deux est exactement ce qui a fait declarer le
+#: moral « structurellement absent » en revision 14, apres l'avoir demande sous
+#: un mauvais nom.
+#:
+#: La distinction se fait ici plutot que dans le Lua **a dessein** : le pack en
+#: circulation est deja le bon, et le modifier couterait un repack et une
+#: session de jeu. Le script pourra emettre `ERREUR` de lui-meme a la prochaine
+#: revision ; d'ici la, le lecteur rattrape sans rien demander au jeu.
+NOT_A_FUNCTION = "pas une fonction"
 
 _API = re.compile(
     r"API\s+(?P<name>[\w:]+)\s+"
@@ -54,6 +70,24 @@ _API = re.compile(
 _ATTR = re.compile(
     r"ATTR\s+(?P<name>\w+)\s+(?:OK value=(?P<value>.*?)|ABSENT error=(?P<error>.*?))\s*$"
 )
+#: Methode recensee par simple presence : `script_ai_planner` et armee.
+#:
+#: Ces deux recensements n'appellent pas la methode — l'appeler aurait des effets
+#: de bord, et un recensement doit rester sans consequence. Le verdict porte donc
+#: sur l'existence seule.
+_METHOD = re.compile(r"^(?P<name>\w+)\s+:\s+(?P<verdict>presente|ABSENT)\s*$")
+#: Valeur relevee sur une armee : `army_handicap`, `unit_count`.
+_ARMY = re.compile(
+    r"^(?P<target>nous|eux)\s+alliance\s+\d+\s+armee\s+\d+\s+"
+    r"(?P<name>\w+)\s+:\s+(?P<value>.+?)\s*$"
+)
+#: Concordance des trois sources d'altitude.
+_TERRAIN = re.compile(
+    r"CONCORDANCE\s+unit_y=(?P<unit>\S+)\s+v_to_ground=(?P<ground>\S+)"
+    r"\s+get_terrain_height=(?P<height>\S+)"
+)
+#: Sonde ponctuelle d'altitude : `sol en (x, z) : valeur`.
+_SOIL = re.compile(r"^sol en \((?P<x>[^,]+),\s*(?P<z>[^)]+)\)\s*:\s*(?P<value>.+?)\s*$")
 _REVISION = re.compile(r"revision (\d+)\)")
 
 #: Lignes d'etat periodique : repetitives, et sans rapport avec le recensement.
@@ -85,6 +119,79 @@ class Finding:
             valeur = self.value or ""
             return corps + f" {valeur}" + (f"  [sur {self.target}]" if self.target else "")
         return corps + f" {self.detail or ''}"
+
+
+#: Ecart d'altitude au-dela duquel deux sources ne disent plus la meme chose.
+#:
+#: Un metre : assez large pour absorber l'arrondi d'un journal texte, assez
+#: etroit pour qu'une source qui rend le sol la ou une autre rend le sommet du
+#: modele ne passe pas inapercue.
+TERRAIN_TOLERANCE = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class Terrain:
+    """Les trois sources d'altitude, et leur accord.
+
+    **Trois chemins pretendent dire ou est le sol** : la position `y` de l'unite,
+    `v_to_ground()` qui projette un point sur le terrain, et
+    `bm:get_terrain_height(x, z)`. Savoir lequel croire decide de tout usage du
+    relief par l'agent — et rien ne dit a priori qu'ils s'accordent.
+    """
+
+    unit_y: float | None = None
+    v_to_ground: float | None = None
+    terrain_height: float | None = None
+
+    @property
+    def available(self) -> list[tuple[str, float]]:
+        return [
+            (nom, valeur)
+            for nom, valeur in (
+                ("unit_y", self.unit_y),
+                ("v_to_ground", self.v_to_ground),
+                ("get_terrain_height", self.terrain_height),
+            )
+            if valeur is not None
+        ]
+
+    @property
+    def spread(self) -> float | None:
+        """Ecart entre la plus haute et la plus basse des sources disponibles."""
+        valeurs = [valeur for _, valeur in self.available]
+        return max(valeurs) - min(valeurs) if len(valeurs) >= 2 else None
+
+    @property
+    def consistent(self) -> bool | None:
+        """`None` tant que deux sources au moins n'ont pas repondu."""
+        ecart = self.spread
+        return None if ecart is None else ecart <= TERRAIN_TOLERANCE
+
+    def explain(self) -> str:
+        if not self.available:
+            return "  Aucune source d'altitude n'a repondu : le relief reste hors de portee."
+        lignes = [f"    {nom:<20} {valeur:.2f}" for nom, valeur in self.available]
+        accord = self.consistent
+        if accord is None:
+            lignes.append("")
+            lignes.append(
+                "  **Une seule source a repondu.** Rien a comparer : la concordance\n"
+                "  reste inconnue, ce qui n'est pas la meme chose qu'un desaccord."
+            )
+        elif accord:
+            lignes.append("")
+            lignes.append(
+                f"  Les sources s'accordent a {self.spread:.2f} m pres : l'altitude du sol\n"
+                "  est lisible, et le relief exploitable."
+            )
+        else:
+            lignes.append("")
+            lignes.append(
+                f"  **Elles divergent de {self.spread:.2f} m.** Elles ne mesurent donc pas\n"
+                "  la meme chose — sol contre position de l'unite, par exemple. Choisir\n"
+                "  la mauvaise fausserait tout usage du relief."
+            )
+        return "\n".join(lignes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +271,9 @@ class Census:
 
     findings: list[Finding] = field(default_factory=list)
     missile: MissileTiming = field(default_factory=MissileTiming)
+    terrain: Terrain = field(default_factory=Terrain)
+    #: Altitudes sondees ponctuellement : `sol en (x, z) : valeur`.
+    soil: tuple[str, ...] = ()
     revision: int | None = None
     #: Accesseurs attendus par la sonde et absents du journal. Voir l'en-tete.
     silent: tuple[str, ...] = ()
@@ -177,6 +287,11 @@ class Census:
         return [item for item in self.findings if item.verdict == ABSENT]
 
     @property
+    def failed(self) -> list[Finding]:
+        """Accesseurs presents qui ont leve : un defaut d'appel, pas une absence."""
+        return [item for item in self.findings if item.verdict == ERROR]
+
+    @property
     def untested(self) -> list[Finding]:
         return [item for item in self.findings if item.verdict == UNTESTED]
 
@@ -188,7 +303,8 @@ class Census:
             )
         lignes = [
             f"Recensement : {len(self.usable)} utilisables, "
-            f"{len(self.absent)} absents, {len(self.untested)} non testes"
+            f"{len(self.absent)} absents, {len(self.failed)} en erreur, "
+            f"{len(self.untested)} non testes"
             # Le compte de muets appartient a l'en-tete : une liste de quatre-vingts
             # noms plus bas ne dit pas la meme chose qu'une liste de deux, et il
             # faut le voir avant de derouler.
@@ -198,6 +314,14 @@ class Census:
         ]
         lignes += [item.explain() for item in self.findings]
 
+        if self.failed:
+            lignes += [
+                "",
+                "**En erreur : l'accesseur existe et l'appel a leve.** Ce n'est pas une",
+                "  absence — le jeu l'expose, et c'est notre facon de le demander qui",
+                "  est en cause. C'est la confusion qui a fait declarer le moral",
+                "  « structurellement absent » en revision 14.",
+            ]
         if self.untested:
             lignes += [
                 "",
@@ -213,6 +337,9 @@ class Census:
                 "  Une ligne muette ne se distingue pas d'un accesseur oublie. Verifier",
                 "  que le pack embarque bien la revision du depot.",
             ]
+        lignes += ["", "--- altitude et relief ---", self.terrain.explain()]
+        if self.soil:
+            lignes += ["", *(f"    sonde de sol : {item}" for item in self.soil)]
         lignes += ["", "--- chronometre du tir ---", self.missile.explain()]
         return "\n".join(lignes)
 
@@ -249,6 +376,8 @@ def read(lines: Iterable[str], *, expected: Sequence[str] = ()) -> Census:
     trouvailles: list[Finding] = []
     revision: int | None = None
     missile: dict[str, object] = {}
+    relief: dict[str, float] = {}
+    sondes: list[str] = []
     vus: set[str] = set()
 
     for brute in lines:
@@ -266,6 +395,25 @@ def read(lines: Iterable[str], *, expected: Sequence[str] = ()) -> Census:
             _read_missile(corps, missile)
             continue
 
+        if (found := _TERRAIN.search(corps)) is not None:
+            for champ, groupe in (
+                ("unit_y", "unit"),
+                ("v_to_ground", "ground"),
+                ("terrain_height", "height"),
+            ):
+                valeur = _float(found.group(groupe))
+                if valeur is not None:
+                    relief[champ] = valeur
+            vus.update({"v_to_ground", "get_terrain_height"})
+            continue
+
+        if (found := _SOIL.search(corps)) is not None:
+            sondes.append(
+                f"({found.group('x').strip()}, {found.group('z').strip()}) "
+                f"-> {found.group('value').strip()}"
+            )
+            continue
+
         trouvaille = _read_finding(corps)
         if trouvaille is not None:
             trouvailles.append(trouvaille)
@@ -275,9 +423,24 @@ def read(lines: Iterable[str], *, expected: Sequence[str] = ()) -> Census:
     return Census(
         findings=trouvailles,
         missile=MissileTiming(**missile),  # type: ignore[arg-type]
+        terrain=Terrain(**relief),
+        soil=tuple(sondes),
         revision=revision,
         silent=muets,
     )
+
+
+def _float(brut: str) -> float | None:
+    """Une valeur d'altitude, ou `None` quand le Lua a ecrit « indisponible »."""
+    try:
+        return float(brut)
+    except ValueError:
+        return None
+
+
+def _verdict_of(erreur: str) -> str:
+    """Absence veritable, ou accesseur present qui a leve ? Voir `NOT_A_FUNCTION`."""
+    return ABSENT if erreur.strip() == NOT_A_FUNCTION else ERROR
 
 
 def _read_finding(corps: str) -> Finding | None:
@@ -289,13 +452,35 @@ def _read_finding(corps: str) -> Finding | None:
                 nom, kind, OK, value=found.group("value").strip(), target=found.group("target")
             )
         if found.group("error") is not None:
-            return Finding(nom, kind, ABSENT, detail=found.group("error").strip())
+            erreur = found.group("error").strip()
+            return Finding(nom, kind, _verdict_of(erreur), detail=erreur)
         return Finding(nom, kind, UNTESTED, detail=(found.group("reason") or "").strip())
     if (found := _ATTR.search(corps)) is not None:
         if found.group("value") is not None:
             return Finding(found.group("name"), "ATTR", OK, value=found.group("value").strip())
+        erreur = (found.group("error") or "").strip()
+        return Finding(found.group("name"), "ATTR", _verdict_of(erreur), detail=erreur)
+    if (found := _ARMY.search(corps)) is not None:
+        valeur = found.group("value").strip()
         return Finding(
-            found.group("name"), "ATTR", ABSENT, detail=(found.group("error") or "").strip()
+            found.group("name"),
+            "armee",
+            ERROR if valeur == "ERREUR" else OK,
+            value=None if valeur == "ERREUR" else valeur,
+            detail="l'appel a leve" if valeur == "ERREUR" else None,
+            target=found.group("target"),
+        )
+    if (found := _METHOD.search(corps)) is not None:
+        presente = found.group("verdict") == "presente"
+        return Finding(
+            found.group("name"),
+            "meth",
+            OK if presente else ABSENT,
+            # **Presence seule, sans valeur.** Ces methodes ne sont pas appelees :
+            # elles ont des effets de bord, et un recensement doit rester sans
+            # consequence sur la bataille.
+            value="presente" if presente else None,
+            detail=None if presente else "absente de la table de classe",
         )
     return None
 

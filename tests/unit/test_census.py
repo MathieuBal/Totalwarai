@@ -11,6 +11,7 @@ from pathlib import Path
 
 from totalwar_ai.learning.census import (
     ABSENT,
+    ERROR,
     OK,
     UNTESTED,
     expected_accessors,
@@ -178,3 +179,130 @@ def test_le_camp_se_distingue_d_une_valeur_qui_finit_par_un_mot() -> None:
     trouvaille = census.findings[0]
     assert trouvaille.value == "true"
     assert trouvaille.target == "ennemi"
+
+
+# --- ERREUR n'est pas une absence --------------------------------------------
+
+
+def test_un_accesseur_qui_leve_n_est_pas_un_accesseur_absent() -> None:
+    """Le Lua ecrit `ABSENT error=` dans deux cas qui n'ont rien de commun.
+
+    L'un dit que le jeu n'expose pas l'accesseur, l'autre qu'il l'expose et que
+    **notre appel** est en cause. C'est la confusion qui a fait declarer le moral
+    « structurellement absent » en revision 14, apres l'avoir demande sous un
+    mauvais nom — une session de jeu perdue pour une distinction manquante.
+    """
+    census = read(
+        [
+            "[totalwar_ai]   API speed ABSENT error=pas une fonction",
+            "[totalwar_ai]   API fatigue_state ABSENT error=attempt to index a nil value",
+            "[totalwar_ai]   ATTR causes_terror ABSENT error=attribut inconnu",
+        ]
+    )
+    assert _par_nom(census, "speed").verdict == ABSENT
+    assert _par_nom(census, "fatigue_state").verdict == ERROR
+    assert _par_nom(census, "causes_terror").verdict == ERROR
+    assert len(census.absent) == 1
+    assert len(census.failed) == 2
+    assert "l'accesseur existe et l'appel a leve" in census.render()
+
+
+# --- familles que le lecteur ignorait ----------------------------------------
+
+
+def test_les_methodes_recensees_par_presence_sont_lues() -> None:
+    """`script_ai_planner` et les methodes d'armee ne sont pas appelees.
+
+    Les appeler aurait des effets de bord, et un recensement doit rester sans
+    consequence sur la bataille : le verdict porte donc sur l'existence seule.
+    """
+    census = read(
+        [
+            "[totalwar_ai]   rush_force : presente",
+            "[totalwar_ai]   attack_force : ABSENT",
+        ]
+    )
+    assert _par_nom(census, "rush_force").verdict == OK
+    assert _par_nom(census, "attack_force").verdict == ABSENT
+    assert _par_nom(census, "rush_force").kind == "meth"
+
+
+def test_le_handicap_d_armee_porte_sa_valeur_et_son_camp() -> None:
+    census = read(
+        [
+            "[totalwar_ai]   nous alliance 1 armee 1 army_handicap : 0",
+            "[totalwar_ai]   eux alliance 2 armee 1 unit_count : 8",
+        ]
+    )
+    handicap = _par_nom(census, "army_handicap")
+    assert handicap.verdict == OK
+    assert handicap.value == "0"
+    assert handicap.target == "nous"
+    assert _par_nom(census, "unit_count").target == "eux"
+
+
+def test_une_ligne_d_alliance_n_est_pas_prise_pour_une_methode() -> None:
+    """`alliances : 2, locale = 1` a la meme forme qu'un verdict de presence.
+
+    Sans discrimination sur le verdict lui-meme, elle serait comptee comme un
+    accesseur nomme « alliances » — un accesseur invente de toutes pieces.
+    """
+    census = read(["[totalwar_ai]   alliances : 2, locale = 1"])
+    assert census.findings == []
+
+
+# --- le relief ----------------------------------------------------------------
+
+
+def test_les_trois_sources_d_altitude_sont_comparees() -> None:
+    """Savoir laquelle croire decide de tout usage du relief par l'agent."""
+    census = read(
+        ["[totalwar_ai]   CONCORDANCE unit_y=118.62 v_to_ground=118.50 get_terrain_height=118.55"]
+    )
+    assert len(census.terrain.available) == 3
+    assert census.terrain.consistent is True
+    assert census.terrain.spread is not None and census.terrain.spread < 0.2
+    assert "s'accordent" in census.terrain.explain()
+
+
+def test_un_desaccord_d_altitude_est_annonce_comme_tel() -> None:
+    """Deux sources qui divergent ne mesurent pas la meme chose."""
+    census = read(
+        ["[totalwar_ai]   CONCORDANCE unit_y=130.00 v_to_ground=118.50 get_terrain_height=118.55"]
+    )
+    assert census.terrain.consistent is False
+    assert "divergent" in census.terrain.explain()
+
+
+def test_une_source_seule_ne_permet_aucune_concordance() -> None:
+    """Inconnu n'est pas la meme chose que desaccord.
+
+    Le Lua ecrit `indisponible` quand une source n'a pas repondu. Conclure a
+    l'accord sur une seule valeur serait trancher sur une case vide.
+    """
+    census = read(
+        [
+            "[totalwar_ai]   CONCORDANCE unit_y=118.62 v_to_ground=indisponible "
+            "get_terrain_height=indisponible"
+        ]
+    )
+    assert census.terrain.consistent is None
+    assert "reste inconnue" in census.terrain.explain()
+
+
+def test_le_relief_compte_comme_teste_pour_les_accesseurs_muets() -> None:
+    """La concordance prouve que les deux sources ont ete demandees.
+
+    Sans cela, `v_to_ground` et `get_terrain_height` seraient signales « attendus
+    et muets » alors qu'ils viennent precisement de repondre.
+    """
+    census = read(
+        ["[totalwar_ai]   CONCORDANCE unit_y=118.62 v_to_ground=118.50 get_terrain_height=118.55"],
+        expected=("v_to_ground", "get_terrain_height", "fatigue_state"),
+    )
+    assert census.silent == ("fatigue_state",)
+
+
+def test_les_sondes_de_sol_sont_conservees() -> None:
+    census = read(["[totalwar_ai]   sol en (100, 200) : 121.4"])
+    assert census.soil == ("(100, 200) -> 121.4",)
