@@ -194,17 +194,34 @@ class Terrain:
         return "\n".join(lignes)
 
 
-@dataclass(frozen=True, slots=True)
-class MissileTiming:
-    """Le chronometre du tir : mouvement, arret, cible, premiere salve.
+#: Fragments de cle d'unite qui designent un tireur **ordinaire**.
+#:
+#: Le jugement porte sur la cle du jeu — `wh3_main_cth_inf_jade_warrior_crossbowmen_0`
+#: contre `wh3_main_cth_veh_sky_lantern_0` — comme le fait deja notre classifieur
+#: de roles. Ce n'est pas un canal privilegie : l'agent lit la meme cle.
+ORDINARY_MISSILE = ("_inf_",)
 
-    **C'est cette mesure qui juge un correctif du simulateur.** Notre simulateur
-    laisse aujourd'hui toute unite de tir non engagee tirer en se deplacant, sans
-    preuve que le jeu l'autorise. Si le jeu l'interdit, le repli tirant repose
-    sur une permissivite qui n'existe pas — et il porte `balanced_clash`.
+#: Etats possibles d'un chronometrage, par unite.
+FIRED_MOVING = "tir en mouvement"
+FIRED_STOPPED = "tir apres l'arret"
+NEVER_FIRED = "jamais tire"
+ABORTED = "chronometrage avorte"
+
+
+@dataclass(frozen=True, slots=True)
+class MissileWatch:
+    """Le chronometre du tir, **pour une unite**.
+
+    **Il n'y en avait qu'un pour toutes.** Cinq unites ont ete chronometrees le
+    18/08 ; la lecture n'en rendait compte que d'une, et concluait « le jeu
+    autorise le tir en mouvement » depuis le seul Sky Lantern — un vehicule
+    volant — pendant que les quatre tireurs d'infanterie n'avaient rien tire du
+    tout. Conclure sur les cas qui ont produit une valeur en ignorant ceux qui
+    n'en ont pas produit est le defaut que l'ADR 0018 avait deja corrige sur la
+    conversion d'assaut.
     """
 
-    unit: str | None = None
+    unit: str
     unit_type: str | None = None
     fire_while_moving: str | None = None
     #: Instants en millisecondes depuis l'ordre de deplacement.
@@ -214,55 +231,109 @@ class MissileTiming:
     volley_at: float | None = None
     #: La salve est-elle partie alors que l'unite se deplacait encore ?
     volley_while_moving: bool | None = None
-    #: Delai entre l'arret et la salve, quand l'unite s'est arretee.
     volley_after_stop: float | None = None
     #: Raison pour laquelle le chronometrage n'a pas eu lieu.
     aborted: str | None = None
+    #: Le chronometrage s'est-il termine sans qu'aucune salve ne parte ?
+    ended_without_volley: bool = False
+
+    @property
+    def ordinary(self) -> bool:
+        """Tireur ordinaire, ou piece hors normes qui ne parle pas pour les autres ?"""
+        cle = self.unit_type or ""
+        return any(fragment in cle for fragment in ORDINARY_MISSILE)
+
+    @property
+    def state(self) -> str:
+        if self.aborted is not None:
+            return ABORTED
+        if self.volley_at is None:
+            return NEVER_FIRED
+        return FIRED_MOVING if self.volley_while_moving else FIRED_STOPPED
+
+    def explain(self) -> str:
+        marque = "inf" if self.ordinary else "HORS"
+        entete = (
+            f"  [{marque}] {self.unit} ({self.unit_type or '?'}) "
+            f"fire_while_moving={self.fire_while_moving} -> **{self.state}**"
+        )
+        if self.aborted is not None:
+            return entete + f"\n        {self.aborted}"
+        etapes = "  ".join(
+            f"{nom}={'jamais' if valeur is None else f'{valeur:.0f}ms'}"
+            for nom, valeur in (
+                ("marche", self.moving_at),
+                ("arret", self.stopped_at),
+                ("cible", self.target_at),
+                ("salve", self.volley_at),
+            )
+        )
+        return entete + f"\n        {etapes}"
+
+
+@dataclass
+class MissileStudy:
+    """Ce que le chronometrage dit du tir en mouvement — ou ne dit pas.
+
+    **La question porte sur les tireurs ordinaires.** Un vehicule volant ne parle
+    pas pour un arbalétrier, et le journal du 18/08 le montre : le Sky Lantern a
+    tire en marchant alors que son `fire_while_moving` valait `false`, tandis que
+    quatre unites d'infanterie n'ont jamais tire.
+    """
+
+    watches: list[MissileWatch] = field(default_factory=list)
+
+    @property
+    def ordinary(self) -> list[MissileWatch]:
+        return [item for item in self.watches if item.ordinary]
 
     @property
     def conclusive(self) -> bool:
-        """Une salve a-t-elle ete observee ?
-
-        Sans salve, il n'y a **rien a conclure** — ni dans un sens ni dans
-        l'autre. Le dire est le seul comportement acceptable : un instrument qui
-        tranche sur une case vide est celui que l'ADR 0018 a du corriger.
-        """
-        return self.volley_at is not None
+        """A-t-on vu un tireur **ordinaire** tirer, d'une facon ou d'une autre ?"""
+        return any(item.volley_at is not None for item in self.ordinary)
 
     def explain(self) -> str:
-        if self.aborted is not None:
-            return f"  Chronometrage impossible : {self.aborted}"
-        if not self.conclusive:
-            return (
-                "  **Aucune salve observee.** Le tir en mouvement reste non tranche :\n"
-                "  ni le correctif du simulateur ni son contraire ne sont justifies."
+        if not self.watches:
+            return "  Aucun chronometrage : aucune unite de tir n'a ete suivie."
+        lignes = [item.explain() for item in self.watches]
+        lignes.append("")
+
+        ordinaires = self.ordinary
+        if not ordinaires:
+            lignes.append(
+                "  **Aucun tireur ordinaire chronometre.** Les unites suivies sont\n"
+                "  toutes hors normes, et ne repondent pas de l'infanterie de tir."
             )
-        entete = (
-            f"  unite {self.unit} ({self.unit_type}), fire_while_moving={self.fire_while_moving}"
-        )
-        etapes = []
-        for nom, valeur in (
-            ("en marche", self.moving_at),
-            ("arret", self.stopped_at),
-            ("cible acquise", self.target_at),
-            ("premiere salve", self.volley_at),
-        ):
-            etapes.append(f"    {nom:<16} {'jamais' if valeur is None else f'{valeur:.0f} ms'}")
-        verdict = (
-            "  **Le jeu autorise le tir en mouvement** pour cette unite : la salve\n"
-            "  est partie alors qu'elle se deplacait encore."
-            if self.volley_while_moving
-            else (
-                "  **La salve n'est partie qu'a l'arret**"
-                + (
-                    f", {self.volley_after_stop:.0f} ms apres."
-                    if self.volley_after_stop is not None
-                    else "."
-                )
-                + "\n  Notre simulateur, lui, laisse tirer en marche : l'ecart est reel."
+        elif not self.conclusive:
+            muettes = sum(1 for item in ordinaires if item.state == NEVER_FIRED)
+            lignes.append(
+                f"  **Non tranche.** {muettes} tireur(s) ordinaire(s) sur "
+                f"{len(ordinaires)} n'ont tire\n"
+                "  aucune salve pendant le chronometrage : l'experience n'a pas produit\n"
+                "  l'evenement qu'elle mesure. Ni le correctif du simulateur ni son\n"
+                "  contraire ne sont justifies."
             )
-        )
-        return "\n".join([entete, *etapes, "", verdict])
+        elif any(item.state == FIRED_MOVING for item in ordinaires):
+            lignes.append(
+                "  **Le jeu autorise le tir en mouvement pour l'infanterie de tir** :\n"
+                "  une salve au moins est partie alors que l'unite se deplacait encore."
+            )
+        else:
+            lignes.append(
+                "  **L'arret est requis** : aucun tireur ordinaire n'a tire en marchant,\n"
+                "  et les salves ne sont parties qu'apres l'arret. Notre simulateur, lui,\n"
+                "  laisse tirer en marche — l'ecart est reel."
+            )
+
+        hors = [item for item in self.watches if not item.ordinary]
+        if hors:
+            lignes += [
+                "",
+                "  Rapporte a part, et exclu du verdict : "
+                + ", ".join(f"{item.unit} ({item.state})" for item in hors)
+                + ".",
+            ]
+        return "\n".join(lignes)
 
 
 @dataclass
@@ -270,7 +341,7 @@ class Census:
     """L'inventaire des yeux et des oreilles de l'agent."""
 
     findings: list[Finding] = field(default_factory=list)
-    missile: MissileTiming = field(default_factory=MissileTiming)
+    missile: MissileStudy = field(default_factory=MissileStudy)
     terrain: Terrain = field(default_factory=Terrain)
     #: Altitudes sondees ponctuellement : `sol en (x, z) : valeur`.
     soil: tuple[str, ...] = ()
@@ -375,7 +446,7 @@ def read(lines: Iterable[str], *, expected: Sequence[str] = ()) -> Census:
     """
     trouvailles: list[Finding] = []
     revision: int | None = None
-    missile: dict[str, object] = {}
+    missile: dict[str, dict[str, object]] = {}
     relief: dict[str, float] = {}
     sondes: list[str] = []
     vus: set[str] = set()
@@ -422,7 +493,9 @@ def read(lines: Iterable[str], *, expected: Sequence[str] = ()) -> Census:
     muets = tuple(nom for nom in expected if nom not in vus)
     return Census(
         findings=trouvailles,
-        missile=MissileTiming(**missile),  # type: ignore[arg-type]
+        missile=MissileStudy(
+            watches=[MissileWatch(unit=unite, **champs) for unite, champs in missile.items()]  # type: ignore[arg-type]
+        ),
         terrain=Terrain(**relief),
         soil=tuple(sondes),
         revision=revision,
@@ -485,34 +558,50 @@ def _read_finding(corps: str) -> Finding | None:
     return None
 
 
-def _read_missile(corps: str, into: dict[str, object]) -> None:
-    """Reconstitue le chronometre depuis les lignes `MISSILE t0..t4`."""
-    if "chronometrage impossible" in corps or "aucun deplacement" in corps:
-        into["aborted"] = corps.removeprefix("MISSILE ").strip()
-        return
-    if "fin du chronometrage sans salve" in corps:
-        return
-    if corps.startswith("MISSILE t0"):
-        if (found := re.search(r"unite=(\S+)", corps)) is not None:
-            into["unit"] = found.group(1)
-        if (found := re.search(r"type=(\S+)", corps)) is not None:
-            into["unit_type"] = found.group(1)
-        if (found := re.search(r"fire_while_moving=(\S+)", corps)) is not None:
-            into["fire_while_moving"] = found.group(1)
-        return
-    for marque, champ in (
-        ("t1", "moving_at"),
-        ("t2", "stopped_at"),
-        ("t3", "target_at"),
-        ("t4", "volley_at"),
-    ):
-        if (
-            corps.startswith(f"MISSILE {marque}")
-            and (found := re.search(r"a ([\d.]+) ms", corps)) is not None
+def _read_missile(corps: str, into: dict[str, dict[str, object]]) -> None:
+    """Reconstitue le chronometre, **une entree par unite**.
+
+    Les lignes ne se suivent pas par unite : cinq chronometres tournent en
+    parallele et leurs `t1`..`t4` s'entrelacent. Les agreger dans un seul
+    enregistrement revenait a garder la derniere valeur vue de chaque champ, tous
+    tireurs confondus — c'est ainsi que le journal du 18/08 s'est lu comme une
+    seule unite ayant marche, s'etre arretee, puis avoir tire.
+    """
+    if (found := re.search(r"MISSILE t0 ordre envoye unite=(?P<unit>\S+)", corps)) is not None:
+        entree = into.setdefault(found.group("unit"), {})
+        for cle, motif in (
+            ("unit_type", r"type=(\S+)"),
+            ("fire_while_moving", r"fire_while_moving=(\S+)"),
         ):
-            into[champ] = float(found.group(1))
-    if corps.startswith("MISSILE t4"):
-        if (found := re.search(r"en_marche=(\w+)", corps)) is not None:
-            into["volley_while_moving"] = found.group(1) == "true"
-        if (found := re.search(r"apres_arret=([\d.]+)", corps)) is not None:
-            into["volley_after_stop"] = float(found.group(1))
+            if (trouve := re.search(motif, corps)) is not None:
+                entree[cle] = trouve.group(1)
+        return
+
+    for marque, champ in (("t1", "moving_at"), ("t2", "stopped_at"), ("t3", "target_at")):
+        motif = rf"MISSILE {marque} (?P<unit>\S+) .*? a (?P<ms>[\d.]+) ms"
+        if (found := re.search(motif, corps)) is not None:
+            into.setdefault(found.group("unit"), {})[champ] = float(found.group("ms"))
+            return
+
+    if (found := re.search(r"MISSILE t4 (?P<unit>\S+) .*? a (?P<ms>[\d.]+) ms", corps)) is not None:
+        entree = into.setdefault(found.group("unit"), {})
+        entree["volley_at"] = float(found.group("ms"))
+        if (trouve := re.search(r"en_marche=(\w+)", corps)) is not None:
+            entree["volley_while_moving"] = trouve.group(1) == "true"
+        if (trouve := re.search(r"apres_arret=([\d.]+)", corps)) is not None:
+            entree["volley_after_stop"] = float(trouve.group(1))
+        return
+
+    if (
+        found := re.search(r"MISSILE (?P<unit>\S+) fin du chronometrage sans salve", corps)
+    ) is not None:
+        into.setdefault(found.group("unit"), {})["ended_without_volley"] = True
+        return
+
+    # **Les avortements portent leur motif, et parfois pas d'unite.** « aucune
+    # unite de tir » ne designe personne : l'attribuer a un identifiant invente
+    # ferait apparaitre un tireur qui n'existe pas.
+    if "chronometrage impossible" in corps or "aucun deplacement" in corps:
+        found = re.search(r"MISSILE (?P<unit>\d+) ", corps)
+        unite = found.group("unit") if found is not None else "?"
+        into.setdefault(unite, {})["aborted"] = corps.removeprefix("MISSILE ").strip()

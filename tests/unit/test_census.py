@@ -116,16 +116,74 @@ def test_la_liste_attendue_se_lit_dans_la_source_lua() -> None:
 def test_le_chronometre_du_tir_est_reconstitue() -> None:
     """La mesure qui juge un correctif du simulateur."""
     census = read(JOURNAL)
-    tir = census.missile
-    assert tir.conclusive
+    assert census.missile.conclusive
+    tir = census.missile.watches[0]
     assert tir.unit == "1234"
+    assert tir.ordinary, "un arbalétrier d'infanterie est un tireur ordinaire"
     assert tir.moving_at == 400.0
     assert tir.stopped_at == 5200.0
     assert tir.target_at == 5600.0
     assert tir.volley_at == 6100.0
     assert tir.volley_while_moving is False
     assert tir.volley_after_stop == 900.0
-    assert "n'est partie qu'a l'arret" in tir.explain()
+    assert "L'arret est requis" in census.missile.explain()
+
+
+def test_chaque_unite_a_son_propre_chronometre(make_unit=None) -> None:  # type: ignore[no-untyped-def]
+    """Le defaut que le journal du 18/08 a revele.
+
+    Cinq chronometres tournent en parallele et leurs etapes s'entrelacent. Un
+    enregistrement unique gardait la derniere valeur vue de chaque champ, tous
+    tireurs confondus : le journal se lisait comme **une seule** unite ayant
+    marche, s'etre arretee, puis avoir tire — alors que quatre n'avaient rien
+    tire et que la cinquieme ne s'etait jamais arretee.
+    """
+    census = read(
+        [
+            "[totalwar_ai] MISSILE t0 ordre envoye unite=1 type=wh_main_emp_inf_archers "
+            "fire_while_moving=false ammo=100",
+            "[totalwar_ai] MISSILE t0 ordre envoye unite=2 type=wh_main_emp_veh_lantern "
+            "fire_while_moving=false ammo=100",
+            "[totalwar_ai] MISSILE t1 1 en marche a 250 ms",
+            "[totalwar_ai] MISSILE t1 2 en marche a 250 ms",
+            "[totalwar_ai] MISSILE t2 1 arret a 9000 ms",
+            "[totalwar_ai] MISSILE t4 2 premiere salve a 9500 ms en_marche=true "
+            "apres_arret=jamais_arrete",
+            "[totalwar_ai] MISSILE 1 fin du chronometrage sans salve",
+        ]
+    )
+    assert len(census.missile.watches) == 2
+    fantassin = next(item for item in census.missile.watches if item.unit == "1")
+    vehicule = next(item for item in census.missile.watches if item.unit == "2")
+
+    assert fantassin.stopped_at == 9000.0
+    assert fantassin.volley_at is None, "l'infanterie n'a rien tire"
+    assert vehicule.volley_at == 9500.0
+    assert vehicule.stopped_at is None, "le vehicule ne s'est jamais arrete"
+
+
+def test_un_vehicule_volant_ne_parle_pas_pour_un_arbaletrier() -> None:
+    """Le verdict que la premiere lecture a publie a tort.
+
+    Sur le journal reel, quatre tireurs d'infanterie n'ont jamais tire et le seul
+    Sky Lantern a tire en marchant. La lecture concluait « le jeu autorise le tir
+    en mouvement » depuis cette unique unite hors normes.
+    """
+    census = read(
+        [
+            "[totalwar_ai] MISSILE t0 ordre envoye unite=1 type=wh3_main_cth_inf_crossbowmen_0 "
+            "fire_while_moving=false ammo=100",
+            "[totalwar_ai] MISSILE t0 ordre envoye unite=2 type=wh3_main_cth_veh_sky_lantern_0 "
+            "fire_while_moving=false ammo=100",
+            "[totalwar_ai] MISSILE t4 2 premiere salve a 9500 ms en_marche=true "
+            "apres_arret=jamais_arrete",
+            "[totalwar_ai] MISSILE 1 fin du chronometrage sans salve",
+        ]
+    )
+    assert not census.missile.conclusive, "aucun tireur ordinaire n'a tire"
+    rendu = census.missile.explain()
+    assert "Non tranche" in rendu
+    assert "exclu du verdict" in rendu
 
 
 def test_sans_salve_le_chronometre_refuse_de_conclure() -> None:
@@ -137,13 +195,13 @@ def test_sans_salve_le_chronometre_refuse_de_conclure() -> None:
     partiel = [ligne for ligne in JOURNAL if "MISSILE t4" not in ligne]
     census = read(partiel)
     assert not census.missile.conclusive
-    assert "non tranche" in census.missile.explain()
+    assert "Non tranche" in census.missile.explain()
 
 
 def test_un_chronometrage_avorte_dit_pourquoi() -> None:
     census = read(["[totalwar_ai] MISSILE aucune unite de tir : chronometrage impossible"])
-    assert census.missile.aborted is not None
-    assert "Chronometrage impossible" in census.missile.explain()
+    assert census.missile.watches[0].aborted is not None
+    assert "chronometrage impossible" in census.missile.explain()
 
 
 def test_la_revision_du_pack_est_relevee() -> None:
