@@ -657,21 +657,26 @@ def test_le_cli_mesure_le_deplacement_total_pas_le_premier_pas(
 def test_le_recensement_distingue_present_absent_et_en_erreur(probe: Probe) -> None:
     """Trois issues, trois messages : c'est tout l'interet du recensement.
 
-    Le mod tiers etudie ne lit ni le moral ni la fatigue. Plutot que de
-    supposer, la sonde demande au jeu et journalise ce qu'elle obtient.
+    Le format porte desormais **le motif de l'absence**. Un `nil` silencieux ne
+    dit pas si l'accesseur n'existe pas, s'il a leve, ou s'il a repondu « rien »
+    — trois situations differentes, dont une seule est une absence, et le
+    premier recensement s'y est fait prendre : il avait conclu a l'absence
+    structurelle du moral apres avoir essaye `unary_morale`, quand le jeu nomme
+    `is_wavering`.
     """
     probe.advance(1500)
 
     assert probe.grep("recensement des accesseurs")
     # Present et fonctionnel.
-    assert probe.grep("number_of_men_alive : number 64")
-    assert probe.grep("unary_hitpoints : number 0.800")
-    assert probe.grep("is_routing : boolean false")
-    # Present mais qui leve : distinct d'un accesseur absent.
-    assert probe.grep("unary_morale : ERREUR")
-    # Absent du faux jeu.
-    assert probe.grep("ammo_left : ABSENT")
-    assert probe.grep("fatigue : ABSENT")
+    assert probe.grep("API number_of_men_alive OK value=number 64")
+    assert probe.grep("API unary_hitpoints OK value=number 0.800")
+    assert probe.grep("API is_routing OK value=boolean false")
+    # Present mais qui leve : le motif doit apparaitre, pas seulement l'echec.
+    leve = probe.grep("API unary_morale ABSENT error=")
+    assert leve and "pas une fonction" not in leve[0]
+    # Absent du faux jeu : motif explicite, jamais un silence.
+    assert probe.grep("API ammo_left ABSENT error=pas une fonction")
+    assert probe.grep("API fatigue ABSENT error=pas une fonction")
 
 
 def test_le_recensement_resume_les_accesseurs_utilisables(probe: Probe) -> None:
@@ -1008,8 +1013,8 @@ def test_le_recensement_observe_aussi_une_unite_de_troupe(workdir: Path) -> None
 
     assert probe.grep("premiere unite : wh3_dlc20_chs_cha_daemon_prince_mnur")
     assert probe.grep("unite de troupe : wh3_main_nur_inf_plaguebearers_1")
-    assert probe.grep("number_of_men_alive : number 1")
-    assert probe.grep("number_of_men_alive : number 80")
+    assert probe.grep("API number_of_men_alive OK value=number 1")
+    assert probe.grep("API number_of_men_alive OK value=number 80")
 
 
 def test_une_armee_sans_troupe_le_signale(workdir: Path) -> None:
@@ -1349,3 +1354,134 @@ def test_la_sonde_publie_deux_etats_par_seconde(probe: Probe) -> None:
         for premiere, seconde in itertools.pairwise(etats)
     ]
     assert max(ecarts) <= 500, f"ecarts de publication : {ecarts}"
+
+
+def test_le_chronometrage_attend_la_phase_deployed(probe: Probe) -> None:
+    """Avant `Deployed`, aucun ordre ne prend effet — donc aucune mesure possible.
+
+    La premiere ecriture demarrait le chronometrage depuis `PROBE:start()`, donc
+    potentiellement en deploiement : elle aurait releve un arret immediat, aucune
+    cible, puis expire avant le debut de la bataille, sans jamais poser la
+    question qu'elle annoncait.
+    """
+    probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.advance(1500)
+    assert not probe.grep("chronometrage de la mise en batterie")
+
+    probe.enter_phase("Deployed")
+    assert probe.grep("chronometrage de la mise en batterie")
+
+
+def test_le_chronometrage_emet_un_vrai_ordre_de_deplacement(probe: Probe) -> None:
+    """Sans ordre, il n'y a pas de `t0` — et sans `t0`, rien n'est mesure."""
+    probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.advance(1500)
+    probe.enter_phase("Deployed")
+
+    depart = probe.grep("MISSILE t0 ordre envoye")
+    assert depart, "le chronometrage doit emettre un deplacement, pas seulement observer"
+    assert "fire_while_moving=" in depart[0], "l'attribut doit accompagner la mesure"
+    # L'ordre doit avoir reellement atteint le jeu.
+    assert any(order["kind"] == "goto" for order in probe.orders())
+
+
+def test_une_salve_apres_arret_est_datee_et_situee(probe: Probe) -> None:
+    """Le cas ou le jeu imposerait l'arret pour tirer."""
+    probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.advance(1500)
+    probe.enter_phase("Deployed")
+    probe.advance(500)
+    assert probe.grep("MISSILE t1")
+
+    probe.fake.missile_stop(probe.fake, "1006")
+    probe.advance(500)
+    assert probe.grep("MISSILE t2")
+
+    probe.fake.missile_acquire(probe.fake, "1006", "2001")
+    probe.advance(500)
+    assert probe.grep("MISSILE t3")
+
+    probe.fake.missile_fire(probe.fake, "1006")
+    probe.advance(500)
+    salve = probe.grep("MISSILE t4")
+    assert salve
+    assert "en_marche=false" in salve[0]
+
+
+def test_une_salve_tiree_en_marche_est_signalee_comme_telle(probe: Probe) -> None:
+    """Le cas oppose doit se distinguer, sinon la mesure ne mesure rien.
+
+    **C'est cette ligne qui juge notre simulateur.** `en_marche=true` dirait
+    qu'un tireur peut tirer en se deplacant, et notre modele aurait raison ;
+    `en_marche=false` dirait l'inverse, et le repli tirant qui porte
+    `balanced_clash` a 11/12 reposerait sur une permissivite inexistante.
+    """
+    probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.advance(1500)
+    probe.enter_phase("Deployed")
+
+    # L'unite tire sans s'etre jamais arretee.
+    probe.fake.missile_fire(probe.fake, "1006")
+    probe.advance(500)
+    salve = probe.grep("MISSILE t4")
+    assert salve
+    assert "en_marche=true" in salve[0]
+    assert "apres_arret=jamais_arrete" in salve[0]
+
+
+def test_sans_unite_de_tir_le_chronometrage_le_dit(probe: Probe) -> None:
+    """Une absence de tireur ne doit pas se confondre avec une absence de mesure."""
+    probe.advance(1500)
+    probe.enter_phase("Deployed")
+    assert probe.grep("MISSILE aucune unite de tir")
+
+
+# --- accesseurs qui prennent un argument -------------------------------------
+
+
+def test_un_accesseur_a_argument_est_appele_avec_son_argument(bataille: Probe) -> None:
+    """L'erreur historique du projet, cette fois empechee par un test.
+
+    La revision 14 avait declare le moral « structurellement absent » apres
+    l'avoir demande sous un mauvais nom. `is_visible_to_alliance` prend une
+    alliance : range dans la boucle des accesseurs sans argument, il aurait
+    leve, et la sonde aurait conclu a une absence sur le drapeau meme qui decide
+    si notre general peut respecter le brouillard de guerre.
+    """
+    bataille.advance(1500)
+
+    ligne = bataille.grep("API is_visible_to_alliance")
+    assert ligne, "l'accesseur doit etre recense"
+    assert "OK value=" in ligne[0], f"appele de travers : {ligne[0]}"
+    # Le test n'a de sens que sur une unite adverse : les notres sont toujours
+    # visibles, et la reponse ne prouverait rien.
+    assert "sur=ennemi" in ligne[0]
+
+
+def test_can_reach_position_est_recense_avec_un_vecteur(bataille: Probe) -> None:
+    bataille.advance(1500)
+    ligne = bataille.grep("API can_reach_position")
+    assert ligne
+    assert "OK value=" in ligne[0], f"appele de travers : {ligne[0]}"
+
+
+def test_le_terrain_est_reellement_sonde_et_compare(bataille: Probe) -> None:
+    """« Presente » n'est pas une mesure.
+
+    La revision precedente se contentait de constater qu'une fonction portait ce
+    nom. Toute la valeur est dans la concordance a trois termes, au meme point.
+    """
+    bataille.advance(1500)
+
+    appel = bataille.grep("API bm:get_terrain_height OK value=")
+    assert appel, "la fonction doit etre appelee, pas seulement declaree presente"
+
+    concordance = bataille.grep("CONCORDANCE")
+    assert concordance
+    ligne = concordance[0]
+    assert "unit_y=" in ligne
+    assert "v_to_ground=" in ligne
+    assert "get_terrain_height=" in ligne
+    # Le faux jeu place les unites et le sol a la meme altitude : les trois
+    # termes doivent coincider, sinon le point de controle ne vaut rien.
+    assert "get_terrain_height=12.500" in ligne

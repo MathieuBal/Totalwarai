@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from totalwar_ai.agent.explainability import Decision, decide
 from totalwar_ai.agent.grouping import GroupKind, GroupSet, TacticalGroup, build_groups
+from totalwar_ai.agent.mobility import MobilityTracker
 from totalwar_ai.agent.sectors import Assault, commit, split_sectors
 from totalwar_ai.domain.actions import ActionType, AgentAction, Formation
 from totalwar_ai.domain.battle_state import BattlePhase, BattleState
@@ -352,6 +353,14 @@ class Planner:
     #: pour trois fois rien. Une preference marginale ne vaut pas un demi-tour.
     _commitments: dict[str, str] = field(default_factory=dict)
 
+    #: Vitesse observee de chaque unite, pour composer un assaut qui arrive.
+    #:
+    #: **Se remplit en regardant l'armee marcher**, jamais en lisant un gabarit :
+    #: le simulateur connait `template.speed`, le jeu ne le donne pas, et batir
+    #: l'ETA dessus rendrait le banc plus juste et l'agent inapplicable en
+    #: bataille. Voir :mod:`totalwar_ai.agent.mobility`.
+    _mobility: MobilityTracker = field(default_factory=MobilityTracker)
+
     #: Assaut de secteur en cours, d'un plan au suivant.
     #:
     #: **Collant comme la reserve, et pour la meme raison.** Un secteur rechoisi
@@ -405,6 +414,7 @@ class Planner:
         self._commitments.clear()
         self._reserve_ids.clear()
         self._assault = None
+        self._mobility.reset()
 
     def build_plan(self, state: BattleState) -> BattlePlan:
         """Choisit la posture et recompose les groupes.
@@ -417,6 +427,9 @@ class Planner:
         """
         allies = state.allies()
         enemies = state.enemies()
+        # Releve le deplacement depuis le plan precedent : c'est de la que vient
+        # toute la connaissance de vitesse de l'agent.
+        self._mobility.observe(state)
         enemy_anchor = state.centroid(Side.ENEMY)
 
         ratio = state.power_ratio()
@@ -576,11 +589,13 @@ class Planner:
             # combat.
             return None
 
-        carte = split_sectors(state, front, allies)
+        carte = split_sectors(state, front, allies, mobility=self._mobility)
         secteur = carte.best()
         if secteur is None:
             return None
-        self._assault = commit(secteur, state, allies, game_time=state.game_time)
+        self._assault = commit(
+            secteur, state, allies, game_time=state.game_time, mobility=self._mobility
+        )
         return self._assault
 
     def _fighting_withdrawal(
@@ -1227,7 +1242,47 @@ class Planner:
             for unit in our_missiles
             if state.threats_to(unit, self.settings.ranged_threat_radius)
         ]
+        assaut = plan.assault
+        assaillants = set(assaut.attackers) if assaut is not None else set()
+        vises = (
+            [unit for unit in enemies if assaut is not None and unit.id in set(assaut.targets)]
+            if assaut is not None
+            else []
+        )
+
         for index, rider in enumerate(cavalry):
+            # **La cavalerie porte l'assaut comme le reste de la ligne.** Elle en
+            # etait exclue tant qu'elle ne recevait pas l'ordre : la compter dans
+            # le rapport annonce sans jamais l'envoyer aurait promis une force
+            # qui ne viendrait pas — c'est le defaut que l'archer a revele sur
+            # `outnumbered`, ou 1,50 annonce valait 1,00 livre.
+            #
+            # Une charge de flanc concentree est precisement la manoeuvre visee :
+            # c'est le meilleur usage possible d'une cavalerie de choc, et le
+            # contournement opportuniste ci-dessous ne doit pas lui passer devant.
+            if rider.id in assaillants and vises and not rider.is_engaged:
+                cible = (
+                    self.select_target(rider, state, assignments=assignments, candidates=vises)
+                    or vises[0]
+                )
+                assignments[cible.id] = assignments.get(cible.id, 0) + 1
+                decisions.append(
+                    decide(
+                        AgentAction(
+                            type=ActionType.FLANK,
+                            actor_ids=(rider.id,),
+                            parameters={"target_id": cible.id},
+                            confidence=0.8,
+                        ),
+                        f"assaut du secteur {assaut.sector} : charge de flanc"
+                        if assaut is not None
+                        else "assaut : charge de flanc",
+                        "porter la charge la ou nous sommes deja les plus forts",
+                        confidence=0.8,
+                    )
+                )
+                continue
+
             if threatened and index == 0:
                 protege = threatened[0]
                 decisions.append(

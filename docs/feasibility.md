@@ -267,6 +267,107 @@ n'ont aucune donnée sur quoi s'appuyer.
 Tant que ce recensement n'a pas eu lieu, ces manques doivent être reportés dans
 les règles de l'agent — il déciderait sinon sur des champs constamment vides.
 
+### Le recensement de la révision 15 — ce qu'il demande, et pourquoi
+
+La sonde en révision 15 interroge **toute la surface d'état d'une unité**, par
+famille, et non plus une vingtaine de noms choisis. Trois choses ont changé dans
+sa méthode.
+
+**L'absence se journalise avec son motif.** Le format est désormais :
+
+```text
+[totalwar_ai] API fatigue_state OK value=string threshold_fresh
+[totalwar_ai] API is_wavering ABSENT error=pas une fonction
+[totalwar_ai] ATTR fire_while_moving OK value=false
+```
+
+Un `nil` silencieux ne distingue pas « la fonction n'existe pas » de « elle a
+levé » ni de « elle a répondu *rien* » — trois situations dont une seule est une
+absence, et c'est exactement le piège dans lequel le premier recensement est
+tombé.
+
+**Les anciens noms restent interrogés.** `unary_morale`, `fatigue`, `speed`,
+`width` sont conservés dans la liste alors qu'on les sait absents : savoir
+qu'ils le sont fait partie du résultat, et les retirer effacerait la trace de
+l'erreur.
+
+**Les accesseurs à argument ont leur propre catégorie.** `has_attribute(clé)`,
+`is_visible_to_alliance(alliance)` et `can_reach_position(vecteur)` ne peuvent
+pas passer par la boucle sans argument : appelés de travers, ils lèvent, et la
+sonde conclurait à une absence.
+
+> **Un audit a intercepté ce défaut avant le repack**, sur
+> `is_visible_to_alliance` — le drapeau même qui décide si notre général peut
+> respecter le brouillard de guerre. Il était rangé parmi les accesseurs sans
+> argument, et la révision se serait donc conclue par un « ABSENT » mensonger
+> sur la capacité la plus structurante du lot. C'est mot pour mot l'erreur que
+> cette révision existe pour réparer.
+>
+> `is_visible_to_alliance` se teste en outre sur une unité **adverse** : les
+> nôtres sont toujours visibles, et la réponse ne prouverait rien.
+
+Le harnais `lupa` a ensuite attrapé deux défauts de plus, avant tout essai :
+
+* `start_missile_watch` avait disparu lors d'une réécriture de bloc — le
+  chronométrage ne se serait jamais lancé ;
+* l'idiome Lua `(cible == "ennemi") and ennemi or allie` retombe silencieusement
+  sur l'allié quand `ennemi` est `nil` : la sonde journalisait `sur=ennemi`
+  après avoir testé une unité à nous. **Un journal qui ment est pire qu'un
+  journal absent.**
+
+### Le chronomètre de mise en batterie
+
+Notre simulateur laisse aujourd'hui **toute** unité de tir non engagée tirer, en
+mouvement ou non. L'argument était que `RETREAT` et `MOVE_GROUP` se traduisent
+par la même commande vers le jeu — ce qui reste vrai — mais il masquait une
+question distincte : *le jeu autorise-t-il un tireur ordinaire à tirer en
+marchant ?* WH3 documente l'attribut `fire_while_moving`, ce qui suggère que
+non.
+
+Si c'est le cas, le **repli tirant** qui porte `balanced_clash` à onze victoires
+sur douze repose sur une permissivité que le jeu n'a pas.
+
+La sonde **émet un vrai ordre de déplacement** — 50 m, latéral, sans rapprocher
+l'unité de l'ennemi — puis relève cinq instants, sur **toutes** les unités de tir
+de l'armée :
+
+```text
+[totalwar_ai] MISSILE t0 ordre envoye unite=1006 type=… fire_while_moving=false ammo=20
+[totalwar_ai] MISSILE t1 1006 en marche a 500 ms
+[totalwar_ai] MISSILE t2 1006 arret a 3000 ms
+[totalwar_ai] MISSILE t3 1006 cible a 3500 ms
+[totalwar_ai] MISSILE t4 1006 premiere salve a 4000 ms en_marche=false apres_arret=1000
+```
+
+> **La première écriture annonçait un `t0` qui n'existait pas.** Elle
+> n'émettait aucun ordre et démarrait dès le chargement de la sonde, donc
+> potentiellement en déploiement où tout le monde est immobile : elle aurait
+> relevé un arrêt à 250 ms, aucune cible, puis expiré avant le début de la
+> bataille — sans jamais poser la question qu'elle annonçait. Le chronométrage
+> attend désormais la phase `Deployed`.
+
+Le déplacement est **latéral et court** : s'il rapprochait l'unité de l'ennemi,
+une salve ne dirait pas si elle est partie parce que l'unité bougeait ou parce
+qu'une cible venait d'entrer à portée.
+
+**Toutes les unités de tir sont chronométrées**, pas la première. Une pièce
+d'infanterie qui ne tire pas en marchant reste ambiguë prise seule — le jeu
+l'interdit-il, ou n'avait-elle pas de cible ? Une cavalerie de tir dans la même
+armée sert de témoin, et c'est le contraste qui tranche.
+
+`en_marche=true` dirait que la salve est partie pendant le déplacement, et notre
+simulateur aurait raison. `en_marche=false` dirait l'inverse, et il faudra le
+corriger — en republiant ce que le banc devient, effondrement compris.
+
+> Le chronomètre s'arrête de lui-même, à la première salve ou après son quota de
+> relevés : ce n'est pas un coût permanent. Il compte les ticks plutôt que
+> d'appeler `bm:time_stamp()`, qui n'a jamais été recensé — introduire un appel
+> non vérifié dans le script dont le rôle est de ne rien supposer serait le
+> meilleur moyen de perdre la mesure entière sur une erreur Lua.
+
+Les trois chemins sont exercés par le harnais `lupa` avant tout essai en jeu :
+salve après arrêt, salve en marche, et absence d'unité de tir.
+
 ### Le terrain : ce qui est acquis, et ce qui reste à publier
 
 Ce document a longtemps porté « aucune donnée de terrain ». C'était vrai des

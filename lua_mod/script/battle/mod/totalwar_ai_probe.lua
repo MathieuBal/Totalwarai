@@ -34,7 +34,7 @@
 -- passes. Ce numero apparait dans le journal, et `probe --log` le compare a
 -- celui du depot — la question « mon pack est-il a jour ? » se repond alors
 -- sans avoir a la poser.
-TOTALWAR_AI_PROBE_REVISION = 14
+TOTALWAR_AI_PROBE_REVISION = 15
 
 -- PREMIERE LIGNE EXECUTEE. Elle doit apparaitre dans le journal du jeu des que
 -- le fichier est charge, quel que soit le contexte (frontend, campagne,
@@ -656,32 +656,135 @@ end
     par tick.
 ----------------------------------------------------------------------------]]
 
---- Accesseurs sans argument a tester sur une unite alliee.
+--- Accesseurs sans argument a tester sur une unite alliee, par famille.
+---
+--- **Une absence constatee sous un mauvais nom n'est pas une absence.** Le
+--- recensement de la revision 14 avait essaye `unary_morale`, `fatigue`,
+--- `unary_fatigue`, `fatigue_level`, `speed` et `width` — tous absents — puis
+--- conclu que le moral, la fatigue, la vitesse et la formation etaient
+--- structurellement hors de portee. La documentation du jeu nomme pourtant
+--- `fatigue_state`, `is_wavering`, `slow_speed`, `fast_speed` et
+--- `ordered_width`, qui n'ont jamais ete demandes.
+---
+--- Les anciens noms restent dans la liste : savoir qu'ils sont absents fait
+--- partie du resultat, et les retirer effacerait la trace de l'erreur.
 local UNIT_ACCESSORS = {
+    -- Identite et nature.
     "unique_ui_id",
     "type",
     "name",
     "is_controllable",
     "is_valid_target",
     "is_commanding_unit",
+    "strategic_value",
+    "is_infantry",
+    "is_cavalry",
+    "is_artillery",
+    "can_fly",
+    "is_currently_flying",
+    -- Mouvement et formation.
     "is_idle",
+    "is_moving",
+    "is_moving_fast",
+    "bearing",
+    "ordered_bearing",
+    "ordered_position",
+    "ordered_width",
+    "slow_speed",
+    "fast_speed",
+    "speed", -- essaye en revision 14 : absent
+    "width", -- essaye en revision 14 : absent
+    -- Effectifs et sante.
     "number_of_men",
     "number_of_men_alive",
+    "initial_number_of_men",
+    "unary_of_men_alive",
     "unary_hitpoints",
-    "unary_morale",
+    "number_of_enemies_killed",
+    -- Combat en cours.
+    "current_target",
+    "is_in_melee",
+    "is_under_missile_attack",
+    -- Psychologie. Aucun de ces cinq n'a jamais ete demande.
+    "fatigue_state",
+    "is_wavering",
+    "is_crumbling",
+    "is_unstable",
+    "is_rampaging",
     "is_routing",
     "is_shattered",
-    "is_hidden",
-    "is_in_melee",
-    "can_fly",
-    "bearing",
+    "unary_morale", -- essaye en revision 14 : absent
+    "fatigue", -- essaye en revision 14 : absent
+    "unary_fatigue", -- essaye en revision 14 : absent
+    "fatigue_level", -- essaye en revision 14 : absent
+    -- Tir.
     "ammo_left",
+    "starting_ammo",
     "missile_range",
-    "fatigue",
-    "unary_fatigue",
-    "fatigue_level",
-    "speed",
-    "width",
+    -- Visibilite. `is_visible_to_alliance` n'est **pas** ici : il prend un
+    -- argument, voir `UNIT_ACCESSORS_WITH_ARGS`.
+    "is_hidden",
+    -- Capacites.
+    "num_special_abilities",
+    "owned_special_abilities",
+    "owned_passive_special_abilities",
+    "owned_non_passive_special_abilities",
+    "can_use_magic",
+}
+
+--- Accesseurs qui prennent un argument, et qu'il faut donc appeler autrement.
+---
+--- **Les appeler sans leur argument produirait exactement la conclusion que
+--- cette revision existe pour empecher.** La revision 14 avait declare le moral
+--- et la fatigue « structurellement absents » apres les avoir demandes sous de
+--- mauvais noms ; appeler `unit:is_visible_to_alliance()` sans alliance leverait
+--- une erreur, la sonde journaliserait `ABSENT`, et l'on conclurait que le jeu
+--- ne sait pas dire ce qui est visible — alors qu'il le sait parfaitement.
+---
+--- Chaque entree porte de quoi fabriquer son argument, et sur quelle unite le
+--- test a du sens : `is_visible_to_alliance` ne se demande pas sur une unite a
+--- nous, qui est toujours visible, mais sur une **unite adverse**.
+local UNIT_ACCESSORS_WITH_ARGS = {
+    {
+        name = "is_visible_to_alliance",
+        cible = "ennemi",
+        argument = function()
+            return bm:alliances():item(bm:local_alliance())
+        end,
+    },
+    {
+        name = "can_reach_position",
+        cible = "allie",
+        argument = function(unit)
+            -- Un point cinquante metres devant l'unite : assez loin pour qu'un
+            -- obstacle puisse s'y trouver, assez pres pour qu'un terrain
+            -- degage reponde « oui ».
+            local position = unit:position()
+            return v(position:get_x() + 50, position:get_y(), position:get_z())
+        end,
+    },
+}
+
+--- Attributs a interroger via `has_attribute(cle)`.
+---
+--- Les quatre premiers decident d'une question de fidelite que notre simulateur
+--- tranche aujourd'hui **dans le sens permissif sans preuve** : une unite de tir
+--- y tire en se deplacant. Si le jeu l'interdit aux unites depourvues de
+--- `fire_while_moving`, notre repli tirant repose sur une permissivite qui
+--- n'existe pas — et il porte `balanced_clash` a 11 victoires sur 12.
+local UNIT_ATTRIBUTES = {
+    "fire_while_moving",
+    "mounted_fire",
+    "mounted_fire_move",
+    "mounted_fire_parthian",
+    "causes_fear",
+    "causes_terror",
+    "fatigue_immune",
+    "unbreakable",
+    "undead",
+    "stalk",
+    "snipe",
+    "hide_forest",
 }
 
 --- Methodes candidates de `script_ai_planner`.
@@ -751,20 +854,44 @@ function PROBE:census_unit_accessors(unit, label)
     for index = 1, #UNIT_ACCESSORS do
         local name = UNIT_ACCESSORS[index]
         local method = unit[name]
+        -- **L'absence se journalise comme un fait, avec son motif.** Un `nil`
+        -- silencieux ne dit pas si l'accesseur n'existe pas, s'il a leve une
+        -- erreur, ou s'il a repondu « rien » — trois situations differentes,
+        -- dont une seule est une absence.
         if type(method) ~= "function" then
-            self:log("  " .. name .. " : ABSENT")
+            self:log("  API " .. name .. " ABSENT error=pas une fonction")
         else
             local ok, value = pcall(method, unit)
             if ok then
-                self:log("  " .. name .. " : " .. describe(value))
+                self:log("  API " .. name .. " OK value=" .. describe(value))
                 disponibles[#disponibles + 1] = name
             else
-                self:log("  " .. name .. " : ERREUR " .. tostring(value))
+                self:log("  API " .. name .. " ABSENT error=" .. tostring(value))
             end
         end
     end
+
+    -- `has_attribute` prend un argument : il ne peut pas passer par la boucle
+    -- ci-dessus, et c'est pourtant lui qui porte la question du tir en
+    -- mouvement.
+    if type(unit.has_attribute) ~= "function" then
+        self:log("  API has_attribute ABSENT error=pas une fonction")
+    else
+        for index = 1, #UNIT_ATTRIBUTES do
+            local cle = UNIT_ATTRIBUTES[index]
+            local ok, value = pcall(unit.has_attribute, unit, cle)
+            if ok then
+                self:log("  ATTR " .. cle .. " OK value=" .. tostring(value))
+            else
+                self:log("  ATTR " .. cle .. " ABSENT error=" .. tostring(value))
+            end
+        end
+        disponibles[#disponibles + 1] = "has_attribute"
+    end
+
     self:log("accesseurs utilisables : " .. table.concat(disponibles, ", "))
     self:log("--- fin du recensement ---")
+    self:guarded("census_accessors_with_args")
 
     -- Le recensement ne sert pas qu'au diagnostic : il decide de ce qui est
     -- publie. Un champ dont l'accesseur est absent n'apparait pas dans l'etat,
@@ -774,6 +901,86 @@ function PROBE:census_unit_accessors(unit, label)
         self.available[disponibles[index]] = true
     end
     return disponibles
+end
+
+--- Trouve la premiere unite d'une alliance qui n'est pas la notre.
+---
+--- `is_visible_to_alliance` ne se teste que sur une unite adverse : les notres
+--- sont toujours visibles, et le test rendrait `true` sans rien prouver.
+function PROBE:find_enemy_unit()
+    local alliances = bm:alliances()
+    local locale = bm:local_alliance()
+    for a = 1, alliances:count() do
+        if a ~= locale then
+            local armies = alliances:item(a):armies()
+            for b = 1, armies:count() do
+                local units = armies:item(b):units()
+                if units:count() > 0 then
+                    return units:item(1)
+                end
+            end
+        end
+    end
+    return nil
+end
+
+--- Recense les accesseurs qui prennent un argument.
+---
+--- Separe du recensement sans argument parce que **la facon d'appeler fait
+--- partie de la question**. Un accesseur appele de travers rend une erreur
+--- qu'on lirait comme une absence, et c'est precisement l'erreur que ce projet
+--- a deja commise une fois.
+function PROBE:census_accessors_with_args()
+    self:log("--- recensement des accesseurs a argument ---")
+    local allie = self:find_controllable_unit()
+    local ennemi = self:find_enemy_unit()
+    if not ennemi then
+        self:log("  aucune unite adverse visible du script : recensement partiel")
+    end
+
+    for index = 1, #UNIT_ACCESSORS_WITH_ARGS do
+        local entree = UNIT_ACCESSORS_WITH_ARGS[index]
+        -- **Pas de `and/or` ici.** `(cible == "ennemi") and ennemi or allie`
+        -- retombe silencieusement sur l'allie quand `ennemi` est nil : le
+        -- harnais a montre la sonde journalisant `sur=ennemi` apres avoir teste
+        -- une unite a nous. Un journal qui ment est pire qu'un journal absent,
+        -- et c'est exactement ce que cette revision existe pour empecher.
+        local unit
+        if entree.cible == "ennemi" then
+            unit = ennemi
+        else
+            unit = allie
+        end
+        if not unit then
+            self:log(
+                "  API " .. entree.name .. " NON TESTE raison=aucune unite " .. entree.cible
+            )
+        elseif type(unit[entree.name]) ~= "function" then
+            self:log("  API " .. entree.name .. " ABSENT error=pas une fonction")
+        else
+            -- L'argument se fabrique lui aussi sous `pcall` : `v()` ou
+            -- `bm:alliances()` pourraient manquer, et l'echec ne dirait alors
+            -- rien de l'accesseur teste.
+            local ok_arg, argument = pcall(entree.argument, unit)
+            if not ok_arg then
+                self:log(
+                    "  API " .. entree.name .. " NON TESTE raison=argument impossible : "
+                        .. tostring(argument)
+                )
+            else
+                local ok, value = pcall(unit[entree.name], unit, argument)
+                if ok then
+                    self:log(
+                        "  API " .. entree.name .. " OK value=" .. describe(value)
+                            .. " sur=" .. entree.cible
+                    )
+                else
+                    self:log("  API " .. entree.name .. " ABSENT error=" .. tostring(value))
+                end
+            end
+        end
+    end
+    self:log("--- fin du recensement ---")
 end
 
 --- Recense l'API du planificateur de bataille du moteur, **sans l'instancier**.
@@ -880,10 +1087,34 @@ local TERRAIN_METHODS = {
 function PROBE:census_terrain()
     self:log("--- recensement du terrain ---")
 
+    -- **« Presente » n'est pas une mesure.** La revision precedente se
+    -- contentait d'un `type(bm[name]) == "function"` et journalisait
+    -- « presente » : on savait qu'une fonction portait ce nom, jamais ce qu'elle
+    -- rendait. Toute la valeur est dans la concordance a trois termes, et elle
+    -- n'avait donc jamais lieu.
+    local sonde = self:find_controllable_unit()
+    local sous_unite = nil
+    if sonde then
+        local ok, position = pcall(function() return sonde:position() end)
+        if ok and position then
+            sous_unite = { x = position:get_x(), y = position:get_y(), z = position:get_z() }
+        end
+    end
+
     for index = 1, #TERRAIN_METHODS do
         local name = TERRAIN_METHODS[index]
-        if type(bm[name]) == "function" then
-            self:log("  bm:" .. name .. " : presente")
+        if type(bm[name]) ~= "function" then
+            self:log("  API bm:" .. name .. " ABSENT error=pas une fonction")
+        elseif not sous_unite then
+            self:log("  API bm:" .. name .. " NON TESTE raison=aucune unite pour sonder")
+        else
+            -- La signature documentee prend deux coordonnees au sol.
+            local ok, altitude = pcall(bm[name], bm, sous_unite.x, sous_unite.z)
+            if ok then
+                self:log("  API bm:" .. name .. " OK value=" .. describe(altitude))
+            else
+                self:log("  API bm:" .. name .. " ABSENT error=" .. tostring(altitude))
+            end
         end
     end
 
@@ -897,15 +1128,30 @@ function PROBE:census_terrain()
     -- Origine : une unite a nous, dont on connait deja l'altitude par une autre
     -- voie. Comparer les deux dira si la projection au sol raconte la meme
     -- chose que la position d'une unite.
-    local unit = self:find_controllable_unit()
     local origine = { x = 0, z = 0 }
-    if unit then
-        local ok, position = pcall(function() return unit:position() end)
-        if ok and position then
-            origine.x = position:get_x()
-            origine.z = position:get_z()
-            self:log("  altitude sous l'unite : " .. describe(position:get_y()))
+    if sous_unite then
+        origine.x = sous_unite.x
+        origine.z = sous_unite.z
+        self:log("  altitude sous l'unite : " .. describe(sous_unite.y))
+
+        -- **La concordance a trois termes, au meme point.** Deux d'entre eux
+        -- ont deja donne 21.007 en bataille reelle. Le troisieme decide si l'on
+        -- tient une sonde de relief en tout point de la carte, appelable avant
+        -- le premier coup de feu, ou seulement l'altitude des unites.
+        local ok_sol, sol = pcall(function()
+            return v_to_ground(v(sous_unite.x, 0, sous_unite.z)):get_y()
+        end)
+        local ok_terrain, terrain = false, nil
+        if type(bm.get_terrain_height) == "function" then
+            ok_terrain, terrain = pcall(bm.get_terrain_height, bm, sous_unite.x, sous_unite.z)
         end
+        self:log(
+            "  CONCORDANCE unit_y=" .. json_number(sous_unite.y)
+                .. " v_to_ground=" .. (ok_sol and json_number(sol) or "indisponible")
+                .. " get_terrain_height="
+                .. ((ok_terrain and type(terrain) == "number") and json_number(terrain)
+                    or "indisponible")
+        )
     end
 
     -- Une croix autour de l'origine. Des altitudes qui **different** prouvent
@@ -924,6 +1170,138 @@ function PROBE:census_terrain()
         )
     end
     self:log("--- fin du recensement ---")
+end
+
+--- Chronometre la mise en batterie des unites de tir.
+---
+--- **C'est la mesure qui juge une correction deja livree.** Notre simulateur
+--- laisse aujourd'hui toute unite de tir non engagee tirer, en mouvement ou non.
+--- L'argument etait qu'un ordre de repli et un ordre de deplacement sont la meme
+--- commande vers le jeu — ce qui reste vrai — mais il masquait une question
+--- distincte : **le jeu autorise-t-il un tireur ordinaire a tirer en marchant ?**
+---
+--- Si la reponse est non, le repli tirant qui porte `balanced_clash` a onze
+--- victoires sur douze repose sur une permissivite que WARHAMMER III n'a pas.
+---
+--- .. rubric:: Ce que la premiere ecriture ratait
+---
+--- Elle annoncait « t0 ordre de deplacement emis » et **n'emettait aucun
+--- ordre** : elle observait une unite au hasard, depuis le demarrage de la
+--- sonde, donc potentiellement en phase de deploiement ou tout le monde est
+--- immobile. Elle aurait releve un arret a 250 ms, aucune cible, puis expire
+--- avant le debut de la bataille — sans jamais poser la question annoncee.
+---
+--- Cinq instants, et un ordre reellement envoye :
+---
+---     t0  ordre de deplacement emis
+---     t1  is_moving devient vrai      — l'ordre a pris effet
+---     t2  is_moving redevient faux    — arrivee
+---     t3  current_target apparait
+---     t4  ammo_left decroit
+---
+--- **Ce qui decide n'est pas `t4 - t2` mais l'etat de `is_moving` a l'instant
+--- `t4`.** Comparer les munitions du debut a celles de la fin ne dirait rien :
+--- c'est l'instant de la baisse qui porte l'information, et il faut le
+--- constater en vol.
+---
+--- Le deplacement est lateral et court : il ne doit pas rapprocher l'unite de
+--- l'ennemi, sinon une salve ne dirait pas si elle est partie parce que l'unite
+--- bougeait ou parce qu'une cible venait d'entrer a portee.
+local MISSILE_WATCH_TICKS = 240
+local MISSILE_WATCH_INTERVAL_MS = 250
+local MISSILE_WALK_METRES = 50
+
+function PROBE:watch_missile_readiness(unit)
+    if not unit then
+        self:log("MISSILE aucune unite de tir : chronometrage impossible")
+        return
+    end
+    local unit_id = self:unit_identifier(unit)
+    local depart = self:read_field(unit, "ammo_left")
+    if depart == nil then
+        self:log("MISSILE " .. unit_id .. " ammo_left absent : chronometrage impossible")
+        return
+    end
+
+    -- L'ordre d'abord : sans lui il n'y a pas de `t0`, et sans `t0` la mesure
+    -- ne mesure rien.
+    local ok_pos, position = pcall(function() return unit:position() end)
+    if not ok_pos or not position then
+        self:log("MISSILE " .. unit_id .. " position illisible : chronometrage impossible")
+        return
+    end
+    local destination = {
+        x = position:get_x() + MISSILE_WALK_METRES,
+        y = position:get_y(),
+        z = position:get_z(),
+    }
+    local envoye, motif = self:start_move(unit_id, destination, 30000)
+    if not envoye then
+        self:log("MISSILE " .. unit_id .. " aucun deplacement : " .. tostring(motif))
+        return
+    end
+
+    local attribut = "inconnu"
+    if type(unit.has_attribute) == "function" then
+        local ok_attr, valeur = pcall(unit.has_attribute, unit, "fire_while_moving")
+        attribut = ok_attr and tostring(valeur) or "erreur"
+    end
+    self:log(
+        "MISSILE t0 ordre envoye unite=" .. unit_id .. " type=" .. tostring(unit:type())
+            .. " fire_while_moving=" .. attribut .. " ammo=" .. json_number(depart)
+    )
+
+    local processus = "totalwar_ai_missile_" .. unit_id
+    local suivi = {
+        restant = MISSILE_WATCH_TICKS,
+        munitions = depart,
+        parti = nil,
+        arrete = nil,
+        cible = nil,
+        ecoule = 0,
+    }
+
+    bm:repeat_callback(function()
+        suivi.restant = suivi.restant - 1
+        suivi.ecoule = suivi.ecoule + MISSILE_WATCH_INTERVAL_MS
+        if suivi.restant <= 0 then
+            bm:remove_process(processus)
+            self:log("MISSILE " .. unit_id .. " fin du chronometrage sans salve")
+            return
+        end
+        local maintenant = suivi.ecoule
+        local bouge = self:read_field(unit, "is_moving")
+
+        if suivi.parti == nil and bouge == true then
+            suivi.parti = maintenant
+            self:log("MISSILE t1 " .. unit_id .. " en marche a " .. json_number(maintenant) .. " ms")
+        end
+        if suivi.parti ~= nil and suivi.arrete == nil and bouge == false then
+            suivi.arrete = maintenant
+            self:log("MISSILE t2 " .. unit_id .. " arret a " .. json_number(maintenant) .. " ms")
+        end
+
+        local cible = self:read_field(unit, "current_target")
+        if suivi.cible == nil and cible ~= nil then
+            suivi.cible = maintenant
+            self:log("MISSILE t3 " .. unit_id .. " cible a " .. json_number(maintenant) .. " ms")
+        end
+
+        local munitions = self:read_field(unit, "ammo_left")
+        if munitions ~= nil and munitions < suivi.munitions then
+            -- **La ligne qui tranche.** `en_marche=true` signifie qu'une salve
+            -- est partie alors que l'unite se deplacait encore : le tir en
+            -- mouvement serait alors autorise, et notre simulateur aurait
+            -- raison. `en_marche=false` dit l'inverse, et il faudra le corriger.
+            self:log(
+                "MISSILE t4 " .. unit_id .. " premiere salve a " .. json_number(maintenant) .. " ms"
+                    .. " en_marche=" .. tostring(bouge == true)
+                    .. " apres_arret="
+                    .. (suivi.arrete and json_number(maintenant - suivi.arrete) or "jamais_arrete")
+            )
+            bm:remove_process(processus)
+        end
+    end, MISSILE_WATCH_INTERVAL_MS, processus)
 end
 
 --- Appelle un accesseur si le recensement l'a declare utilisable.
@@ -994,6 +1372,29 @@ function PROBE:find_multi_entity_unit()
     return nil
 end
 
+--- Trouve une unite de tir alliee, pour le chronometrage de mise en batterie.
+---
+--- `missile_range` plutot que le nom : le recensement a etabli que les
+--- identifiants de WARHAMMER III ne disent pas si une unite tire — un
+--- `wh3_main_tze_inf_blue_horrors_0` n'a que le segment `_inf_` et porte
+--- pourtant quatre-vingt-dix de portee.
+function PROBE:find_missile_units()
+    local trouvees = {}
+    local alliance = bm:alliances():item(bm:local_alliance())
+    local army = alliance:armies():item(bm:local_army())
+    local units = army:units()
+    for index = 1, units:count() do
+        local unit = units:item(index)
+        if unit then
+            local ok, portee = pcall(function() return unit:missile_range() end)
+            if ok and type(portee) == "number" and portee > 0 then
+                trouvees[#trouvees + 1] = unit
+            end
+        end
+    end
+    return trouvees
+end
+
 function PROBE:unit_position(unit)
     local position = unit:position()
     return {
@@ -1001,6 +1402,29 @@ function PROBE:unit_position(unit)
         y = position:get_y(),
         z = position:get_z(),
     }
+end
+
+--- Lance le chronometrage sur **toutes** les unites de tir de l'armee.
+---
+--- Toutes, et non la premiere : une piece d'infanterie qui ne tire pas en
+--- marchant reste ambigue prise seule — le jeu l'interdit-il, ou n'avait-elle
+--- pas de cible a portee ? Une cavalerie de tir dans la meme armee sert de
+--- temoin, et c'est le contraste entre les deux qui tranche.
+---
+--- Ne demarre **jamais avant la phase `Deployed`** : en deploiement, aucun ordre
+--- ne prend effet (mesure : 33 s d'immobilite malgre des ordres acquittes). Un
+--- chronometrage lance la releverait un arret immediat, aucune cible, puis
+--- expirerait avant que la bataille ne commence.
+function PROBE:start_missile_watch()
+    local tireurs = self:find_missile_units()
+    if #tireurs == 0 then
+        self:log("MISSILE aucune unite de tir : chronometrage impossible")
+        return
+    end
+    self:log("--- chronometrage de la mise en batterie (" .. #tireurs .. " tireur(s)) ---")
+    for index = 1, #tireurs do
+        self:watch_missile_readiness(tireurs[index])
+    end
 end
 
 function PROBE:unit_identifier(unit)
@@ -1757,6 +2181,7 @@ function PROBE:start()
         else
             self:log("aucune unite de plus d'une entite trouvee : recensement partiel")
         end
+
     end
 
     bm:repeat_callback(function() self:guarded("publish_state") end,
@@ -1771,6 +2196,11 @@ function PROBE:start()
         bm:register_phase_change_callback(name, function()
             self.phase = name
             self:log("phase : " .. name)
+            -- Le chronometrage du tir attend ici, et nulle part ailleurs :
+            -- avant `Deployed`, aucun ordre ne prend effet.
+            if name == "Deployed" then
+                self:guarded("start_missile_watch")
+            end
         end)
     end
 
