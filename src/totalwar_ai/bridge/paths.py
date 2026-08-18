@@ -29,6 +29,14 @@ from pathlib import Path
 #: pour que les deux ne puissent pas diverger en silence.
 EXPECTED_PROBE_REVISION = 15
 
+#: Source canonique du script de sonde, relative a la racine du depot.
+#:
+#: Le lecteur de recensement y lit la liste des accesseurs attendus. La recopier
+#: en Python la ferait deriver de celle du Lua, et le rapport « attendu mais
+#: muet » se degraderait en silence — le defaut exact que l'ADR 0019 a coute a
+#: debusquer sur `STILL_DISTANCE`.
+PROBE_SCRIPT_SOURCE = Path("lua_mod/script/battle/mod/totalwar_ai_probe.lua")
+
 #: Variable d'environnement qui court-circuite toute la detection.
 BRIDGE_DIR_ENV_VAR = "TOTALWAR_AI_BRIDGE_DIR"
 

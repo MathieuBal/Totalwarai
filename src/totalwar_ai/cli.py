@@ -24,10 +24,16 @@ from totalwar_ai import __version__
 from totalwar_ai.agent.planner import Posture
 from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
 from totalwar_ai.bridge.file_bridge import FileBridge, summarise
-from totalwar_ai.bridge.paths import EXPECTED_PROBE_REVISION, BridgeDirectoryNotFoundError
+from totalwar_ai.bridge.paths import (
+    EXPECTED_PROBE_REVISION,
+    PROBE_SCRIPT_SOURCE,
+    BridgeDirectoryNotFoundError,
+    BridgePaths,
+)
 from totalwar_ai.bridge.recording import BattleRecorder
 from totalwar_ai.config import AppConfig, ConfigError, load_config
 from totalwar_ai.domain.geometry import Vector3
+from totalwar_ai.learning.census import expected_accessors, read
 from totalwar_ai.learning.checkpoints import CheckpointStore
 from totalwar_ai.learning.evaluation import (
     DEFAULT_SEEDS,
@@ -154,6 +160,20 @@ def build_parser() -> argparse.ArgumentParser:
         "puis la meme doublure avec nos regles",
     )
 
+    census = subparsers.add_parser(
+        "census",
+        help="lire le recensement d'API dans un journal de sonde",
+    )
+    census.add_argument(
+        "journal",
+        nargs="?",
+        help="chemin du script_log (defaut : le plus recent du dossier de jeu)",
+    )
+    census.add_argument(
+        "--bridge-dir",
+        help="dossier d'installation du jeu (defaut : $TOTALWAR_AI_BRIDGE_DIR)",
+    )
+
     probe = subparsers.add_parser("probe", help="piloter la sonde d'integration au jeu (prototype)")
     probe.add_argument(
         "--bridge-dir",
@@ -260,6 +280,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_doctrine(config)
     if args.command == "bench":
         return _cmd_bench(args, config)
+    if args.command == "census":
+        return _cmd_census(args)
     if args.command == "probe":
         return _cmd_probe(args)
     # `required=True` sur les sous-commandes garantit qu'on ne passe jamais ici.
@@ -367,6 +389,60 @@ def _cmd_history(args: argparse.Namespace, config: AppConfig) -> int:
 
 
 BASELINE_FILENAME = "benchmark-baseline.json"
+
+
+def _cmd_census(args: argparse.Namespace) -> int:
+    """Transforme un journal de sonde en table de verdicts.
+
+    **Une session de jeu ne se rejoue pas a volonte.** Le recensement porte sur
+    une centaine d'accesseurs, noyes dans des centaines de lignes d'etat : les
+    quatre sessions precedentes ont ete depouillees a l'oeil, et c'est ainsi
+    qu'on rate une ligne.
+    """
+    journal = _resoudre_journal(args)
+    if journal is None:
+        return 1
+
+    attendus: tuple[str, ...] = ()
+    source = Path(__file__).resolve().parents[2] / PROBE_SCRIPT_SOURCE
+    if source.is_file():
+        attendus = expected_accessors(source.read_text(encoding="utf-8"))
+    else:
+        # Sans la source, le recensement reste lisible mais **ne peut plus dire
+        # ce qui manque**. Le taire ferait passer une lecture amputee pour une
+        # lecture complete.
+        print(
+            "Source Lua introuvable : les accesseurs attendus mais muets ne seront pas signales.\n",
+            file=sys.stderr,
+        )
+
+    print(f"Journal : {journal.name} ({journal.stat().st_size} octets)\n")
+    inventaire = read(
+        journal.read_text(encoding="utf-8", errors="replace").splitlines(),
+        expected=attendus,
+    )
+    print(inventaire.render())
+    return 0
+
+
+def _resoudre_journal(args: argparse.Namespace) -> Path | None:
+    """Chemin explicite, ou le journal le plus recent du dossier de jeu."""
+    if args.journal:
+        chemin = Path(args.journal)
+        if not chemin.is_file():
+            print(f"Journal introuvable : {chemin}", file=sys.stderr)
+            return None
+        return chemin
+    bridge = BridgePaths.resolve(args.bridge_dir)
+    journal = bridge.latest_script_log()
+    if journal is None:
+        print(
+            "Aucun script_log trouve. Donner le chemin en argument, ou "
+            "definir $TOTALWAR_AI_BRIDGE_DIR.",
+            file=sys.stderr,
+        )
+        return None
+    return journal
 
 
 def _cmd_probe(args: argparse.Namespace) -> int:
