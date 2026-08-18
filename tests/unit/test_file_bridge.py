@@ -560,3 +560,18 @@ def test_un_verrou_qui_ne_lache_jamais_finit_par_lever(tmp_path: Path) -> None:
 
     # Le temporaire ne doit pas rester derriere lui.
     assert not list(tmp_path.glob("**/.totalwar_ai_command-*.tmp"))
+
+
+def test_la_sentinelle_d_experience_est_absente_par_defaut(tmp_path: Path) -> None:
+    """Le contrat d'isolation : rien ne commande d'unite sans demande explicite.
+
+    Le chronometrage du tir appelle `start_move` et confisque des tireurs
+    jusqu'a trente secondes. Actif par defaut, il contaminerait toute session de
+    pilotage — et LIVE-001 conclurait a des ordres perdus la ou c'est notre
+    propre experience qui occupait l'unite.
+    """
+    paths = BridgePaths(directory=tmp_path / "totalwar_ai")
+    paths.ensure()
+    assert not paths.experiment.exists()
+    assert paths.experiment.name == "totalwar_ai_experiment"
+    assert paths.experiment != paths.stop, "deux sentinelles distinctes"

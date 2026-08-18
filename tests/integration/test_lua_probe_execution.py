@@ -42,6 +42,16 @@ FAKE_BATTLE = ROOT / "tests" / "fixtures" / "fake_battle.lua"
 class Probe:
     """Sonde Lua chargee dans un interpreteur, pilotable depuis Python."""
 
+    def allow_experiments(self) -> None:
+        """Depose la sentinelle qui autorise les experiences **actives**.
+
+        Sans elle, le chronometrage du tir ne demarre pas : il commande des
+        unites, et une seule chose doit les commander a la fois.
+        """
+        dossier = self.workdir / "totalwar_ai"
+        dossier.mkdir(parents=True, exist_ok=True)
+        (dossier / "totalwar_ai_experiment").write_text("test\n", encoding="utf-8")
+
     def __init__(
         self,
         workdir: Path,
@@ -1365,6 +1375,7 @@ def test_le_chronometrage_attend_la_phase_deployed(probe: Probe) -> None:
     question qu'elle annoncait.
     """
     probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.allow_experiments()
     probe.advance(1500)
     assert not probe.grep("chronometrage de la mise en batterie")
 
@@ -1374,6 +1385,7 @@ def test_le_chronometrage_attend_la_phase_deployed(probe: Probe) -> None:
 
 def test_le_chronometrage_emet_un_vrai_ordre_de_deplacement(probe: Probe) -> None:
     """Sans ordre, il n'y a pas de `t0` — et sans `t0`, rien n'est mesure."""
+    probe.allow_experiments()
     probe.fake.arm_unit(probe.fake, "1006", 120)
     probe.advance(1500)
     probe.enter_phase("Deployed")
@@ -1398,6 +1410,7 @@ def test_une_unite_qui_ne_tire_pas_a_l_arret_invalide_l_experience(probe: Probe)
     et n'ont rien tire du tout. Comparer l'arret et la marche ne compare rien si
     l'unite ne tire pas deja a l'arret.
     """
+    probe.allow_experiments()
     probe.fake.arm_unit(probe.fake, "1006", 120)
     probe.advance(1500)
     probe.enter_phase("Deployed")
@@ -1417,6 +1430,7 @@ def test_une_salve_en_marche_donne_le_verdict_du_tir_en_mouvement(probe: Probe) 
     jeu le confirme, le repli tirant qui porte `balanced_clash` repose sur une
     permissivite reelle ; sinon il repose sur une permissivite inventee.
     """
+    probe.allow_experiments()
     probe.fake.arm_unit(probe.fake, "1006", 120)
     probe.advance(1500)
     probe.enter_phase("Deployed")
@@ -1442,8 +1456,35 @@ def test_une_salve_en_marche_donne_le_verdict_du_tir_en_mouvement(probe: Probe) 
     assert "FIRES_WHILE_MOVING" in verdict[0]
 
 
+def test_sans_sentinelle_aucune_experience_ne_confisque_d_unite(probe: Probe) -> None:
+    """Le contrat d'isolation causale de LIVE-001.
+
+    Le chronometrage du tir appelle `start_move` et confisque des tireurs jusqu'a
+    trente secondes. Lance pendant un pilotage, il produirait des « unite non
+    controlable » **imputables a nous-memes**, au moment precis ou LIVE-001
+    cherche pourquoi des ordres disparaissent : on aurait mesure sa propre
+    interference.
+
+    Le recensement passif, lui, continue : il observe et ne touche a rien.
+    """
+    probe.fake.arm_unit(probe.fake, "1006", 120)
+    probe.advance(1500)
+    probe.enter_phase("Deployed")
+    probe.advance(13000)
+
+    assert not probe.grep("chronometrage de la mise en batterie")
+    assert not probe.grep("MISSILE A0")
+    assert probe.grep("experiences actives desactivees")
+    assert not any(order["kind"] == "goto" for order in probe.orders()), (
+        "aucune unite ne doit avoir ete confisquee"
+    )
+    # Le recensement passif n'est pas concerne : il n'a jamais commande personne.
+    assert probe.grep("recensement des accesseurs")
+
+
 def test_sans_unite_de_tir_le_chronometrage_le_dit(probe: Probe) -> None:
     """Une absence de tireur ne doit pas se confondre avec une absence de mesure."""
+    probe.allow_experiments()
     probe.advance(1500)
     probe.enter_phase("Deployed")
     assert probe.grep("MISSILE aucune unite de tir")

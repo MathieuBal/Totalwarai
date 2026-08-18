@@ -65,6 +65,9 @@ local PROBE = {
     command_file = "./totalwar_ai/totalwar_ai_command.json",
     ack_file = "./totalwar_ai/totalwar_ai_ack.jsonl",
     stop_file = "./totalwar_ai/totalwar_ai_stop",
+    -- Sentinelle d'activation des experiences **qui agissent** sur la
+    -- bataille. Absente par defaut : voir `PROBE:experiments_enabled`.
+    experiment_file = "./totalwar_ai/totalwar_ai_experiment",
 
     poll_interval_ms = 500,
     -- Deux etats par seconde. La boucle Python decide une fois par seconde ;
@@ -366,6 +369,18 @@ local STOP_CONSUMED = "consumed"
 ---
 --- Une sentinelle laissee par une bataille precedente n'a plus d'objet : les
 --- unites qu'elle protegeait n'existent plus. On la consomme au demarrage.
+--- Les experiences **qui agissent** sur la bataille sont-elles autorisees ?
+---
+--- Par defaut non. Une mesure causalement propre exige qu'une seule chose
+--- commande les unites a la fois : soit l'agent, soit l'experience. Les
+--- superposer produirait des refus d'ordres dont l'origine serait indecidable.
+---
+--- La sentinelle se depose explicitement — `totalwar-ai probe --missile-test` —
+--- et `--play` refuse de demarrer tant qu'elle est la.
+function PROBE:experiments_enabled()
+    return self:read_file(self.experiment_file) ~= nil
+end
+
 function PROBE:stop_requested()
     local content = self:read_file(self.stop_file)
     if content == nil then
@@ -2302,7 +2317,24 @@ function PROBE:start()
             -- Le chronometrage du tir attend ici, et nulle part ailleurs :
             -- avant `Deployed`, aucun ordre ne prend effet.
             if name == "Deployed" then
-                self:guarded("start_missile_watch")
+                -- **Une experience qui commande des unites ne doit jamais
+                -- tourner pendant que l'agent joue.** Le chronometrage missile
+                -- appelle `start_move` et confisque des tireurs jusqu'a trente
+                -- secondes : lance en meme temps qu'un pilotage, il produirait
+                -- des « unite non controlable » imputables a nous-memes, au
+                -- moment precis ou LIVE-001 cherche pourquoi des ordres
+                -- disparaissent. On aurait mesure notre propre interference.
+                --
+                -- Le recensement passif, lui, reste automatique : il observe et
+                -- ne touche a rien.
+                if self:experiments_enabled() then
+                    self:guarded("start_missile_watch")
+                else
+                    self:log(
+                        "experiences actives desactivees : aucune unite ne sera "
+                            .. "confisquee (sentinelle absente)"
+                    )
+                end
             end
         end)
     end
