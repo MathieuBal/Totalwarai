@@ -18,7 +18,12 @@ from typing import TYPE_CHECKING, Any
 from totalwar_ai.agent.doctrine import apply_to_planner, apply_to_safety
 from totalwar_ai.agent.explainability import Decision
 from totalwar_ai.agent.grouping import GroupKind
-from totalwar_ai.agent.planner import BattlePlan, Planner, PlannerSettings
+from totalwar_ai.agent.planner import (
+    ABSTAIN_UNKNOWN,
+    BattlePlan,
+    Planner,
+    PlannerSettings,
+)
 from totalwar_ai.agent.safety_rules import SafetyEngine, SafetySettings
 from totalwar_ai.agent.unit_classifier import UnitClassifier
 from totalwar_ai.config import AppConfig, ConfigError, load_config
@@ -51,6 +56,15 @@ STAGE_THROTTLE = "throttle"
 STAGE_TRANSLATION = "translation"
 STAGE_MICRO_MOVE = "micro_move"
 
+#: Les compteurs ne correspondent a aucun chemin connu.
+#:
+#: **Un instrument qui ne comprend pas doit le dire.** Le repli precedent
+#: retombait sur `safety` quand aucune condition n'expliquait le zero — soit
+#: « je ne comprends pas, ce doit etre la securite », l'inverse exact de ce que
+#: les six dernieres corrections ont etabli. Un diagnostic invente coute plus
+#: cher qu'un diagnostic absent : il envoie chercher au mauvais endroit.
+STAGE_INVARIANT = "INVARIANT_VIOLATION"
+
 
 @dataclass(frozen=True, slots=True)
 class AgentTurn:
@@ -73,13 +87,51 @@ class AgentTurn:
     #: Comptes par etage, du planificateur a l'emission.
     proposed: int = 0
     below_confidence: int = 0
-    safety_blocked: int = 0
+    #: Entrees et **sorties** de la securite, et non ses seuls refus.
+    #:
+    #: **`SafetyEngine.filter` peut bloquer un ordre et en produire un autre.**
+    #: Une charge suicidaire refusee devient un `HOLD_POSITION`, remis dans
+    #: `allowed`. Compter les refus revenait donc a lire ceci :
+    #:
+    #: .. code-block:: text
+    #:
+    #:     5 propositions, 5 originales bloquees, 5 remplacements produits,
+    #:     5 remplacements tues ensuite par l'anti-repetition
+    #:     -> NO_COMMAND stage=safety
+    #:
+    #: alors que la securite avait fourni cinq ordres parfaitement utilisables et
+    #: que le tuyau s'est vide plus loin. Seule la **sortie** dit si un etage a
+    #: vide le tuyau.
+    safety_input: int = 0
+    safety_blocked_originals: int = 0
+    safety_replacements: int = 0
+    safety_output: int = 0
     duplicates: int = 0
     throttled: int = 0
+    #: Motifs de renoncement du planificateur, comptes par code stable.
+    #:
+    #: Vide quand le planificateur a propose quelque chose. Un motif inconnu
+    #: reste `UNKNOWN` : jamais deduit apres coup.
+    planner_reasons: tuple[tuple[str, int], ...] = ()
 
     @property
     def emitted(self) -> int:
         return len(self.decisions)
+
+    @property
+    def counters(self) -> dict[str, int]:
+        """Tous les comptes, pour accompagner le verdict — surtout s'il est faux."""
+        return {
+            "proposed": self.proposed,
+            "below_confidence": self.below_confidence,
+            "safety_input": self.safety_input,
+            "safety_blocked_originals": self.safety_blocked_originals,
+            "safety_replacements": self.safety_replacements,
+            "safety_output": self.safety_output,
+            "duplicates": self.duplicates,
+            "throttled": self.throttled,
+            "emitted": self.emitted,
+        }
 
     @property
     def no_command_stage(self) -> str | None:
@@ -87,6 +139,10 @@ class AgentTurn:
 
         `None` quand une commande est sortie, ou quand aucune decision n'etait
         due : dans ce dernier cas il n'y a rien a expliquer.
+
+        Chaque etage n'est accuse que s'il a **vide** le tuyau : entree non nulle,
+        sortie nulle. Et quand aucun chemin connu n'explique le zero, le verdict
+        est `INVARIANT_VIOLATION` — jamais un etage choisi par defaut.
         """
         if not self.decision_due or self.emitted:
             return None
@@ -94,13 +150,13 @@ class AgentTurn:
             return STAGE_PLANNER
         if self.below_confidence >= self.proposed:
             return STAGE_CONFIDENCE
-        if self.safety_blocked >= self.proposed - self.below_confidence:
+        if self.safety_input > 0 and self.safety_output == 0:
             return STAGE_SAFETY
-        if self.throttled:
-            return STAGE_THROTTLE
-        if self.duplicates:
+        if self.safety_output > 0 and self.duplicates >= self.safety_output:
             return STAGE_DUPLICATES
-        return STAGE_SAFETY
+        if self.throttled > 0:
+            return STAGE_THROTTLE
+        return STAGE_INVARIANT
 
     @property
     def actions(self) -> tuple[AgentAction, ...]:
@@ -123,14 +179,24 @@ class AgentTurn:
             "suppressed": self.suppressed,
             "skipped_reason": self.skipped_reason,
             "decision_due": self.decision_due,
-            "proposed": self.proposed,
-            "below_confidence": self.below_confidence,
-            "safety_blocked": self.safety_blocked,
-            "duplicates": self.duplicates,
-            "throttled": self.throttled,
-            "emitted": self.emitted,
             "no_command_stage": self.no_command_stage,
+            "planner_reasons": dict(self.planner_reasons),
+            **self.counters,
         }
+
+
+def _abstentions(reasons: dict[str, int], *, proposed: int) -> tuple[tuple[str, int], ...]:
+    """Motifs de renoncement, avec `UNKNOWN` quand rien n'a ete propose ni nomme.
+
+    **`UNKNOWN` est un resultat, pas un echec.** Le planificateur n'a rien
+    propose et aucune branche n'a dit pourquoi : le dire franchement vaut mieux
+    que de reconstruire une explication en relisant l'etat, qui produirait une
+    cause plausible plutot que la vraie.
+    """
+    nommes = tuple(sorted(reasons.items()))
+    if nommes or proposed:
+        return nommes
+    return ((ABSTAIN_UNKNOWN, 1),)
 
 
 def default_safety_engine() -> SafetyEngine:
@@ -302,9 +368,21 @@ class DeterministicTacticalAgent:
             decision_due=True,
             proposed=len(brutes),
             below_confidence=len(brutes) - len(proposals),
-            safety_blocked=len(outcome.blocked),
+            safety_input=len(proposals),
+            safety_blocked_originals=len(outcome.blocked),
+            # Une decision bloquee porte son remplacement : le compter ici evite
+            # de toucher au moteur de securite pour une mesure.
+            safety_replacements=sum(
+                1 for decision in outcome.blocked if decision.replacement is not None
+            ),
+            safety_output=len(outcome.allowed),
             duplicates=suppressed,
             throttled=len(throttled.blocked),
+            # **Le motif vient de la branche qui renonce**, jamais d'une lecture
+            # de l'etat apres coup. `UNKNOWN` quand le planificateur n'a rien
+            # propose sans avoir nomme sa raison : un trou honnete vaut mieux
+            # qu'une explication plausible.
+            planner_reasons=_abstentions(self.planner.abstentions, proposed=len(brutes)),
         )
 
     # --- cadence -------------------------------------------------------------

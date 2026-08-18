@@ -211,6 +211,27 @@ class PlannerSettings:
         )
 
 
+#: Motifs stables de renoncement, publies **la ou la branche renonce**.
+#:
+#: **Jamais reconstruits apres coup.** Deduire le motif en regardant l'etat, une
+#: fois la decision prise, revient a redemander a l'instrument ce qu'il vient de
+#: taire — et c'est ainsi qu'on obtient une explication plausible plutot que la
+#: vraie. `_pick_assault` a cinq `return None` differents, tous muets jusqu'ici :
+#: si la prochaine session repond `stage=planner`, il faudrait en refaire une
+#: pour savoir lequel.
+#:
+#: Des codes plutot que des phrases : on veut pouvoir compter
+#: « NO_FEASIBLE_SECTOR : 102 cycles » plutot que d'analyser du francais.
+ABSTAIN_WITHDRAWING = "WITHDRAWING"
+ABSTAIN_DEFEND_WAITING = "DEFEND_WAITING"
+ABSTAIN_MELEE_ENGAGED = "MELEE_ALREADY_ENGAGED"
+ABSTAIN_NO_SECTOR = "NO_FEASIBLE_SECTOR"
+ABSTAIN_COMMIT_FAILED = "COMMIT_FAILED"
+ABSTAIN_ASSAULT_RUNNING = "ASSAULT_ALREADY_RUNNING"
+#: Motif non renseigne. **Reste inconnu**, jamais devine.
+ABSTAIN_UNKNOWN = "UNKNOWN"
+
+
 @dataclass(frozen=True)
 class BattlePlan:
     """Plan general courant."""
@@ -348,6 +369,11 @@ class Planner:
     #: La raison affichee le dit explicitement, pour qu'aucun compte rendu ne
     #: laisse croire que l'agent a choisi cette posture.
     forced_posture: Posture | None = None
+    #: Motifs de renoncement du tour courant, comptes par code.
+    #:
+    #: Vide a chaque `build_plan` : un motif qui survivrait au plan suivant
+    #: designerait une abstention qui n'a plus lieu.
+    _abstentions: dict[str, int] = field(default_factory=dict)
     #: Secteur impose, et fenetre glissante : **canal de mesure seulement**.
     #:
     #: `best()` ne choisit jamais qu'un secteur par etat, si bien qu'aucune
@@ -459,6 +485,7 @@ class Planner:
         """
         allies = state.allies()
         enemies = state.enemies()
+        self._abstentions = {}
         # Releve le deplacement depuis le plan precedent : c'est de la que vient
         # toute la connaissance de vitesse de l'agent.
         self._mobility.observe(state)
@@ -603,9 +630,11 @@ class Planner:
         # avait pris pour une incompatibilite etait un assaut **lance pendant**
         # un repli, jamais un assaut poursuivi malgre lui.
         if self._assault is not None and not self._assault.broken(state):
+            self._abstain(ABSTAIN_ASSAULT_RUNNING)
             return self._assault
         self._assault = None
         if withdrawing:
+            self._abstain(ABSTAIN_WITHDRAWING)
             return None
         if posture is Posture.DEFEND and not passive:
             # **`DEFEND` est la posture de celui qui a l'avantage du feu**, et sa
@@ -631,6 +660,7 @@ class Planner:
             # C'est ce qui distingue cette regle du detecteur d'enlisement que
             # l'ADR 0015 a mesure sous quatre formes puis supprime : celui-la
             # **ordonnait une avance**, et perdait a chaque fois.
+            self._abstain(ABSTAIN_DEFEND_WAITING)
             return None
         if any(unit.is_engaged for unit in allies):
             # **L'assaut est une manoeuvre de l'approche, pas de la melee.** Une
@@ -643,6 +673,7 @@ class Planner:
             # ce que `CONCENTRATION_WEIGHT` et `focus_bonus` font deja. Un assaut
             # deja lance, lui, se poursuit : c'est lui qui a fixe le lieu du
             # combat.
+            self._abstain(ABSTAIN_MELEE_ENGAGED)
             return None
 
         carte = split_sectors(state, front, allies, mobility=self._mobility)
@@ -658,6 +689,7 @@ class Planner:
                 (item for item in carte.sectors if item.index == self.forced_sector), None
             )
         if secteur is None:
+            self._abstain(ABSTAIN_NO_SECTOR)
             return None
         self._assault = commit(
             secteur,
@@ -667,7 +699,18 @@ class Planner:
             mobility=self._mobility,
             slide=self.sliding_window,
         )
+        if self._assault is None:
+            self._abstain(ABSTAIN_COMMIT_FAILED)
         return self._assault
+
+    def _abstain(self, code: str) -> None:
+        """Note un renoncement, la ou il a lieu."""
+        self._abstentions[code] = self._abstentions.get(code, 0) + 1
+
+    @property
+    def abstentions(self) -> dict[str, int]:
+        """Motifs de renoncement du dernier plan, comptes."""
+        return dict(self._abstentions)
 
     def _fighting_withdrawal(
         self,

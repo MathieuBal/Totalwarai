@@ -53,6 +53,57 @@ MIN_REORDER_DISTANCE = 20.0
 
 
 @dataclass(frozen=True, slots=True)
+class Acknowledgement:
+    """Ce que le jeu a fait de ce que Python lui a envoye.
+
+    **Quatre etats, la ou il n'y en avait qu'un.** L'accuse absent et l'accuse
+    accepte rendaient tous deux un tuple de refus vide : un ordre jamais vu par le
+    Lua etait indiscernable d'un ordre execute. Un instrument qui ne distingue pas
+    « envoye et accepte » de « envoye et jamais vu » ne peut pas repondre a
+    LIVE-001.
+    """
+
+    sent_by_python: int = 0
+    acknowledged_by_lua: int = 0
+    refused_by_lua: int = 0
+    #: Le jeu n'a rien accuse dans le delai imparti.
+    ack_timeout: bool = False
+
+    def to_dict(self) -> dict[str, int | bool]:
+        return {
+            "sent_by_python": self.sent_by_python,
+            "acknowledged_by_lua": self.acknowledged_by_lua,
+            "refused_by_lua": self.refused_by_lua,
+            "ack_timeout": self.ack_timeout,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Heartbeat:
+    """La boucle Python tournait-elle, et a quel rythme ?
+
+    **Le `script_log` prouve que le Lua publiait ; il ne prouve pas que Python
+    lisait.** Une boucle suspendue puis rattrapant son arriere produirait
+    exactement le meme silence de commandes. Les deux horloges le separent : en
+    cas de blocage, les `game_time_ms` paraitront continus tandis que le
+    `wall_clock` revelera le trou.
+    """
+
+    wall_clock: float = 0.0
+    game_time_ms: float = 0.0
+    state_sequence: int = 0
+    decision_due: bool = False
+
+    def to_dict(self) -> dict[str, float | int | bool]:
+        return {
+            "wall_clock": round(self.wall_clock, 3),
+            "game_time_ms": self.game_time_ms,
+            "state_sequence": self.state_sequence,
+            "decision_due": self.decision_due,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class LiveStep:
     """Compte rendu d'un tour de boucle, lisible tel quel par l'operateur."""
 
@@ -89,6 +140,12 @@ class LiveStep:
     no_command_stage: str | None = None
     #: Comptes par etage, repris du tour de l'agent puis completes par le pont.
     stages: dict[str, int] = field(default_factory=dict)
+    #: Ce que le jeu a accuse de ce qui lui a ete envoye.
+    acknowledgement: Acknowledgement = field(default_factory=Acknowledgement)
+    #: Preuve que la boucle Python a tourne, a deux horloges.
+    heartbeat: Heartbeat = field(default_factory=Heartbeat)
+    #: Motifs de renoncement du planificateur, quand il n'a rien propose.
+    planner_reasons: tuple[tuple[str, int], ...] = ()
     #: Ce que notre agent aurait decide, sans que rien ne parte vers le jeu.
     shadow: ShadowDecision | None = None
     #: Ordres que l'agent a tus parce qu'il les jugeait deja en cours.
@@ -242,14 +299,31 @@ class LiveSession:
     _last_destination: dict[str, Vector3] = field(default_factory=dict)
 
     def step(self) -> LiveStep:
-        """Un tour complet. Ne leve pas : un tour rate ne doit pas tout arreter."""
+        """Un tour complet. Ne leve pas : un tour rate ne doit pas tout arreter.
+
+        **Chaque tour laisse un battement, meme quand il ne fait rien.** Sans lui,
+        « le Lua publiait et Python ne consommait pas » et « Python consommait et
+        n'avait rien a dire » produisent le meme journal. Les deux horloges les
+        separent : une boucle bloquee puis rattrapant son arriere montre des
+        `game_time_ms` continus et un `wall_clock` troue.
+        """
+        horloge = time.monotonic()
         states = self.bridge.read_battle_states()
         if not states:
-            return LiveStep()
+            return LiveStep(heartbeat=Heartbeat(wall_clock=horloge))
         # On decide sur le dernier etat, mais on rend compte de **tous** ceux
         # publies depuis le tour precedent : voir coute moins cher qu'agir, et
         # un etat jete ne se retrouve jamais.
-        return replace(self._decide(states[-1]), observed=tuple(states))
+        etape = replace(self._decide(states[-1]), observed=tuple(states))
+        return replace(
+            etape,
+            heartbeat=Heartbeat(
+                wall_clock=horloge,
+                game_time_ms=states[-1].game_time_ms,
+                state_sequence=states[-1].sequence,
+                decision_due=etape.heartbeat.decision_due,
+            ),
+        )
 
     def _decide(self, state: ProbeBattleState) -> LiveStep:
         """Le tour proprement dit, sur l'etat le plus recent."""
@@ -283,13 +357,10 @@ class LiveSession:
         prises = tuple(decision.explain() for decision in tour.decisions)
         refusees = tuple(decision.explain() for decision in tour.blocked)
 
+        battement = Heartbeat(decision_due=tour.decision_due)
+        motifs = tour.planner_reasons
         etages = {
-            "proposed": tour.proposed,
-            "below_confidence": tour.below_confidence,
-            "safety_blocked": tour.safety_blocked,
-            "duplicates": tour.duplicates,
-            "throttled": tour.throttled,
-            "emitted_by_agent": tour.emitted,
+            **tour.counters,
             "untranslated": len(translation.untranslated),
             "micro_dropped": traduits - translation.order_count,
         }
@@ -314,6 +385,8 @@ class LiveSession:
                 suppressed=tour.suppressed,
                 no_command_stage=etage,
                 stages=etages,
+                heartbeat=battement,
+                planner_reasons=motifs,
             )
 
         # Un seul message : deux commandes successives se perdraient, le
@@ -324,6 +397,7 @@ class LiveSession:
             translation.halts,
             release_after_ms=self.release_after_ms,
         )
+        accuse, refus = self._acknowledgement(commande.sequence, translation.order_count)
         return LiveStep(
             state=state,
             decisions=prises,
@@ -331,8 +405,38 @@ class LiveSession:
             translation=translation,
             sent=translation.order_count,
             suppressed=tour.suppressed,
-            refused=self._refusals(commande.sequence),
+            refused=refus,
+            acknowledgement=accuse,
             stages=etages,
+            heartbeat=battement,
+            planner_reasons=motifs,
+        )
+
+    def _acknowledgement(
+        self, sequence: int, sent: int
+    ) -> tuple[Acknowledgement, tuple[tuple[str, str], ...]]:
+        """Ce que le jeu a **reellement** accuse, et ce qu'il a refuse.
+
+        **Un accuse absent valait un accuse accepte.** Le code rendait le meme
+        tuple vide dans les deux cas, si bien que « Python a ecrit quatre ordres »
+        et « le Lua n'a jamais vu le fichier » se lisaient pareil — et
+        l'instrument annoncait que tout allait bien. Pour LIVE-001, c'est
+        precisement le genre de silence qu'il faut voir.
+        """
+        ack = self.bridge.wait_for_ack(sequence, timeout=self.ack_timeout, sleep=self.wait)
+        if ack is None:
+            return Acknowledgement(sent_by_python=sent, ack_timeout=True), ()
+        if ack.accepted and not ack.error:
+            return Acknowledgement(sent_by_python=sent, acknowledged_by_lua=sent), ()
+        motif = ack.error or ack.status.value
+        refus = tuple((unit_id, motif) for unit_id in ack.refused_ids) or (("", motif),)
+        return (
+            Acknowledgement(
+                sent_by_python=sent,
+                acknowledged_by_lua=sent - len(refus),
+                refused_by_lua=len(refus),
+            ),
+            refus,
         )
 
     def _refusals(self, sequence: int) -> tuple[tuple[str, str], ...]:

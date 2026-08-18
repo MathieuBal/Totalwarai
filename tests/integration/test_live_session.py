@@ -1044,3 +1044,32 @@ def test_un_tour_qui_commande_ne_porte_aucun_etage(session: LiveSession) -> None
     etape = session.step()
     assert etape.sent
     assert etape.no_command_stage is None
+
+
+def test_un_ordre_jamais_acquitte_ne_passe_pas_pour_un_succes(
+    session: LiveSession, bataille: Probe
+) -> None:
+    """`ACK absent` valait `ACK accepte`.
+
+    Le code rendait le meme tuple vide dans les deux cas, si bien que « Python a
+    ecrit quatre ordres » et « le Lua n'a jamais vu le fichier » se lisaient
+    pareil — et l'instrument annoncait que tout allait bien.
+    """
+    session.ack_timeout = 0.0  # le jeu n'aura pas le temps de repondre
+    etape = session.step()
+    assert etape.sent, "Python a bien ecrit des ordres"
+    assert etape.acknowledgement.sent_by_python == etape.sent
+    assert etape.acknowledgement.ack_timeout is True
+    assert etape.acknowledgement.acknowledged_by_lua == 0
+
+
+def test_chaque_tour_laisse_un_battement_a_deux_horloges(session: LiveSession) -> None:
+    """Le `script_log` prouve que le Lua publiait, pas que Python lisait.
+
+    Une boucle suspendue puis rattrapant son arriere produirait exactement le
+    meme silence de commandes ; seule l'horloge murale les separe.
+    """
+    etape = session.step()
+    assert etape.heartbeat.wall_clock > 0.0
+    assert etape.heartbeat.state_sequence > 0
+    assert etape.heartbeat.decision_due is True

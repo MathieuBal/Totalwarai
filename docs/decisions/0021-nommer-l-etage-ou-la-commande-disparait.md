@@ -38,15 +38,24 @@ tour désignait donc un coupable dans les scénarios où tout va bien.
 C'est la même leçon que pour la cadence : un mécanisme nominal qui domine les
 comptes n'est pas une cause.
 
-### Le silence est côté Python, et les états arrivaient
+### Le Lua publiait — et c'est tout ce que ce journal prouve
 
 Pendant les 364 secondes, le journal du jeu montre :
 
 * les états publiés **à 2 Hz sans interruption** (occurrences 600 → 620 → 640) ;
 * les séquences de commande **consécutives** : 192 à 312,1 s, puis 193 à 676,1 s.
 
-Python a donc reçu environ sept cents états et n'a produit aucune commande. Ni le
-pont ni la sonde ne se sont arrêtés.
+> **Correction.** Une première version de cette ADR concluait « Python a donc
+> reçu environ sept cents états ». C'est une affirmation que ce journal ne porte
+> pas : il prouve que **Lua a continué à publier les états**, pas que Python les
+> consommait en temps réel. Une boucle suspendue puis rattrapant son arriéré
+> produirait exactement le même journal côté jeu — et exactement le même silence
+> de commandes.
+
+La chaîne à instrumenter commence donc **un étage plus tôt** que je ne l'avais
+écrit, par `PYTHON_LOOP`, et il faut deux horloges pour trancher : en cas de
+blocage, les `game_time_ms` paraîtront continus tandis que le `wall_clock`
+révélera le trou.
 
 ## Ce que la mesure a trouvé
 
@@ -96,6 +105,33 @@ Trois précautions, chacune tirée d'un défaut de cette session :
   commandes émises, ce sont les raisons pour lesquelles il n'y en a eu aucune ;
 * **`no_command_stage` reste `None` quand une commande est partie**, sinon le
   champ se remplirait à chaque tour et ne désignerait plus rien.
+
+## La chaîne, une fois complète
+
+```
+PYTHON_LOOP -> PLANNER -> CONFIDENCE -> SAFETY -> DUPLICATES -> THROTTLE
+            -> TRANSLATION -> MICRO_MOVE -> PUBLISH -> ACK
+```
+
+Quatre précautions supplémentaires, chacune fermant une façon de mentir :
+
+* **la sécurité n'est accusée que si elle a vidé le tuyau.** `SafetyEngine.filter`
+  peut bloquer une charge suicidaire *et* produire un `HOLD_POSITION` à la place :
+  compter les refus faisait lire `stage=safety` alors qu'elle avait fourni cinq
+  ordres utilisables, tués plus loin. Seule la **sortie** le dit ;
+* **aucun étage par défaut.** Quand les compteurs ne correspondent à aucun chemin
+  connu, le verdict est `INVARIANT_VIOLATION`. « Je ne comprends pas, ce doit
+  être la sécurité » envoie chercher au mauvais endroit ;
+* **un accusé absent n'est pas un accusé accepté.** Les deux rendaient un tuple
+  de refus vide : un ordre jamais vu par le Lua était indiscernable d'un ordre
+  exécuté ;
+* **le diagnostic est écrit dans le journal**, pas seulement affiché. Il ne
+  dépend plus d'un terminal resté ouvert.
+
+Et les branches de renoncement du planificateur publient désormais leur code —
+`WITHDRAWING`, `DEFEND_WAITING`, `MELEE_ALREADY_ENGAGED`, `NO_FEASIBLE_SECTOR`,
+`COMMIT_FAILED`, `ASSAULT_ALREADY_RUNNING` — **produit là où la branche
+renonce**, jamais reconstruit après coup. Un motif non nommé reste `UNKNOWN`.
 
 ## Ce que cela ne fait pas
 

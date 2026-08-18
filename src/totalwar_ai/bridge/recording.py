@@ -178,6 +178,14 @@ class BattleRecorder:
             "enemy_strength": _strength(state, "enemies"),
         }
         if step is not None:
+            # **L'horloge murale va sur *chaque* entree, pas seulement sur les
+            # tours de decision.** C'est elle qui separe « le Lua publiait et
+            # Python ne consommait pas » de « Python consommait et n'avait rien a
+            # dire » : une boucle bloquee puis rattrapant son arriere montre des
+            # `game_time_ms` continus et un `wall_clock` troue. Le `script_log`
+            # seul ne pouvait pas trancher.
+            entry["wall_clock"] = step.heartbeat.wall_clock
+        if step is not None:
             entry.update(
                 {
                     # Marque le tour ou l'on a decide. Les autres entrees sont
@@ -199,6 +207,18 @@ class BattleRecorder:
                         {"action": action.value, "reason": reason}
                         for action, reason in step.translation.untranslated
                     ],
+                    # **LIVE-001 : le diagnostic ne doit pas dependre d'un
+                    # terminal reste ouvert.** Ces champs s'affichaient a l'ecran
+                    # sans etre ecrits nulle part : une session parfaite, jouee
+                    # exprès pour eux, les aurait perdus a la fermeture de la
+                    # fenetre.
+                    "decision_due": step.heartbeat.decision_due,
+                    "no_command_stage": step.no_command_stage,
+                    "stages": dict(step.stages),
+                    "suppressed": step.suppressed,
+                    "sent": step.sent,
+                    "acknowledgement": step.acknowledgement.to_dict(),
+                    "planner_reasons": dict(step.planner_reasons),
                 }
             )
             # Ce que nous aurions fait, l'IA du moteur menant la bataille. C'est
