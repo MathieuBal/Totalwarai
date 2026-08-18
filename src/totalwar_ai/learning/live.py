@@ -48,15 +48,44 @@ from itertools import pairwise
 #: Prefixe appose par `PROBE:log`.
 PREFIX = "[totalwar_ai]"
 
-#: Duree minimale d'une fenetre sans ordre pour qu'elle soit rapportee, en secondes.
+#: Duree minimale d'une fenetre sans commande pour qu'elle soit rapportee.
 #:
 #: Vingt secondes : au-dela, ce n'est plus le rythme normal d'un agent qui
 #: replanifie toutes les dix secondes, c'est une abstention.
 SILENCE_SECONDS = 20.0
 
+#: Phase a partir de laquelle un ordre produit reellement un effet.
+#:
+#: **Avant elle, le moteur acquitte sans rien faire.** Notre propre Lua le
+#: documente : « un ordre emis avant `Deployed` est accepte par le moteur mais ne
+#: produit aucun deplacement — constate en jeu, unite immobile 33 secondes durant
+#: apres un ordre acquitte ».
+ACTIVE_PHASE = "Deployed"
+
+#: Phase a partir de laquelle on n'attend plus rien du general.
+#:
+#: `VictoryCountdown` et non `Complete` : quand le decompte commence, le combat
+#: est deja decide, et un silence n'y est plus une abstention.
+CLOSING_PHASE = "VictoryCountdown"
+
+#: Phases de repli, si le decompte n'apparait pas.
+FALLBACK_CLOSING = ("Complete",)
+
 #: Temps de bataille, en millisecondes, tel que le jeu le prefixe a chaque ligne.
 _CLOCK = re.compile(r"<(?P<ms>\d+)ms>")
 _ACK = re.compile(r"ACK\s+(?P<payload>\{.*\})\s*$")
+#: Changement de phase **annonce**, par la sonde ou par le moteur.
+#:
+#: **Jamais le heartbeat `BATTLE phase ...`.** Celui-la ne journalise que les
+#: occurrences 1, 2, 3 puis une sur vingt : il est deliberement epars, donc
+#: structurellement inapte a borner quoi que ce soit. Sur le journal du 18/08, le
+#: premier heartbeat `Deployed` arrive a 11,1 s alors que la phase a change a
+#: **8,4 s** — et cette confusion a fait compter trois lots pre-`Deployed` la ou
+#: il y en avait deux.
+#:
+#: *Le premier evenement qui produit une valeur n'est pas l'instant ou l'etat est
+#: devenu vrai.*
+_PHASE = re.compile(r"(?:phase : |Battle is now entering phase: )(?P<phase>\w+)")
 _MANOEUVRE = re.compile(
     r"manoeuvre : (?P<moves>\d+) deplacement\(s\), (?P<attacks>\d+) attaque\(s\), "
     r"(?P<halts>\d+) arret\(s\)"
@@ -92,8 +121,14 @@ class Batch:
 
 
 @dataclass(frozen=True, slots=True)
-class Silence:
-    """Une fenetre pendant laquelle aucune commande n'a ete emise."""
+class CommandSilence:
+    """Une fenetre pendant laquelle **aucune commande n'a ete emise**.
+
+    Le nom porte exactement ce que le journal prouve. Il ne dit pas que l'agent
+    ne faisait rien : un ordre anterieur pouvait encore courir, le planificateur
+    pouvait deliberer, la securite pouvait tout bloquer. `NO_EFFECTIVE_CONTROL`
+    demandera la telemetrie de l'agent ; `NO_COMMAND` se lit ici.
+    """
 
     start: float
     end: float
@@ -119,7 +154,7 @@ class Silence:
 
     def explain(self) -> str:
         ligne = (
-            f"  NO_ACTION t={self.start:.1f}..{self.end:.1f}s "
+            f"  NO_COMMAND t={self.start:.1f}..{self.end:.1f}s "
             f"({self.duration:.1f}s) reason={self.reason or 'inconnu'}"
         )
         perdues = self.allies_lost
@@ -132,10 +167,19 @@ class Silence:
 class LiveReading:
     """Ce qu'une bataille reelle a produit comme commandes, et comme silences."""
 
+    #: Lots emis **apres** `Deployed` : les seuls qui aient pu produire un effet.
     batches: list[Batch] = field(default_factory=list)
-    silences: list[Silence] = field(default_factory=list)
+    #: Lots emis **avant** `Deployed` : acquittes par le moteur, sans effet.
+    #:
+    #: Les mêler aux autres ferait croire a une activite qui n'a rien produit.
+    #: Sur le journal du 18/08 : 2 lots, 13 ordres, entre 3,1 s et 4,6 s.
+    pre_deployed: list[Batch] = field(default_factory=list)
+    silences: list[CommandSilence] = field(default_factory=list)
     #: Effectifs releves, par instant : (temps, allies, ennemis).
     census: list[tuple[float, int, int]] = field(default_factory=list)
+    #: Bornes de la periode ou l'on attend des ordres, lues sur les **evenements**.
+    active_from: float | None = None
+    closing_at: float | None = None
 
     @property
     def launched(self) -> int:
@@ -159,7 +203,7 @@ class LiveReading:
         return next((item.at for item in self.batches if item.attacks > 0), None)
 
     @property
-    def longest_no_action_window(self) -> float:
+    def longest_no_command_window(self) -> float:
         return max((item.duration for item in self.silences), default=0.0)
 
     def _counts_at(self, instant: float) -> tuple[int, int] | None:
@@ -190,7 +234,7 @@ class LiveReading:
         if not self.batches:
             return "  Aucun lot de commandes dans ce journal : l'agent n'a jamais pilote."
         lignes = [
-            f"  {len(self.batches)} lot(s) de commandes, "
+            f"  {len(self.batches)} lot(s) de commandes effectifs, "
             f"{self.requested} action(s) demandee(s), "
             f"{self.launched} lancee(s), {self.refused} refusee(s)",
             "  premiere attaque : "
@@ -199,14 +243,30 @@ class LiveReading:
                 if self.time_to_first_attack is not None
                 else "**jamais**"
             ),
-            f"  plus longue fenetre sans ordre : {self.longest_no_action_window:.1f}s",
+            f"  plus longue fenetre sans commande : {self.longest_no_command_window:.1f}s",
         ]
         pertes = self.losses_before_first_attack
         adverses = self.enemy_losses_before_first_attack
         if pertes is not None:
+            # **« Unites disparues », et non « pertes ».** Ce compte suit les
+            # unites sorties du releve `BATTLE` ; il ne dit rien des hommes tues
+            # ni de la force effective perdue. La revision 16 separera les trois.
             lignes.append(
-                f"  pertes avant la premiere attaque : {pertes} alliee(s), {adverses} ennemie(s)"
+                f"  unites disparues avant la premiere attaque : {pertes} alliee(s), "
+                f"{adverses} ennemie(s)"
             )
+        if self.active_from is not None:
+            fin = f"{self.closing_at:.1f}s" if self.closing_at is not None else "?"
+            lignes.append(f"  fenetre active : {self.active_from:.1f}s -> {fin}")
+        if self.pre_deployed:
+            lignes += [
+                "",
+                f"  **PRE_DEPLOYED_COMMAND : {len(self.pre_deployed)} lot(s), "
+                f"{sum(item.launched for item in self.pre_deployed)} ordre(s)** avant `Deployed`.",
+                "  Le moteur les acquitte et ne les execute pas : ils ne comptent pas",
+                "  parmi les commandes effectives. Ils occupent tout de meme une",
+                "  signature d'anti-repetition pendant `order_ttl`.",
+            ]
         if self.refused:
             lignes.append("")
             lignes += [
@@ -215,7 +275,7 @@ class LiveReading:
                 if item.refused and item.error
             ]
         if self.silences:
-            lignes += ["", "--- fenetres sans ordre ---", ""]
+            lignes += ["", "--- fenetres sans commande ---", ""]
             lignes += [item.explain() for item in self.silences]
             if any(item.reason is None for item in self.silences):
                 lignes += [
@@ -228,23 +288,39 @@ class LiveReading:
 
 
 def read(lines: Iterable[str], *, silence_seconds: float = SILENCE_SECONDS) -> LiveReading:
-    """Lit un journal de bataille et rend les lots, les silences et les effectifs.
+    """Lit un journal de bataille : lots, silences, effectifs, bornes de phase.
 
-    **Deduplication par `sequence`.** Un lot journalise deux fois — son `ACK` et
-    sa ligne `manoeuvre` — ne compte qu'une fois : l'`ACK` est la source
-    canonique, la ligne `manoeuvre` n'apporte que la ventilation.
+    Cinq contrats, chacun tire d'un defaut mesure :
+
+    1. **une sequence, un lot** — la deduplication porte sur l'insertion, pas
+       seulement sur le dictionnaire ;
+    2. **un lot est un `ACK` qui compte des ordres** — tout autre `accepted` n'en
+       est pas un et ne fractionne aucun silence ;
+    3. le fait mesure est l'absence de **commande**, jamais l'absence d'action ;
+    4. **les bornes viennent des evenements de phase**, jamais des heartbeats ;
+    5. les ordres anterieurs a `Deployed` sont comptes **a part** : le moteur les
+       acquitte sans rien faire.
     """
     lots: dict[int, dict[str, object]] = {}
     ordre: list[int] = []
     dernier: int | None = None
     releves: list[tuple[float, int, int]] = []
+    phases: list[tuple[float, str]] = []
 
     for brute in lines:
         ligne = brute.rstrip()
-        if PREFIX not in ligne:
-            continue
         horloge = _CLOCK.search(ligne)
         instant = int(horloge.group("ms")) / 1000.0 if horloge is not None else 0.0
+
+        # **Avant le filtre de prefixe.** L'annonce de phase du moteur — « Battle
+        # is now entering phase: Deployed » — ne porte pas notre marque, et c'est
+        # pourtant la source la plus sure de l'instant du changement.
+        if (found := _PHASE.search(ligne)) is not None:
+            phases.append((instant, found.group("phase")))
+            continue
+
+        if PREFIX not in ligne:
+            continue
         corps = ligne.split(PREFIX, 1)[1].strip()
 
         if (found := _BATTLE.search(corps)) is not None:
@@ -257,15 +333,27 @@ def read(lines: Iterable[str], *, silence_seconds: float = SILENCE_SECONDS) -> L
             charge = _payload(found.group("payload"))
             if charge is None or charge.get("status") != "accepted":
                 continue
-            sequence = _entier(charge.get("sequence"))
             detail = charge.get("detail")
             note = str(detail.get("note", "")) if isinstance(detail, dict) else ""
             comptes = _COUNTS.search(note)
+            if comptes is None:
+                # **Un accuse qui ne compte aucun ordre n'est pas un lot de
+                # commandes.** Un futur `DELEGATE accepted` en creerait un faux,
+                # qui couperait une fenetre de silence en deux et raccourcirait
+                # `longest_no_command_window` sans que rien ne le dise.
+                continue
+            sequence = _entier(charge.get("sequence"))
+            if sequence in lots:
+                # Une sequence, un lot — meme si le meme accuse est journalise
+                # deux fois. Le dictionnaire seul ne suffisait pas : `ordre`
+                # recevait deux fois la cle et reconstruisait deux `Batch`.
+                dernier = sequence
+                continue
             lots[sequence] = {
                 "sequence": sequence,
                 "at": instant,
-                "launched": int(comptes.group("launched")) if comptes else 0,
-                "refused": int(comptes.group("refused")) if comptes else 0,
+                "launched": int(comptes.group("launched")),
+                "refused": int(comptes.group("refused")),
                 "error": charge.get("error") or None,
             }
             ordre.append(sequence)
@@ -282,11 +370,42 @@ def read(lines: Iterable[str], *, silence_seconds: float = SILENCE_SECONDS) -> L
             )
 
     batches = [Batch(**lots[sequence]) for sequence in ordre]  # type: ignore[arg-type]
+    debut_actif = _phase_at(phases, ACTIVE_PHASE)
+    fin_active = _closing_at(phases, releves, batches)
+    effectifs = [item for item in batches if debut_actif is None or item.at >= debut_actif]
     return LiveReading(
-        batches=batches,
-        silences=_silences(batches, releves, silence_seconds),
+        batches=effectifs,
+        pre_deployed=[
+            item for item in batches if debut_actif is not None and item.at < debut_actif
+        ],
+        silences=_silences(effectifs, releves, silence_seconds, debut_actif, fin_active),
         census=releves,
+        active_from=debut_actif,
+        closing_at=fin_active,
     )
+
+
+def _phase_at(phases: Sequence[tuple[float, str]], voulue: str) -> float | None:
+    """Instant du **changement** vers cette phase, jamais celui d'un heartbeat."""
+    return next((instant for instant, nom in phases if nom == voulue), None)
+
+
+def _closing_at(
+    phases: Sequence[tuple[float, str]],
+    releves: Sequence[tuple[float, int, int]],
+    batches: Sequence[Batch],
+) -> float | None:
+    """Fin de la periode ou l'on attend encore des ordres.
+
+    `VictoryCountdown` d'abord : au-dela, le combat est decide. `Complete` sert de
+    repli, et a defaut le dernier instant observe — sans quoi une bataille dont la
+    fin n'est pas journalisee perdrait sa fenetre de silence terminale.
+    """
+    for nom in (CLOSING_PHASE, *FALLBACK_CLOSING):
+        if (instant := _phase_at(phases, nom)) is not None:
+            return instant
+    derniers = [item[0] for item in releves] + [item.at for item in batches]
+    return max(derniers) if derniers else None
 
 
 def _entier(valeur: object, defaut: int = -1) -> int:
@@ -305,18 +424,33 @@ def _silences(
     batches: Sequence[Batch],
     releves: Sequence[tuple[float, int, int]],
     seuil: float,
-) -> list[Silence]:
-    """Intervalles entre deux lots depassant le seuil, avec leur contexte."""
-    fenetres: list[Silence] = []
-    for precedent, suivant in pairwise(batches):
-        if suivant.at - precedent.at < seuil:
+    active_from: float | None,
+    closing_at: float | None,
+) -> list[CommandSilence]:
+    """Fenetres sans commande, **bornes de bataille comprises**.
+
+    `pairwise` seul ne voit que les creux entre deux commandes. Un agent qui joue
+    deux minutes puis se tait jusqu'a la defaite n'aurait jamais de « commande
+    suivante », et sa paralysie ne serait comptee nulle part : la mesure
+    afficherait `longest_no_command_window = 0` sur la bataille la plus muette.
+    """
+    bornes: list[tuple[float, float]] = []
+    if active_from is not None and batches:
+        bornes.append((active_from, batches[0].at))
+    bornes += [(precedent.at, suivant.at) for precedent, suivant in pairwise(batches)]
+    if closing_at is not None and batches:
+        bornes.append((batches[-1].at, closing_at))
+
+    fenetres: list[CommandSilence] = []
+    for depart, arrivee in bornes:
+        if arrivee - depart < seuil:
             continue
-        avant = _counts_at(releves, precedent.at)
-        apres = _counts_at(releves, suivant.at)
+        avant = _counts_at(releves, depart)
+        apres = _counts_at(releves, arrivee)
         fenetres.append(
-            Silence(
-                start=precedent.at,
-                end=suivant.at,
+            CommandSilence(
+                start=depart,
+                end=arrivee,
                 allies_before=avant[0] if avant else None,
                 allies_after=apres[0] if apres else None,
                 enemies_before=avant[1] if avant else None,

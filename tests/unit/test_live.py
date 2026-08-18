@@ -88,7 +88,7 @@ def test_une_fenetre_sans_ordre_est_rapportee_avec_son_contexte() -> None:
     assert fenetre.allies_before == 12
     assert fenetre.allies_after == 9
     assert fenetre.allies_lost == 3
-    assert lecture.longest_no_action_window == 399.0
+    assert lecture.longest_no_command_window == 399.0
 
 
 def test_un_silence_sans_motif_le_dit_au_lieu_de_l_inventer() -> None:
@@ -131,3 +131,101 @@ def test_sans_aucune_attaque_le_delai_est_absent_et_non_nul() -> None:
 def test_un_journal_sans_commande_le_dit() -> None:
     lecture = read(["<0.0s><1000ms> [totalwar_ai] sonde active - protocole 0.1.0"])
     assert "n'a jamais pilote" in lecture.render()
+
+
+DEPLOYED = "<44.0s><8400ms> \tBattle is now entering phase: Deployed"
+SONDE_DEPLOYED = "<44.0s><8400ms> [totalwar_ai] phase : Deployed"
+COUNTDOWN = "<99.0s><900000ms> \tBattle is now entering phase: VictoryCountdown"
+
+
+def test_deux_accuses_de_meme_sequence_ne_font_qu_un_lot() -> None:
+    """Le dictionnaire seul ne suffisait pas.
+
+    `lots` etait bien indexe par `sequence`, mais `ordre.append()` etait
+    inconditionnel : deux `ACK accepted` de meme sequence donnaient **une** entree
+    et **deux** `Batch`. Le contrat annonce n'etait donc pas tenu.
+    """
+    lecture = read([DEPLOYED, _ack(200, ms=10000), _ack(200, ms=10000)])
+    assert len(lecture.batches) == 1
+    assert lecture.launched == 2, "le lot ne doit pas etre compte deux fois"
+
+
+def test_un_accuse_sans_compteur_d_ordres_n_est_pas_un_lot() -> None:
+    """Un accuse de protocole n'est pas une commande.
+
+    Sans ce contrat, un futur `DELEGATE accepted` creerait un faux lot, couperait
+    une fenetre de silence en deux, et raccourcirait
+    `longest_no_command_window` sans que rien ne le signale.
+    """
+    protocole = (
+        '<50.0s><100000ms> [totalwar_ai] ACK {"protocol_version":"0.1.0",'
+        '"type":"action_result","sequence":9,"status":"accepted","error":null,'
+        '"detail":{"note":"delegation acceptee"}}'
+    )
+    lecture = read([DEPLOYED, _ack(1, ms=10000), protocole, _ack(2, ms=200000)])
+    assert len(lecture.batches) == 2, "l'accuse de protocole ne cree pas de lot"
+    assert lecture.longest_no_command_window == 190.0, "et ne coupe pas le silence"
+
+
+def test_la_borne_vient_de_l_evenement_de_phase_pas_du_heartbeat() -> None:
+    """Le defaut qui a fait compter trois lots pre-`Deployed` au lieu de deux.
+
+    `log_occasionally` ne journalise que les occurrences 1, 2, 3 puis une sur
+    vingt : le heartbeat `BATTLE phase Deployed` est deliberement epars. Sur le
+    journal du 18/08 il arrive a 11,1 s alors que la phase a change a **8,4 s**.
+
+    *Le premier evenement qui produit une valeur n'est pas l'instant ou l'etat est
+    devenu vrai.*
+    """
+    heartbeat = (
+        "<57.6s><11100ms> [totalwar_ai] BATTLE phase Deployed : 12 allies, 10 ennemis "
+        "(occurrence 20)"
+    )
+    lecture = read([SONDE_DEPLOYED, _ack(1, ms=3100), _ack(2, ms=10600), heartbeat])
+    assert lecture.active_from == 8.4, "la borne est celle du changement de phase"
+    assert len(lecture.pre_deployed) == 1, "seul le lot de 3,1 s precede Deployed"
+    assert len(lecture.batches) == 1, "celui de 10,6 s est deja effectif"
+
+
+def test_les_ordres_avant_deployed_sont_comptes_a_part() -> None:
+    """Le moteur les acquitte et ne les execute pas.
+
+    Notre propre Lua le documente : « un ordre emis avant `Deployed` est accepte
+    par le moteur mais ne produit aucun deplacement ». Les mêler aux commandes
+    reelles fait croire a une activite qui n'a rien produit.
+    """
+    lecture = read([DEPLOYED, _ack(1, launched=12, ms=3100), _ack(2, launched=3, ms=10600)])
+    assert [item.sequence for item in lecture.pre_deployed] == [1]
+    assert lecture.launched == 3, "seuls les ordres effectifs comptent"
+    assert "PRE_DEPLOYED_COMMAND" in lecture.render()
+
+
+def test_une_paralysie_finale_est_vue_malgre_l_absence_de_commande_suivante() -> None:
+    """`pairwise` seul ne voit que les creux **entre** deux commandes.
+
+    Un agent qui joue puis se tait jusqu'a la defaite n'a jamais de « commande
+    suivante » : sa paralysie n'etait comptee nulle part, et la bataille la plus
+    muette affichait `longest_no_command_window = 0`.
+    """
+    lecture = read([DEPLOYED, _ack(1, ms=10000), COUNTDOWN])
+    assert lecture.closing_at == 900.0
+    assert lecture.longest_no_command_window == 890.0
+    assert lecture.silences[0].end == 900.0
+
+
+def test_une_paralysie_initiale_est_vue_elle_aussi() -> None:
+    """Entre `Deployed` et la premiere commande, l'agent est deja attendu."""
+    lecture = read([DEPLOYED, _ack(1, ms=300000)])
+    assert lecture.silences[0].start == 8.4
+    assert lecture.longest_no_command_window == 291.6
+
+
+def test_le_decompte_de_victoire_borne_la_fenetre_avant_la_fin_reelle() -> None:
+    """Apres `VictoryCountdown`, le combat est decide.
+
+    Un silence a ce moment-la n'est plus une abstention, et le compter ferait
+    passer toutes les batailles gagnees pour des paralysies.
+    """
+    complete = "<99.9s><1000000ms> \tBattle is now entering phase: Complete"
+    lecture = read([DEPLOYED, _ack(1, ms=10000), COUNTDOWN, complete])
+    assert lecture.closing_at == 900.0, "le decompte prime sur la fin reelle"
