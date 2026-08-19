@@ -11,6 +11,10 @@ import pytest
 
 from totalwar_ai.agent.sectors import (
     ASSAULT_RATIO,
+    Assignment,
+    Manoeuvre,
+    ManoeuvrePhase,
+    ManoeuvreRole,
     commit,
     split_sectors,
 )
@@ -207,3 +211,132 @@ def test_le_rapport_annonce_est_celui_qui_sera_livre(make_unit, make_battle) -> 
 
     engagee = sum(unite.effective_strength for unite in allies if unite.id in set(assaut.attackers))
     assert assaut.ratio == pytest.approx(engagee / secteur.cost)
+
+
+# --- la manoeuvre : des roles, une phase, une readiness ----------------------
+
+
+def test_les_unites_rapides_flanquent_et_les_autres_portent_le_choc(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Le planificateur le faisait deja ; la manoeuvre le nomme.
+
+    `_command_cavalry` emet un `FLANK` la ou `_command_front_line` emet un
+    `ATTACK_TARGET`, mais nulle part ce partage n'etait ecrit. Sans nom, il ne
+    pouvait pas etre retenu jusqu'au contact.
+    """
+    ennemis = _ligne(make_unit, Side.ENEMY, "e", (0.0, 15.0), 200.0)
+    fantassins = _ligne(make_unit, Side.ALLY, "a", (0.0, 15.0, 30.0), 120.0)
+    cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=45.0, z=120.0)
+    allies = [*fantassins, cavalier]
+    etat = make_battle([*allies, *ennemis])
+
+    carte = split_sectors(etat, FRONT, allies)
+    manoeuvre = commit(carte.best(), etat, allies, game_time=0.0)
+
+    assert manoeuvre is not None
+    assert manoeuvre.role_of("a_cav") is ManoeuvreRole.FLANK
+    autres = {manoeuvre.role_of(unit.id) for unit in fantassins if unit.id in manoeuvre.attackers}
+    assert autres <= {ManoeuvreRole.ASSAULT}, "un fantassin ne flanque pas"
+
+
+def test_une_manoeuvre_nait_au_contact_tant_que_personne_ne_la_retient(
+    make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """Le modele arrive avant le comportement : cette etape ne change rien.
+
+    Naitre en `ASSEMBLE` retiendrait les participants alors qu'aucun code ne sait
+    encore les liberer — l'armee serait paralysee entre deux commits.
+    """
+    ennemis = _ligne(make_unit, Side.ENEMY, "e", (0.0,), 200.0)
+    allies = _ligne(make_unit, Side.ALLY, "a", (0.0, 15.0, 30.0), 120.0)
+    etat = make_battle([*allies, *ennemis])
+
+    manoeuvre = commit(split_sectors(etat, FRONT, allies).best(), etat, allies, game_time=0.0)
+
+    assert manoeuvre is not None
+    assert manoeuvre.phase is ManoeuvrePhase.CONTACT
+    assert not manoeuvre.holding
+
+
+def test_un_tireur_a_portee_est_pret_sans_jamais_toucher_l_ennemi(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """L'amendement C de LIVE-002, inscrit dans le modele.
+
+    Une manoeuvre coordonnee peut n'avoir que deux regiments en melee, les autres
+    tirant a cent vingt metres. Exiger le contact de chacun declarerait absent un
+    appui-feu parfaitement en place, et ferait attendre l'assaut apres lui.
+    """
+    cible = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=200.0)
+    poste = Vector3(0.0, 0.0, 120.0)
+    tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=120.0)
+    etat = make_battle([tireur, cible])
+
+    appui = Assignment("a_arc", ManoeuvreRole.FIRE_SUPPORT, staging=poste)
+    assert appui.ready(etat, centre=cible.position, targets=("e1",))
+
+    # Meme position, cible hors de portee : en place ne suffit pas.
+    lointaine = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=400.0)
+    assert not appui.ready(
+        make_battle([tireur, lointaine]), centre=lointaine.position, targets=("e1",)
+    )
+
+
+def test_un_flanqueur_deja_au_contact_n_est_pas_pret_mais_en_retard(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """C'est exactement le defaut du 18/08 : parti avant tout le monde."""
+    poste = Vector3(0.0, 0.0, 120.0)
+    libre = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=0.0, z=120.0)
+    engage = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=0.0, z=120.0, is_engaged=True)
+    flanc = Assignment("a_cav", ManoeuvreRole.FLANK, staging=poste)
+
+    assert flanc.ready(make_battle([libre]), centre=poste)
+    assert not flanc.ready(make_battle([engage]), centre=poste)
+
+
+def test_un_fixateur_a_trois_cents_metres_ne_fixe_rien(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Un `HOLD` loin de la zone n'est pas une fixation, c'est une absence."""
+    poste = Vector3(0.0, 0.0, 180.0)
+    loin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-120.0)
+    pres = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=170.0)
+    fixation = Assignment("a_inf", ManoeuvreRole.FIX, staging=poste)
+
+    assert not fixation.ready(make_battle([loin]), centre=poste)
+    assert fixation.ready(make_battle([pres]), centre=poste)
+
+
+def test_le_contact_attend_les_requis_de_la_manoeuvre_pas_l_armee(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Un seuil du type « huit sur douze » mesurerait la masse, pas la coordination.
+
+    `numerical_superiority` gagne ses trois batailles avec une seule unite au
+    contact : la condition doit porter sur les participants **requis de cette
+    manoeuvre**, et sur eux seuls.
+    """
+    poste = Vector3(0.0, 0.0, 120.0)
+    present = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=120.0)
+    retard = make_unit("a2", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0)
+    spectateur = make_unit("a3", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0)
+    etat = make_battle([present, retard, spectateur])
+
+    manoeuvre = Manoeuvre(
+        sector=0,
+        centre=poste,
+        attackers=("a1", "a2"),
+        targets=(),
+        ratio=2.0,
+        assignments=(
+            Assignment("a1", ManoeuvreRole.FIX, staging=poste),
+            Assignment("a2", ManoeuvreRole.FIX, staging=poste),
+        ),
+    )
+    assert manoeuvre.missing(etat) == ("a2",)
+    assert not manoeuvre.can_engage(etat), "a3 n'est pas participante : elle ne compte pas"
+
+    optionnelle = Manoeuvre(
+        sector=0,
+        centre=poste,
+        attackers=("a1", "a2"),
+        targets=(),
+        ratio=2.0,
+        assignments=(
+            Assignment("a1", ManoeuvreRole.FIX, staging=poste),
+            Assignment("a2", ManoeuvreRole.FIX, staging=poste, required=False),
+        ),
+    )
+    assert optionnelle.can_engage(etat), "un participant optionnel ne retient pas le contact"

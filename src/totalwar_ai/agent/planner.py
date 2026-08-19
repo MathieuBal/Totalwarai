@@ -24,7 +24,7 @@ from totalwar_ai.agent.explainability import Decision, decide
 from totalwar_ai.agent.grouping import GroupKind, GroupSet, TacticalGroup, build_groups
 from totalwar_ai.agent.mobility import MobilityTracker
 from totalwar_ai.agent.passivity import PassivityWatch
-from totalwar_ai.agent.sectors import Assault, commit, split_sectors
+from totalwar_ai.agent.sectors import Manoeuvre, commit, split_sectors
 from totalwar_ai.domain.actions import ActionType, AgentAction, Formation
 from totalwar_ai.domain.battle_state import BattlePhase, BattleState
 from totalwar_ai.domain.geometry import Vector3, centroid
@@ -244,7 +244,7 @@ class BattlePlan:
     created_at: float = 0.0
     power_ratio: float = 1.0
     #: Assaut de secteur en cours. `None` : personne ne concentre nulle part.
-    assault: Assault | None = None
+    assault: Manoeuvre | None = None
     #: Rapport local **a cet instant**, et nombre d'assaillants au contact.
     #:
     #: Le plan etant journalise a chaque recalcul, ces deux chiffres suffisent a
@@ -425,7 +425,7 @@ class Planner:
     #: de contournement en cent trente secondes (ADR 0013) : les forces bougent,
     #: le meilleur secteur change pour trois fois rien, et l'assaut n'aboutit
     #: jamais. Il n'est relache qu'a la rupture.
-    _assault: Assault | None = None
+    _assault: Manoeuvre | None = None
 
     #: Unites actuellement tenues en reserve, d'un plan au suivant.
     #:
@@ -593,7 +593,7 @@ class Planner:
         *,
         withdrawing: bool,
         passive: bool = False,
-    ) -> Assault | None:
+    ) -> Manoeuvre | None:
         """Y a-t-il un endroit ou l'on peut etre nettement le plus fort ?
 
         **On ne cherche pas a gagner partout, mais brutalement quelque part.** Le
