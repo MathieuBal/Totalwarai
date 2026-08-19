@@ -570,6 +570,7 @@ class Planner:
             posture,
             front,
             allies,
+            anchor=anchor,
             withdrawing=repli,
             passive=passif,
         )
@@ -597,6 +598,7 @@ class Planner:
         front: Vector3,
         allies: Sequence[UnitState],
         *,
+        anchor: Vector3,
         withdrawing: bool,
         passive: bool = False,
     ) -> Manoeuvre | None:
@@ -710,6 +712,8 @@ class Planner:
             game_time=state.game_time,
             mobility=self._mobility,
             slide=self.sliding_window,
+            anchor=anchor,
+            reserve_ids=tuple(self._reserve_ids),
         )
         if self._assault is None:
             self._abstain(ABSTAIN_COMMIT_FAILED)
@@ -733,6 +737,22 @@ class Planner:
         """
         if manoeuvre.phase is not ManoeuvrePhase.ASSEMBLE:
             return manoeuvre
+        # **Un mort ne rejoindra pas.** Attendre les quatre-vingt-dix secondes
+        # pour un participant qui n'existe plus retiendrait les autres sans
+        # qu'aucune arrivee soit possible. La deroute, elle, ne compte pas : une
+        # unite qui rompt peut se rallier, et l'exclure ferait abandonner des
+        # manoeuvres encore tenables — d'ou `is_alive` et non `is_available`.
+        perdus = [
+            item.unit_id
+            for item in manoeuvre.assignments
+            if item.required and _definitivement_perdu(state, item.unit_id)
+        ]
+        if perdus:
+            return replace(
+                manoeuvre,
+                phase=ManoeuvrePhase.ABORTED,
+                abort_reason=f"participant requis perdu : {', '.join(perdus)}",
+            )
         if manoeuvre.can_engage(state, mobility=self._mobility):
             return replace(manoeuvre, phase=ManoeuvrePhase.CONTACT)
         # **Le rassemblement doit pouvoir echouer.** Sans borne, une manoeuvre
@@ -1758,3 +1778,14 @@ def _role_label(role: UnitRole) -> str:
         UnitRole.UNKNOWN: "unite",
     }
     return labels.get(role, "unite")
+
+
+def _definitivement_perdu(state: BattleState, unit_id: str) -> bool:
+    """Cette unite ne rejoindra plus jamais sa manoeuvre.
+
+    Disparue de l'etat, ou morte. **Pas** en deroute : une unite qui rompt peut se
+    rallier, et la compter perdue ferait abandonner des manoeuvres encore
+    tenables.
+    """
+    unite = state.unit(unit_id)
+    return unite is None or not unite.is_alive

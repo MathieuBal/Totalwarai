@@ -23,10 +23,16 @@ def unit(
     z: float = 0.0,
     **overrides: Any,
 ) -> UnitState:
-    """Unite de test : les unites de tir ont des munitions par defaut."""
+    """Unite de test : les unites de tir ont des munitions et une portee.
+
+    **`missile_range` vaut 0 sur qui ne tire pas**, comme en jeu — verifie en
+    bataille sur un prince demon. Le donner a tout le monde faisait passer une
+    infanterie de melee pour une plateforme de tir, ce qu'aucun corps de bataille
+    reel ne produit.
+    """
     defaults: dict[str, Any] = {
         "ammo_ratio": 1.0 if role in RANGED_ROLES else 0.0,
-        "metadata": {"missile_range": 120.0},
+        "metadata": {"missile_range": 120.0 if role in RANGED_ROLES else 0.0},
     }
     defaults.update(overrides)
     return UnitState(

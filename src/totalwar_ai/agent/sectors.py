@@ -48,7 +48,13 @@ from enum import StrEnum
 from totalwar_ai.agent.mobility import MobilityTracker
 from totalwar_ai.domain.battle_state import BattleState
 from totalwar_ai.domain.geometry import Vector3, centroid
-from totalwar_ai.domain.unit_state import MOBILE_ROLES, RANGED_ROLES, UnitRole, UnitState
+from totalwar_ai.domain.unit_state import (
+    LINE_ROLES,
+    MOBILE_ROLES,
+    RANGED_ROLES,
+    UnitRole,
+    UnitState,
+)
 
 #: Rayon dans lequel une unite pese sur le combat de sa voisine, en metres.
 #:
@@ -563,6 +569,8 @@ def commit(
     *,
     mobility: MobilityTracker | None = None,
     slide: bool = False,
+    anchor: Vector3 | None = None,
+    reserve_ids: Sequence[str] = (),
 ) -> Manoeuvre | None:
     """Compose l'assaut : le necessaire, qui arrive ensemble, et pas davantage.
 
@@ -638,7 +646,6 @@ def commit(
     if not engagees or (sector.cost > 1e-9 and force < besoin):
         return None
 
-    par_id = {unit.id: unit for unit in allies}
     return Manoeuvre(
         sector=sector.index,
         centre=sector.centre,
@@ -647,32 +654,158 @@ def commit(
         ratio=force / sector.cost if sector.cost > 1e-9 else float("inf"),
         initial_enemy_strength=sector.enemy_strength,
         started_at=game_time,
-        assignments=tuple(
-            _assign(par_id[unit_id], sector.centre) for unit_id in engagees if unit_id in par_id
+        assignments=_compose(
+            sector,
+            state,
+            allies,
+            engagees,
+            anchor=anchor,
+            reserve_ids=reserve_ids,
         ),
     )
 
 
-def _assign(unit: UnitState, centre: Vector3) -> Assignment:
-    """Role et position de depart d'un assaillant.
+def fires(unit: UnitState) -> bool:
+    """Cette unite tire-t-elle, d'apres ce que le jeu expose ?
 
-    **Les unites rapides flanquent, les autres portent le choc.** C'est deja ce
-    que le planificateur fait — `_command_cavalry` emet un `FLANK` la ou
-    `_command_front_line` emet un `ATTACK_TARGET` — mais nulle part ce n'etait
-    ecrit : la manoeuvre le nomme, pour pouvoir ensuite le retenir jusqu'au
-    contact.
+    **La capacite, pas le role generique.** `UnitRole` range le Sky Lantern parmi
+    les `FLYING_UNIT`, donc parmi les mobiles, donc parmi les flanqueurs — alors
+    qu'il porte 275 m de portee, exactement celle des Crane Gunners. Le 18/08, il
+    fait partie des trois unites parties seules ; une regle fondee sur son role
+    lui aurait reattribue la meme mission.
 
-    La position de depart se prend **du cote d'ou l'unite arrive**, a
-    `STAGING_TOLERANCE` du centre du secteur. Ni un point commun, qui ferait un
-    tas, ni la position actuelle, qui ne demanderait aucun rassemblement.
+    Le signal existe et a ete verifie en bataille : `missile_range` vaut 0 sur une
+    unite de melee (voir `ProbeUnitObservation.is_ranged`).
     """
-    role = ManoeuvreRole.FLANK if unit.role in MOBILE_ROLES else ManoeuvreRole.ASSAULT
-    approche = centre.direction_to(unit.position)
+    portee = unit.metadata.get("missile_range")
+    return isinstance(portee, int | float) and portee > 0.0
+
+
+def _mission(unit: UnitState) -> ManoeuvreRole:
+    """Ce qu'on demande a cette unite dans la manoeuvre.
+
+    Une plateforme de tir appuie, meme volante ; une unite rapide qui ne tire pas
+    flanque ; le reste porte le choc. **Le role de manoeuvre est une mission, pas
+    une categorie d'unite** — c'est la difference entre confier un flanc a
+    quelqu'un et l'y envoyer parce qu'il va vite.
+    """
+    if fires(unit):
+        return ManoeuvreRole.FIRE_SUPPORT
+    if unit.role in MOBILE_ROLES:
+        return ManoeuvreRole.FLANK
+    return ManoeuvreRole.ASSAULT
+
+
+def _staging(unit: UnitState, cible: Vector3, distance: float, *, lateral: bool = False) -> Vector3:
+    """Position de depart, prise **du cote d'ou l'unite arrive**.
+
+    Ni un point commun, qui ferait un tas, ni la position actuelle, qui ne
+    demanderait aucun rassemblement.
+    """
+    approche = cible.direction_to(unit.position)
     if approche.length_2d() <= 1e-9:
-        return Assignment(unit_id=unit.id, role=role, staging=centre)
-    ecart = approche.scaled(STAGING_TOLERANCE)
-    if role is ManoeuvreRole.FLANK:
+        return cible
+    if lateral:
         # Le flanqueur se prepare **a cote** de l'axe d'assaut, pas derriere :
         # arriver par la meme direction que la ligne n'est pas un flanquement.
-        ecart = Vector3(approche.z, 0.0, -approche.x).scaled(STAGING_TOLERANCE)
-    return Assignment(unit_id=unit.id, role=role, staging=centre + ecart)
+        approche = Vector3(approche.z, 0.0, -approche.x)
+    return cible + approche.scaled(distance)
+
+
+def _compose(
+    sector: Sector,
+    state: BattleState,
+    allies: Sequence[UnitState],
+    engagees: Sequence[str],
+    *,
+    anchor: Vector3 | None,
+    reserve_ids: Sequence[str],
+) -> tuple[Assignment, ...]:
+    """Qui fait quoi dans la manoeuvre — l'armee entiere, pas le seul paquet de choc.
+
+    **Une manoeuvre qui n'affecte que ses assaillants n'en est pas une.** Les
+    synchroniser entre eux pendant que les tireurs restent en arriere et que la
+    ligne tient un `HOLD` a trois cents metres reconduirait une partie du defaut
+    du 18/08 sous un nom neuf.
+
+    .. rubric:: Requis et optionnels
+
+    Seuls `ASSAULT` et `FLANK` retiennent le contact. C'est le minimum qui ferme
+    le defaut — le flanc ne peut plus partir avant l'assaut — sans que la manoeuvre
+    se bloque parce qu'un tireur n'arrive pas a portee. Elargir les requis se
+    mesurera si une session live montre que l'appui manque au moment du choc.
+    """
+    choc = set(engagees)
+    reserve = set(reserve_ids)
+    par_id = {unit.id: unit for unit in allies}
+    affectations: list[Assignment] = []
+
+    for unit_id in engagees:
+        unite = par_id.get(unit_id)
+        if unite is None:
+            continue
+        role = _mission(unite)
+        affectations.append(
+            Assignment(
+                unit_id=unit_id,
+                role=role,
+                staging=_staging(
+                    unite,
+                    sector.centre,
+                    STAGING_TOLERANCE,
+                    lateral=role is ManoeuvreRole.FLANK,
+                ),
+                # Un appui-feu embarque dans le paquet de choc appuie ; il ne
+                # retient pas le contact pour autant.
+                required=role is not ManoeuvreRole.FIRE_SUPPORT,
+            )
+        )
+
+    # Hors du paquet de choc : ceux qui peuvent appuyer par le feu. Leur position
+    # de depart est **juste dans leur portee** du secteur — assez pres pour tirer,
+    # pas assez pour etre pris dans la melee.
+    for unite in allies:
+        if unite.id in choc or unite.id in reserve or not fires(unite):
+            continue
+        portee = float(unite.metadata.get("missile_range", 0.0) or 0.0)
+        affectations.append(
+            Assignment(
+                unit_id=unite.id,
+                role=ManoeuvreRole.FIRE_SUPPORT,
+                staging=_staging(unite, sector.centre, portee),
+                required=False,
+            )
+        )
+
+    # La fixation porte sur ce qu'on n'attaque pas : c'est elle qui empeche le
+    # reste de leur ligne de venir retablir le secteur qu'on enfonce.
+    vises = set(sector.enemy_ids)
+    ailleurs = [unit for unit in state.enemies() if unit.id not in vises and unit.is_available]
+    zone = centroid([unit.position for unit in ailleurs]) if ailleurs else None
+    for unite in allies:
+        if unite.id in choc or unite.id in reserve or fires(unite) or zone is None:
+            continue
+        if unite.role not in LINE_ROLES:
+            continue
+        affectations.append(
+            Assignment(
+                unit_id=unite.id,
+                role=ManoeuvreRole.FIX,
+                staging=_staging(unite, zone, STAGING_TOLERANCE),
+                required=False,
+            )
+        )
+
+    if anchor is not None:
+        for unit_id in reserve_ids:
+            if unit_id not in par_id:
+                continue
+            affectations.append(
+                Assignment(
+                    unit_id=unit_id,
+                    role=ManoeuvreRole.RESERVE,
+                    staging=anchor,
+                    required=False,
+                )
+            )
+    return tuple(affectations)

@@ -222,6 +222,10 @@ def test_les_unites_rapides_flanquent_et_les_autres_portent_le_choc(make_unit, m
     `_command_cavalry` emet un `FLANK` la ou `_command_front_line` emet un
     `ATTACK_TARGET`, mais nulle part ce partage n'etait ecrit. Sans nom, il ne
     pouvait pas etre retenu jusqu'au contact.
+
+    La cavalerie de choc de ce test ne tire pas : c'est ce qui en fait un
+    flanqueur, pas sa vitesse — voir
+    `test_une_unite_mobile_qui_tire_n_est_pas_envoyee_flanquer`.
     """
     ennemis = _ligne(make_unit, Side.ENEMY, "e", (0.0, 15.0), 200.0)
     fantassins = _ligne(make_unit, Side.ALLY, "a", (0.0, 15.0, 30.0), 120.0)
@@ -339,3 +343,71 @@ def test_le_contact_attend_les_requis_de_la_manoeuvre_pas_l_armee(make_unit, mak
         ),
     )
     assert optionnelle.can_engage(etat), "un participant optionnel ne retient pas le contact"
+
+
+def test_une_unite_mobile_qui_tire_n_est_pas_envoyee_flanquer(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """**Le Sky Lantern, et pourquoi le role generique ne suffit pas.**
+
+    Le 18/08, `1012 veh_sky_lantern` fait partie des trois unites parties seules.
+    `UnitRole` le range parmi les `FLYING_UNIT`, donc parmi les mobiles — alors
+    qu'il porte 275 m de portee, exactement celle des Crane Gunners. Une regle
+    fondee sur son role lui aurait reattribue la mission qui l'a tue.
+
+    Le role de manoeuvre est une mission : confier un flanc a quelqu'un n'est pas
+    l'y envoyer parce qu'il va vite.
+    """
+    ennemis = _ligne(make_unit, Side.ENEMY, "e", (0.0,), 200.0)
+    fantassins = _ligne(make_unit, Side.ALLY, "a", (0.0, 15.0, 30.0), 120.0)
+    lanterne = make_unit(
+        "a_vol", Side.ALLY, UnitRole.FLYING_UNIT, x=45.0, z=120.0, metadata={"missile_range": 275.0}
+    )
+    choc = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=60.0, z=120.0)
+    allies = [*fantassins, lanterne, choc]
+    etat = make_battle([*allies, *ennemis])
+
+    manoeuvre = commit(split_sectors(etat, FRONT, allies).best(), etat, allies, game_time=0.0)
+
+    assert manoeuvre is not None
+    assert manoeuvre.role_of("a_vol") is ManoeuvreRole.FIRE_SUPPORT, "une plateforme de tir appuie"
+    assert manoeuvre.role_of("a_cav") is ManoeuvreRole.FLANK, "une cavalerie de choc flanque"
+
+
+def test_une_manoeuvre_affecte_l_armee_et_pas_le_seul_paquet_de_choc(
+    make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """Une manoeuvre qui n'affecte que ses assaillants n'en est pas une.
+
+    Les synchroniser entre eux pendant que les tireurs restent en arriere et que
+    la ligne tient un `HOLD` a trois cents metres reconduirait une partie du
+    defaut du 18/08 sous un nom neuf.
+    """
+    vises = _ligne(make_unit, Side.ENEMY, "e", (0.0, 15.0), 200.0)
+    ailleurs = _ligne(make_unit, Side.ENEMY, "f", (400.0, 415.0), 200.0)
+    choc = _ligne(make_unit, Side.ALLY, "a", (0.0, 15.0, 30.0), 120.0)
+    ligne = _ligne(make_unit, Side.ALLY, "b", (390.0, 405.0), 120.0)
+    tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=15.0, z=90.0)
+    reserve = make_unit("a_res", Side.ALLY, UnitRole.MELEE_INFANTRY, x=15.0, z=60.0)
+    allies = [*choc, *ligne, tireur, reserve]
+    etat = make_battle([*allies, *vises, *ailleurs])
+
+    manoeuvre = commit(
+        split_sectors(etat, FRONT, allies).best(),
+        etat,
+        allies,
+        game_time=0.0,
+        anchor=Vector3(15.0, 0.0, 100.0),
+        reserve_ids=("a_res",),
+    )
+
+    assert manoeuvre is not None
+    roles = {item.role for item in manoeuvre.assignments}
+    assert ManoeuvreRole.FIRE_SUPPORT in roles, "le tireur doit avoir une mission"
+    assert ManoeuvreRole.FIX in roles, "la ligne qui n'attaque pas doit fixer le reste"
+    assert ManoeuvreRole.RESERVE in roles
+    assert manoeuvre.role_of("a_res") is ManoeuvreRole.RESERVE
+    assert "a_arc" not in manoeuvre.attackers, "un appui-feu n'entre pas dans le paquet de choc"
+
+    requis = {item.role for item in manoeuvre.assignments if item.required}
+    assert ManoeuvreRole.FIRE_SUPPORT not in requis, "un tireur hors de portee ne bloque pas"
+    assert ManoeuvreRole.FIX not in requis
+    assert ManoeuvreRole.RESERVE not in requis

@@ -712,3 +712,32 @@ def test_un_rassemblement_qui_n_aboutit_pas_relache_ses_participants(
     )
     assert apres.phase is ManoeuvrePhase.ABORTED
     assert apres.abort_reason is not None and "a1" in apres.abort_reason
+
+
+def test_un_participant_requis_mort_abandonne_sans_attendre(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Attendre quatre-vingt-dix secondes un mort retient les vivants pour rien.
+
+    La deroute ne compte pas : une unite qui rompt peut se rallier, et l'exclure
+    ferait abandonner des manoeuvres encore tenables. La distinction est
+    `is_alive`, pas `is_available`.
+    """
+    poste = Vector3(0.0, 0.0, 100.0)
+    manoeuvre = Manoeuvre(
+        sector=0,
+        centre=poste,
+        attackers=("a1",),
+        targets=("e1",),
+        ratio=2.0,
+        started_at=0.0,
+        assignments=(Assignment("a1", ManoeuvreRole.ASSAULT, staging=poste),),
+    )
+    planificateur = Planner()
+
+    fuyard = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0, is_routing=True)
+    tenable = planificateur._advance(manoeuvre, make_battle([fuyard], game_time=10.0))
+    assert tenable.phase is ManoeuvrePhase.ASSEMBLE, "une unite en deroute peut se rallier"
+
+    mort = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0, entity_ratio=0.0)
+    perdue = planificateur._advance(manoeuvre, make_battle([mort], game_time=10.0))
+    assert perdue.phase is ManoeuvrePhase.ABORTED
+    assert perdue.abort_reason is not None and "a1" in perdue.abort_reason
