@@ -50,6 +50,40 @@ def jsonable_vector(vector: Vector3) -> dict[str, float]:
     }
 
 
+#: Seule phase ou un ordre produit reellement un deplacement.
+PLAYABLE_PHASE = "Deployed"
+
+
+def orders_take_effect(phase: str) -> bool:
+    """Un ordre emis maintenant peut-il produire un deplacement ?
+
+    Avant `Deployed`, le moteur accepte l'ordre et l'acquitte, mais l'unite ne
+    bouge pas — constate en jeu, immobile 33 s durant apres un ordre accepte.
+
+    .. rubric:: Pourquoi cette regle est une fonction et non deux proprietes
+
+    Elle l'a ete. `ProbeUnitState` refusait `unknown` pendant que
+    `ProbeBattleState` l'acceptait encore, et c'est `ProbeBattleState` que
+    `LiveSession` consulte : **le durcissement n'avait jamais atteint le chemin de
+    pilotage**. Le test qui le validait interrogeait l'autre classe, celle que le
+    pilotage n'emprunte pas — il etait vert et ne prouvait rien.
+
+    Une regle dupliquee finit par diverger, et une divergence entre deux classes
+    dont une seule est reellement utilisee ne se voit pas. D'ou une definition
+    unique, a laquelle les deux delegent.
+
+    .. rubric:: Ni la chaine vide, ni `Complete`
+
+    La chaine vide etait toleree comme « champ absent d'un enregistrement relu ».
+    Mais le pont live ne relit pas d'enregistrements : la tolerance n'y servait
+    qu'a rouvrir la porte si une regression de protocole faisait disparaitre le
+    champ. La compatibilite des vieux corpus appartient a leur lecteur.
+
+    `Complete` n'est pas davantage une phase ou l'on veut commencer a commander.
+    """
+    return phase == PLAYABLE_PHASE
+
+
 class ProbeMessageType(StrEnum):
     """Types de messages echanges par la sonde."""
 
@@ -96,14 +130,8 @@ class ProbeUnitState:
 
     @property
     def orders_take_effect(self) -> bool:
-        """Un ordre emis maintenant peut-il produire un deplacement ?
-
-        Avant `Deployed`, le moteur accepte l'ordre et l'acquitte, mais l'unite
-        ne bouge pas — constate en jeu, immobile 33 s durant apres un ordre
-        accepte. Une phase inconnue est traitee comme jouable : c'est le cas
-        d'une sonde plus ancienne, ou l'on ne veut pas bloquer a tort.
-        """
-        return self.phase in ("", "unknown", "Deployed", "Complete")
+        """Voir la fonction module `orders_take_effect`."""
+        return orders_take_effect(self.phase)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -444,8 +472,12 @@ class ProbeBattleState:
 
     @property
     def orders_take_effect(self) -> bool:
-        """Voir `ProbeUnitState.orders_take_effect`."""
-        return self.phase in ("", "unknown", "Deployed", "Complete")
+        """Voir la fonction module `orders_take_effect`.
+
+        **C'est cette propriete-ci que consulte le pilotage** (`LiveSession._decide`
+        et la boucle d'attente de `probe --play`), pas celle de `ProbeUnitState`.
+        """
+        return orders_take_effect(self.phase)
 
     @classmethod
     def from_dict(cls, raw: Any) -> ProbeBattleState:

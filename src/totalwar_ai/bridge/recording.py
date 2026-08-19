@@ -431,6 +431,28 @@ def _unit_entry(observation: ProbeUnitObservation) -> dict[str, Any]:
     # une valeur inventee dans un corpus finit toujours par etre lue un jour.
     if not observation.controllable:
         entry["uncontrollable"] = True
+    # **Les capteurs de la revision 16 doivent finir dans le corpus.** Ils
+    # arrivent jusqu'a l'agent depuis le pont, mais n'etaient archives nulle
+    # part : une bataille rejouee plus tard n'aurait vu ni les vitesses, ni les
+    # effectifs initiaux, ni la cible en cours. Un capteur qu'on lit en direct et
+    # qu'on jette est un capteur a moitie livre.
+    #
+    # Meme convention que le reste : **un champ absent veut dire que le jeu ne
+    # l'expose pas**, jamais zero.
+    for nom in (
+        "fast_speed",
+        "slow_speed",
+        "initial_men",
+        "starting_ammo",
+        "strategic_value",
+        "fatigue_state",
+        "current_target_id",
+    ):
+        valeur = getattr(observation, nom, None)
+        if valeur is not None:
+            entry[nom] = valeur
+    if observation.wavering:
+        entry["wavering"] = True
     # **Ecrit quand il est FAUX**, a rebours des autres : `targetable` vaut vrai
     # la quasi-totalite du temps, et c'est son absence qui porte l'information.
     #

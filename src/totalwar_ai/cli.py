@@ -35,6 +35,7 @@ from totalwar_ai.config import AppConfig, ConfigError, load_config
 from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.learning.census import expected_accessors, read
 from totalwar_ai.learning.checkpoints import CheckpointStore
+from totalwar_ai.learning.cohesion import Survey, from_battle_log, from_events
 from totalwar_ai.learning.evaluation import (
     GATE_B_MINIMUM_WIN_RATE,
     HIDDEN_SEEDS,
@@ -186,6 +187,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--scenario", action="append", default=None, help="limiter a ce scenario (repetable)"
     )
 
+    coherence = subparsers.add_parser(
+        "cohesion",
+        help="l'armee entre-t-elle en melee ensemble, ou par petits paquets ?",
+    )
+    coherence.add_argument(
+        "--battle",
+        help="corpus JSONL d'une bataille reelle (defaut : rejouer le banc)",
+    )
+    coherence.add_argument("--seeds", type=int, default=3, help="nombre de graines par scenario")
+    coherence.add_argument(
+        "--scenario", action="append", default=None, help="limiter a ce scenario (repetable)"
+    )
+
     live = subparsers.add_parser(
         "live",
         help="ce que l'agent a reellement commande en bataille, et ses silences",
@@ -325,6 +339,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_live(args)
     if args.command == "sectors":
         return _cmd_sectors(args, config)
+    if args.command == "cohesion":
+        return _cmd_cohesion(args, config)
     if args.command == "probe":
         return _cmd_probe(args)
     # `required=True` sur les sous-commandes garantit qu'on ne passe jamais ici.
@@ -452,6 +468,61 @@ def _cmd_sectors(args: argparse.Namespace, config: AppConfig) -> int:
         f"x 3 secteurs\n"
     )
     etude = probe(scenarios, seeds=graines, config=config)
+    print(etude.render())
+    return 0
+
+
+def _cmd_cohesion(args: argparse.Namespace, config: AppConfig) -> int:
+    """La chronologie d'entree en melee, sur un corpus reel ou sur le banc.
+
+    **Une baseline qu'on ne peut pas rejouer n'est pas une baseline.** Les
+    premiers chiffres de LIVE-002 — premier contact a 192,6 s, trois unites sur
+    douze dans la premiere vague, 235,5 s de vide — ont ete produits par un script
+    jetable. Ils ne pouvaient donc pas servir de juge a la doctrine suivante :
+    personne n'aurait pu refaire la mesure a l'identique.
+    """
+    if args.battle:
+        corpus = Path(args.battle)
+        if not corpus.exists():
+            print(f"Corpus introuvable : {corpus}", file=sys.stderr)
+            return 1
+        print(f"Corpus : {corpus.name}\n")
+        print(from_battle_log(corpus.read_text(encoding="utf-8").splitlines()).render())
+        return 0
+
+    catalog = ScenarioCatalog()
+    try:
+        scenarios = (
+            [catalog.get(name) for name in args.scenario] if args.scenario else catalog.all()
+        )
+    except KeyError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
+    # Memes graines que le banc et la sonde de secteurs : trois mesures qui ne
+    # tireraient pas les memes batailles ne se compareraient pas.
+    graines = widen_seeds(args.seeds)
+    print(f"Cohesion sur le banc : {len(scenarios)} scenario(s) x {len(graines)} graine(s)\n")
+
+    from totalwar_ai.agent.tactical_agent import DeterministicTacticalAgent
+    from totalwar_ai.simulation.runner import run_battle
+
+    etude = Survey()
+    for scenario in scenarios:
+        for graine in graines:
+            resultat = run_battle(
+                scenario,
+                agent=DeterministicTacticalAgent.from_config(config),
+                config=config,
+                seed=graine,
+                repository=None,
+                generate_report=False,
+                keep_states=True,
+            )
+            etude.add(
+                f"{scenario.name}#{graine}",
+                from_events(resultat.episode.events, list(resultat.states)),
+            )
     print(etude.render())
     return 0
 
