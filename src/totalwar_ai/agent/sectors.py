@@ -43,11 +43,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from totalwar_ai.agent.mobility import MobilityTracker
 from totalwar_ai.domain.battle_state import BattleState
 from totalwar_ai.domain.geometry import Vector3, centroid
-from totalwar_ai.domain.unit_state import RANGED_ROLES, UnitRole, UnitState
+from totalwar_ai.domain.unit_state import (
+    LINE_ROLES,
+    MOBILE_ROLES,
+    PRECIOUS_ROLES,
+    RANGED_ROLES,
+    UnitRole,
+    UnitState,
+)
 
 #: Rayon dans lequel une unite pese sur le combat de sa voisine, en metres.
 #:
@@ -120,6 +128,119 @@ ASSAULT_ROLES = frozenset(role for role in UnitRole if role not in RANGED_ROLES)
 #: Part de la force initiale sous laquelle un secteur est considere rompu.
 BREAK_SHARE = 0.35
 
+#: Distance a laquelle une unite est consideree arrivee a sa position de depart.
+#:
+#: **Volontairement `SUPPORT_RADIUS`, et non un nombre de plus.** C'est le rayon
+#: dans lequel une unite pese deja sur le combat de sa voisine : y etre, c'est
+#: etre en situation de participer. Inventer une tolerance separee obligerait a
+#: la regler, alors que la question « suis-je assez pres pour compter ? » a deja
+#: une reponse dans ce module.
+STAGING_TOLERANCE = SUPPORT_RADIUS
+
+
+class ManoeuvrePhase(StrEnum):
+    """Ou en est la manoeuvre.
+
+    Quatre etats, pas davantage : on ne multiplie pas les phases tant qu'un
+    besoin reel ne l'exige pas.
+    """
+
+    #: Les participants rejoignent leur position de depart. **Personne n'attaque.**
+    ASSEMBLE = "assemble"
+    #: Tout le monde est libere en meme temps.
+    CONTACT = "contact"
+    #: Le secteur a cede ; la planification ordinaire reprend la main.
+    EXPLOIT = "exploit"
+    ABORTED = "aborted"
+
+
+class ManoeuvreRole(StrEnum):
+    """Ce qu'une unite fait **dans** la manoeuvre.
+
+    **Participer n'est pas etre en melee.** Un tireur qui appuie a cent vingt
+    metres tient son role sans jamais toucher l'ennemi, et une lecture qui ne
+    compterait que les contacts le declarerait absent — c'est l'amendement C de
+    LIVE-002, inscrit ici dans le modele plutot que rappele en commentaire.
+    """
+
+    ASSAULT = "assault"
+    FIX = "fix"
+    FIRE_SUPPORT = "fire_support"
+    FLANK = "flank"
+    RESERVE = "reserve"
+
+
+@dataclass(frozen=True, slots=True)
+class Assignment:
+    """Une unite, son role, et l'endroit ou elle doit etre avant le contact."""
+
+    unit_id: str
+    role: ManoeuvreRole
+    #: Position de depart. C'est la que `ASSEMBLE` l'envoie, et rien d'autre.
+    staging: Vector3
+    #: Sa presence conditionne-t-elle le passage a `CONTACT` ?
+    required: bool = True
+
+    def ready(
+        self,
+        state: BattleState,
+        *,
+        centre: Vector3,
+        targets: Sequence[str] = (),
+        mobility: MobilityTracker | None = None,
+    ) -> bool:
+        """Cette unite est-elle en situation de tenir son role ?
+
+        **La condition depend du role, et c'est tout l'interet.** Demander a
+        chacun d'etre au contact ferait attendre l'assaut apres des tireurs qui
+        n'ont rien a y faire, et declarerait absent un flanqueur parfaitement en
+        place. Le jour ou cette question portera sur toute la manoeuvre, c'est
+        cette methode-ci qui repondra, pas un comptage de melees.
+        """
+        unite = state.unit(self.unit_id)
+        if unite is None or not unite.is_available:
+            return False
+        en_place = unite.position.distance_2d(self.staging) <= STAGING_TOLERANCE
+
+        if self.role is ManoeuvreRole.FIRE_SUPPORT:
+            # Position **et** portee : un tireur en place mais hors d'atteinte
+            # n'appuie rien. `missile_range` vaut 0 pour qui n'a pas de tir.
+            portee = float(unite.metadata.get("missile_range", 0.0) or 0.0)
+            vises = set(targets)
+            return en_place and any(
+                autre.id in vises and unite.position.distance_2d(autre.position) <= portee
+                for autre in state.enemies()
+            )
+        if self.role is ManoeuvreRole.FLANK:
+            # **Etre attaque sur sa position de depart n'est pas etre en retard.**
+            #
+            # Cette branche exigeait d'abord « en place et pas au contact », pour
+            # attraper le flanqueur parti en avance. Mesure sur
+            # `numerical_superiority` : le cavalier atteint sa position exacte a
+            # 30 s et devient pret, l'ennemi vient a lui a 40 s, et sa readiness
+            # repasse a faux — definitivement. Un verrou qui tourne a l'envers, et
+            # `can_engage` ne pouvait plus jamais devenir vrai.
+            #
+            # La clause etait de toute facon devenue inutile : `ASSEMBLE` empeche
+            # desormais structurellement un participant d'ouvrir le combat, donc
+            # un flanqueur au contact pendant le rassemblement s'est fait attaquer,
+            # il n'est pas parti tout seul.
+            return en_place or unite.is_engaged
+        if self.role is ManoeuvreRole.ASSAULT:
+            if en_place or unite.is_engaged:
+                return True
+            suivi = mobility if mobility is not None else MobilityTracker()
+            return suivi.eta(unite, centre) <= ASSAULT_WINDOW
+        return en_place
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "unit_id": self.unit_id,
+            "role": self.role.value,
+            "staging": self.staging.to_dict(),
+            "required": self.required,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class Sector:
@@ -164,8 +285,27 @@ class Sector:
 
 
 @dataclass(frozen=True, slots=True)
-class Assault:
-    """Ce qu'on envoie, ou, et ce qu'on garde ailleurs."""
+class Manoeuvre:
+    """Ce qu'on envoie, ou, avec quels roles, et dans quel ordre.
+
+    .. rubric:: Pourquoi la classe s'appelle ainsi et la cle non
+
+    Elle s'est longtemps appelee `Assault`, quand elle ne portait qu'une liste
+    d'attaquants. Depuis qu'elle porte une phase et des roles, ce n'est plus un
+    assaut mais une manoeuvre, et le code doit le dire.
+
+    La cle serialisee reste pourtant `"assault"` : quatre instruments la lisent
+    dans les corpus deja enregistres — `learning.assault`, `learning.sector_value`,
+    `simulation.runner` et leurs tests. La renommer rendrait illisibles les
+    batailles qui servent justement de point de comparaison.
+
+    .. rubric:: Persistante par construction
+
+    `Planner._manoeuvre` la garde d'un plan a l'autre tant qu'elle n'a pas rompu.
+    Rechoisir a chaque tour, c'est la cavalerie qui recevait dix cibles en cent
+    trente secondes sans achever un seul contournement (ADR 0013) — et une phase
+    reconstruite chaque tour ne franchirait jamais `ASSEMBLE`.
+    """
 
     sector: int
     centre: Vector3
@@ -177,6 +317,57 @@ class Assault:
     #: Force adverse du secteur au moment du choix, pour juger de la rupture.
     initial_enemy_strength: float = 0.0
     started_at: float = 0.0
+    #: Ou en est la manoeuvre. **Une seule transition par plan.**
+    phase: ManoeuvrePhase = ManoeuvrePhase.ASSEMBLE
+    #: Qui fait quoi, et depuis ou. Vide tant que personne n'a de role.
+    assignments: tuple[Assignment, ...] = ()
+    abort_reason: str | None = None
+
+    def assignment(self, unit_id: str) -> Assignment | None:
+        return next((item for item in self.assignments if item.unit_id == unit_id), None)
+
+    def role_of(self, unit_id: str) -> ManoeuvreRole | None:
+        affectation = self.assignment(unit_id)
+        return affectation.role if affectation is not None else None
+
+    @property
+    def holding(self) -> bool:
+        """Les participants doivent-ils encore se retenir d'ouvrir le combat ?"""
+        return self.phase is ManoeuvrePhase.ASSEMBLE
+
+    def ready_assignments(
+        self, state: BattleState, *, mobility: MobilityTracker | None = None
+    ) -> tuple[Assignment, ...]:
+        return tuple(
+            item
+            for item in self.assignments
+            if item.ready(state, centre=self.centre, targets=self.targets, mobility=mobility)
+        )
+
+    def missing(
+        self, state: BattleState, *, mobility: MobilityTracker | None = None
+    ) -> tuple[str, ...]:
+        """Participants **requis** qui ne sont pas encore en situation.
+
+        C'est la reponse a « qui attendait qui ? », et elle doit etre lisible
+        apres la bataille sans rejouer quoi que ce soit.
+        """
+        prets = {item.unit_id for item in self.ready_assignments(state, mobility=mobility)}
+        return tuple(
+            item.unit_id for item in self.assignments if item.required and item.unit_id not in prets
+        )
+
+    def can_engage(self, state: BattleState, *, mobility: MobilityTracker | None = None) -> bool:
+        """Les participants requis sont-ils en situation de tenir leurs roles ?
+
+        **La condition porte sur les requis de cette manoeuvre, pas sur l'armee.**
+        Un seuil du type « huit unites sur douze » mesurerait la masse et non la
+        coordination : `numerical_superiority` gagne ses trois batailles avec une
+        seule unite au contact.
+        """
+        if not any(item.required for item in self.assignments):
+            return True
+        return not self.missing(state, mobility=mobility)
 
     def broken(self, state: BattleState) -> bool:
         """Le secteur a-t-il cede ?
@@ -239,10 +430,32 @@ class Assault:
             )
         )
 
+    def telemetry(
+        self, state: BattleState, *, mobility: MobilityTracker | None = None
+    ) -> dict[str, object]:
+        """De quoi reconstruire la manoeuvre apres la bataille, sans la rejouer.
+
+        Trois questions doivent trouver leur reponse dans le corpus : **qui
+        attendait qui, quand le contact a ete autorise, quel participant
+        manquait.** Les deduire apres coup en relisant les positions reviendrait a
+        redemander a l'instrument ce qu'il vient de taire.
+        """
+        return {
+            "sector": self.sector,
+            "phase": self.phase.value,
+            "started_at": self.started_at,
+            "abort_reason": self.abort_reason,
+            "roles": {item.unit_id: item.role.value for item in self.assignments},
+            "required": [item.unit_id for item in self.assignments if item.required],
+            "ready": [item.unit_id for item in self.ready_assignments(state, mobility=mobility)],
+            "missing": list(self.missing(state, mobility=mobility)),
+        }
+
     def explain(self) -> str:
         return (
             f"assaut du secteur {self.sector} : {len(self.attackers)} unite(s) "
-            f"sur {len(self.targets)} ennemi(s), rapport {self.ratio:.2f}"
+            f"sur {len(self.targets)} ennemi(s), rapport {self.ratio:.2f} "
+            f"[{self.phase.value}]"
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -253,6 +466,9 @@ class Assault:
             "ratio": round(self.ratio, 3),
             "initial_enemy_strength": round(self.initial_enemy_strength, 3),
             "started_at": self.started_at,
+            "phase": self.phase.value,
+            "assignments": [item.to_dict() for item in self.assignments],
+            "abort_reason": self.abort_reason,
         }
 
 
@@ -386,7 +602,9 @@ def commit(
     *,
     mobility: MobilityTracker | None = None,
     slide: bool = False,
-) -> Assault | None:
+    anchor: Vector3 | None = None,
+    reserve_ids: Sequence[str] = (),
+) -> Manoeuvre | None:
     """Compose l'assaut : le necessaire, qui arrive ensemble, et pas davantage.
 
     **Envoyer toute l'armee n'est pas concentrer, c'est s'engager.** On ajoute
@@ -461,7 +679,7 @@ def commit(
     if not engagees or (sector.cost > 1e-9 and force < besoin):
         return None
 
-    return Assault(
+    return Manoeuvre(
         sector=sector.index,
         centre=sector.centre,
         attackers=tuple(engagees),
@@ -469,4 +687,170 @@ def commit(
         ratio=force / sector.cost if sector.cost > 1e-9 else float("inf"),
         initial_enemy_strength=sector.enemy_strength,
         started_at=game_time,
+        assignments=_compose(
+            sector,
+            state,
+            allies,
+            engagees,
+            anchor=anchor,
+            reserve_ids=reserve_ids,
+        ),
     )
+
+
+def fires(unit: UnitState) -> bool:
+    """Cette unite tire-t-elle, d'apres ce que le jeu expose ?
+
+    **La capacite, pas le role generique.** `UnitRole` range le Sky Lantern parmi
+    les `FLYING_UNIT`, donc parmi les mobiles, donc parmi les flanqueurs — alors
+    qu'il porte 275 m de portee, exactement celle des Crane Gunners. Le 18/08, il
+    fait partie des trois unites parties seules ; une regle fondee sur son role
+    lui aurait reattribue la meme mission.
+
+    Le signal existe et a ete verifie en bataille : `missile_range` vaut 0 sur une
+    unite de melee (voir `ProbeUnitObservation.is_ranged`).
+    """
+    portee = unit.metadata.get("missile_range")
+    return isinstance(portee, int | float) and portee > 0.0
+
+
+def _mission(unit: UnitState) -> ManoeuvreRole:
+    """Ce qu'on demande a cette unite dans la manoeuvre.
+
+    Une plateforme de tir appuie, meme volante ; une unite rapide qui ne tire pas
+    flanque ; le reste porte le choc. **Le role de manoeuvre est une mission, pas
+    une categorie d'unite** — c'est la difference entre confier un flanc a
+    quelqu'un et l'y envoyer parce qu'il va vite.
+    """
+    if fires(unit):
+        return ManoeuvreRole.FIRE_SUPPORT
+    if unit.role in MOBILE_ROLES:
+        return ManoeuvreRole.FLANK
+    return ManoeuvreRole.ASSAULT
+
+
+def _staging(unit: UnitState, cible: Vector3, distance: float, *, lateral: bool = False) -> Vector3:
+    """Position de depart, prise **du cote d'ou l'unite arrive**.
+
+    Ni un point commun, qui ferait un tas, ni la position actuelle, qui ne
+    demanderait aucun rassemblement.
+    """
+    approche = cible.direction_to(unit.position)
+    if approche.length_2d() <= 1e-9:
+        return cible
+    if lateral:
+        # Le flanqueur se prepare **a cote** de l'axe d'assaut, pas derriere :
+        # arriver par la meme direction que la ligne n'est pas un flanquement.
+        approche = Vector3(approche.z, 0.0, -approche.x)
+    return cible + approche.scaled(distance)
+
+
+def _compose(
+    sector: Sector,
+    state: BattleState,
+    allies: Sequence[UnitState],
+    engagees: Sequence[str],
+    *,
+    anchor: Vector3 | None,
+    reserve_ids: Sequence[str],
+) -> tuple[Assignment, ...]:
+    """Qui fait quoi dans la manoeuvre — l'armee entiere, pas le seul paquet de choc.
+
+    **Une manoeuvre qui n'affecte que ses assaillants n'en est pas une.** Les
+    synchroniser entre eux pendant que les tireurs restent en arriere et que la
+    ligne tient un `HOLD` a trois cents metres reconduirait une partie du defaut
+    du 18/08 sous un nom neuf.
+
+    .. rubric:: Requis et optionnels
+
+    Seuls `ASSAULT` et `FLANK` retiennent le contact. C'est le minimum qui ferme
+    le defaut — le flanc ne peut plus partir avant l'assaut — sans que la manoeuvre
+    se bloque parce qu'un tireur n'arrive pas a portee. Elargir les requis se
+    mesurera si une session live montre que l'appui manque au moment du choc.
+    """
+    choc = set(engagees)
+    reserve = set(reserve_ids)
+    par_id = {unit.id: unit for unit in allies}
+    affectations: list[Assignment] = []
+
+    for unit_id in engagees:
+        unite = par_id.get(unit_id)
+        if unite is None:
+            continue
+        if unite.role in PRECIOUS_ROLES:
+            # **Le commandement a sa propre doctrine.** `_command_leaders` le
+            # maintient « hors de la melee frontale » et ne produit qu'un ordre :
+            # reculer vers un point de soutien. Il n'attaque jamais.
+            #
+            # Lui donner un role de manoeuvre etait donc un mensonge de nommage :
+            # il figurait comme assaillant — 84 fois sur le banc — sans qu'aucun
+            # chemin ne l'y envoie, et la telemetrie annoncait un participant que
+            # rien ne rassemblait. Il reste dans `attackers`, donc dans le rapport
+            # local ; c'est un autre defaut, consigne a l'ADR 0024.
+            continue
+        role = _mission(unite)
+        affectations.append(
+            Assignment(
+                unit_id=unit_id,
+                role=role,
+                staging=_staging(
+                    unite,
+                    sector.centre,
+                    STAGING_TOLERANCE,
+                    lateral=role is ManoeuvreRole.FLANK,
+                ),
+                # **N'est requis que ce que la doctrine envoie vraiment au
+                # contact.** Un appui-feu embarque dans le paquet de choc
+                # appuie ; il ne retient pas le contact pour autant.
+                required=role is not ManoeuvreRole.FIRE_SUPPORT,
+            )
+        )
+
+    # Hors du paquet de choc : ceux qui peuvent appuyer par le feu. Leur position
+    # de depart est **juste dans leur portee** du secteur — assez pres pour tirer,
+    # pas assez pour etre pris dans la melee.
+    for unite in allies:
+        if unite.id in choc or unite.id in reserve or not fires(unite):
+            continue
+        portee = float(unite.metadata.get("missile_range", 0.0) or 0.0)
+        affectations.append(
+            Assignment(
+                unit_id=unite.id,
+                role=ManoeuvreRole.FIRE_SUPPORT,
+                staging=_staging(unite, sector.centre, portee),
+                required=False,
+            )
+        )
+
+    # La fixation porte sur ce qu'on n'attaque pas : c'est elle qui empeche le
+    # reste de leur ligne de venir retablir le secteur qu'on enfonce.
+    vises = set(sector.enemy_ids)
+    ailleurs = [unit for unit in state.enemies() if unit.id not in vises and unit.is_available]
+    zone = centroid([unit.position for unit in ailleurs]) if ailleurs else None
+    for unite in allies:
+        if unite.id in choc or unite.id in reserve or fires(unite) or zone is None:
+            continue
+        if unite.role not in LINE_ROLES:
+            continue
+        affectations.append(
+            Assignment(
+                unit_id=unite.id,
+                role=ManoeuvreRole.FIX,
+                staging=_staging(unite, zone, STAGING_TOLERANCE),
+                required=False,
+            )
+        )
+
+    if anchor is not None:
+        for unit_id in reserve_ids:
+            if unit_id not in par_id:
+                continue
+            affectations.append(
+                Assignment(
+                    unit_id=unit_id,
+                    role=ManoeuvreRole.RESERVE,
+                    staging=anchor,
+                    required=False,
+                )
+            )
+    return tuple(affectations)

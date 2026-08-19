@@ -113,6 +113,11 @@ class AgentTurn:
     #: Vide quand le planificateur a propose quelque chose. Un motif inconnu
     #: reste `UNKNOWN` : jamais deduit apres coup.
     planner_reasons: tuple[tuple[str, int], ...] = ()
+    #: Etat de la manoeuvre courante. `None` quand aucune n'est en cours.
+    #:
+    #: Sans ce champ, « qui attendait qui » ne se lirait qu'en rejouant la
+    #: bataille — c'est-a-dire nulle part.
+    manoeuvre: dict[str, Any] | None = None
 
     @property
     def emitted(self) -> int:
@@ -181,6 +186,7 @@ class AgentTurn:
             "decision_due": self.decision_due,
             "no_command_stage": self.no_command_stage,
             "planner_reasons": dict(self.planner_reasons),
+            "manoeuvre": self.manoeuvre,
             **self.counters,
         }
 
@@ -383,6 +389,11 @@ class DeterministicTacticalAgent:
             # propose sans avoir nomme sa raison : un trou honnete vaut mieux
             # qu'une explication plausible.
             planner_reasons=_abstentions(self.planner.abstentions, proposed=len(brutes)),
+            manoeuvre=(
+                plan.assault.telemetry(state, mobility=self.planner.mobility)
+                if plan.assault is not None
+                else None
+            ),
         )
 
     # --- cadence -------------------------------------------------------------

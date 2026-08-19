@@ -23,6 +23,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 from totalwar_ai.agent.tactical_agent import (
     STAGE_MICRO_MOVE,
@@ -146,6 +147,12 @@ class LiveStep:
     heartbeat: Heartbeat = field(default_factory=Heartbeat)
     #: Motifs de renoncement du planificateur, quand il n'a rien propose.
     planner_reasons: tuple[tuple[str, int], ...] = ()
+    #: Etat de la manoeuvre courante, ou `None`.
+    #:
+    #: Le corpus live n'enregistre pas le plan : sans ce champ, la coordination
+    #: d'une bataille reelle ne serait lisible qu'a l'ecran, donc perdue a la
+    #: fermeture de la fenetre — exactement ce que LIVE-001 a deja coute une fois.
+    manoeuvre: dict[str, Any] | None = None
     #: Ce que notre agent aurait decide, sans que rien ne parte vers le jeu.
     shadow: ShadowDecision | None = None
     #: Ordres que l'agent a tus parce qu'il les jugeait deja en cours.
@@ -359,6 +366,7 @@ class LiveSession:
 
         battement = Heartbeat(decision_due=tour.decision_due)
         motifs = tour.planner_reasons
+        manoeuvre = tour.manoeuvre
         etages = {
             **tour.counters,
             "untranslated": len(translation.untranslated),
@@ -387,6 +395,7 @@ class LiveSession:
                 stages=etages,
                 heartbeat=battement,
                 planner_reasons=motifs,
+                manoeuvre=manoeuvre,
             )
 
         # Un seul message : deux commandes successives se perdraient, le
@@ -410,6 +419,7 @@ class LiveSession:
             stages=etages,
             heartbeat=battement,
             planner_reasons=motifs,
+            manoeuvre=manoeuvre,
         )
 
     def _acknowledgement(

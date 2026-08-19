@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -24,7 +24,14 @@ from totalwar_ai.agent.explainability import Decision, decide
 from totalwar_ai.agent.grouping import GroupKind, GroupSet, TacticalGroup, build_groups
 from totalwar_ai.agent.mobility import MobilityTracker
 from totalwar_ai.agent.passivity import PassivityWatch
-from totalwar_ai.agent.sectors import Assault, commit, split_sectors
+from totalwar_ai.agent.sectors import (
+    ASSAULT_DEADLINE,
+    Manoeuvre,
+    ManoeuvrePhase,
+    ManoeuvreRole,
+    commit,
+    split_sectors,
+)
 from totalwar_ai.domain.actions import ActionType, AgentAction, Formation
 from totalwar_ai.domain.battle_state import BattlePhase, BattleState
 from totalwar_ai.domain.geometry import Vector3, centroid
@@ -244,7 +251,7 @@ class BattlePlan:
     created_at: float = 0.0
     power_ratio: float = 1.0
     #: Assaut de secteur en cours. `None` : personne ne concentre nulle part.
-    assault: Assault | None = None
+    assault: Manoeuvre | None = None
     #: Rapport local **a cet instant**, et nombre d'assaillants au contact.
     #:
     #: Le plan etant journalise a chaque recalcul, ces deux chiffres suffisent a
@@ -425,7 +432,7 @@ class Planner:
     #: de contournement en cent trente secondes (ADR 0013) : les forces bougent,
     #: le meilleur secteur change pour trois fois rien, et l'assaut n'aboutit
     #: jamais. Il n'est relache qu'a la rupture.
-    _assault: Assault | None = None
+    _assault: Manoeuvre | None = None
 
     #: Unites actuellement tenues en reserve, d'un plan au suivant.
     #:
@@ -564,6 +571,7 @@ class Planner:
             posture,
             front,
             allies,
+            anchor=anchor,
             withdrawing=repli,
             passive=passif,
         )
@@ -591,9 +599,10 @@ class Planner:
         front: Vector3,
         allies: Sequence[UnitState],
         *,
+        anchor: Vector3,
         withdrawing: bool,
         passive: bool = False,
-    ) -> Assault | None:
+    ) -> Manoeuvre | None:
         """Y a-t-il un endroit ou l'on peut etre nettement le plus fort ?
 
         **On ne cherche pas a gagner partout, mais brutalement quelque part.** Le
@@ -630,8 +639,14 @@ class Planner:
         # avait pris pour une incompatibilite etait un assaut **lance pendant**
         # un repli, jamais un assaut poursuivi malgre lui.
         if self._assault is not None and not self._assault.broken(state):
-            self._abstain(ABSTAIN_ASSAULT_RUNNING)
-            return self._assault
+            avancee = self._advance(self._assault, state)
+            if avancee.phase is not ManoeuvrePhase.ABORTED:
+                self._abstain(ABSTAIN_ASSAULT_RUNNING)
+                self._assault = avancee
+                return self._assault
+            # Abandonnee : elle relache ses participants et le choix recommence
+            # sur l'etat du moment, exactement comme apres une rupture.
+            self._assault = None
         self._assault = None
         if withdrawing:
             self._abstain(ABSTAIN_WITHDRAWING)
@@ -698,10 +713,70 @@ class Planner:
             game_time=state.game_time,
             mobility=self._mobility,
             slide=self.sliding_window,
+            anchor=anchor,
+            reserve_ids=tuple(self._reserve_ids),
         )
         if self._assault is None:
             self._abstain(ABSTAIN_COMMIT_FAILED)
+        else:
+            # Une manoeuvre dont les participants sont deja en place n'a rien a
+            # attendre : elle ne doit pas perdre un plan entier en `ASSEMBLE`.
+            self._assault = self._advance(self._assault, state)
         return self._assault
+
+    def _advance(self, manoeuvre: Manoeuvre, state: BattleState) -> Manoeuvre:
+        """Fait franchir a la manoeuvre la seule transition qu'elle peut franchir.
+
+        **Le rassemblement est la seule phase qui attend quelqu'un.** Elle se
+        termine quand les participants *requis* sont en situation de tenir leurs
+        roles — pas quand un pourcentage de l'armee est arrive. La difference est
+        celle que `numerical_superiority` illustre : cette bataille se gagne avec
+        une seule unite au contact, et un seuil de masse l'aurait interdite.
+
+        La rupture, elle, reste geree la ou elle l'etait : `broken()` relache la
+        manoeuvre et le choix recommence sur l'etat du moment.
+        """
+        if manoeuvre.phase is not ManoeuvrePhase.ASSEMBLE:
+            return manoeuvre
+        # **Un mort ne rejoindra pas.** Attendre les quatre-vingt-dix secondes
+        # pour un participant qui n'existe plus retiendrait les autres sans
+        # qu'aucune arrivee soit possible. La deroute, elle, ne compte pas : une
+        # unite qui rompt peut se rallier, et l'exclure ferait abandonner des
+        # manoeuvres encore tenables — d'ou `is_alive` et non `is_available`.
+        perdus = [
+            item.unit_id
+            for item in manoeuvre.assignments
+            if item.required and _definitivement_perdu(state, item.unit_id)
+        ]
+        if perdus:
+            return replace(
+                manoeuvre,
+                phase=ManoeuvrePhase.ABORTED,
+                abort_reason=f"participant requis perdu : {', '.join(perdus)}",
+            )
+        if manoeuvre.can_engage(state, mobility=self._mobility):
+            return replace(manoeuvre, phase=ManoeuvrePhase.CONTACT)
+        # **Le rassemblement doit pouvoir echouer.** Sans borne, une manoeuvre
+        # dont un participant ne peut plus rejoindre sa position retiendrait les
+        # autres jusqu'a la fin de la bataille : on aurait remplace « trois
+        # unites partent seules » par « douze unites n'agissent jamais ».
+        #
+        # La borne existe deja et dit exactement cela : au-dela d'une minute et
+        # demie, l'assaut decide appartient a une autre bataille. En reutiliser
+        # une plutot qu'en inventer une evite d'avoir a la regler.
+        if state.game_time - manoeuvre.started_at > ASSAULT_DEADLINE:
+            manquants = ", ".join(manoeuvre.missing(state, mobility=self._mobility))
+            return replace(
+                manoeuvre,
+                phase=ManoeuvrePhase.ABORTED,
+                abort_reason=f"rassemblement inacheve : {manquants or 'aucun participant'}",
+            )
+        return manoeuvre
+
+    @property
+    def mobility(self) -> MobilityTracker:
+        """Vitesses apprises. Lecture seule : la telemetrie s'en sert pour les ETA."""
+        return self._mobility
 
     def _abstain(self, code: str) -> None:
         """Note un renoncement, la ou il a lieu."""
@@ -1140,6 +1215,21 @@ class Planner:
                     shooter, state, assignments=assignments, for_missile=True
                 )
                 if target is None:
+                    # **Un tireur sans cible pendant le rassemblement rejoint sa
+                    # portee, il n'attend pas.** Mesure sur le banc : zero
+                    # `FIRE_SUPPORT` sur cent vingt-six recevait un ordre de
+                    # rassemblement, parce que `_stage` n'etait appele que depuis
+                    # la ligne et la cavalerie. L'appui-feu restait donc en
+                    # arriere pendant que le choc se rassemblait — « trois unites
+                    # d'archers qui n'ont pas suivi le pack », a nouveau, mais
+                    # cette fois pendant la manoeuvre.
+                    #
+                    # Un tireur qui a deja une cible n'est pas concerne : tirer
+                    # sur le secteur **est** l'appui. Et un tireur menace n'arrive
+                    # jamais ici, `_protect_ranged` l'ayant deja replie : la
+                    # securite passe avant le rassemblement.
+                    if self._stage(shooter, plan, decisions):
+                        continue
                     ecart = shooter.position.distance_2d(station)
                     # **Seulement quand la ligne avance.** En posture defensive,
                     # la position de tir se choisit par rapport a la menace et non
@@ -1197,6 +1287,73 @@ class Planner:
             shooter, state, assignments=assignments, for_missile=True, candidates=bassin
         )
 
+    def _stage(
+        self,
+        unit: UnitState,
+        plan: BattlePlan,
+        decisions: list[Decision],
+    ) -> bool:
+        """Envoie un participant a sa position de depart, et rien d'autre.
+
+        **C'est ici que le defaut du 18/08 devient impossible.** Tant que la
+        manoeuvre rassemble, aucun de ses participants n'ouvre le combat : ni
+        `ATTACK_TARGET`, ni `FLANK`. Trois unites rapides ne peuvent plus partir
+        pendant que la ligne attend, parce que leur depart et l'attente de la
+        ligne appartiennent desormais a la meme decision d'armee.
+
+        Rend `True` quand l'unite a ete prise en charge — l'appelant doit alors
+        passer a la suivante sans lui donner d'ordre de combat.
+
+        Une unite deja au contact n'est pas retenue : la decrocher pour la
+        renvoyer a un point de rassemblement la ferait tuer de dos.
+
+        .. rubric:: L'appui-feu seul poursuit sa route apres le contact
+
+        `FIRE_SUPPORT` n'est pas requis — deliberement, pour que la manoeuvre ne
+        se bloque pas si un tireur n'arrive jamais a portee. Mais la contrepartie
+        est que `CONTACT` peut se declencher pendant qu'il est encore en chemin, et
+        s'arreter la reviendrait a **l'abandonner a mi-parcours** : il retomberait
+        sur la station d'ancre, qui ne suit la ligne qu'en posture offensive et
+        vise l'ancre plutot que le secteur. C'est le defaut deja ferme pendant le
+        rassemblement — « les archers n'ont pas suivi le pack » — simplement
+        deplace apres la transition.
+
+        **Aucun autre role ne devient persistant.** `ASSAULT`, `FLANK` et `FIX`
+        suivent leur doctrine de contact : c'est precisement ce que la transition
+        vient de deverrouiller, et les y soustraire reconduirait la paralysie que
+        l'abandon sur `ASSAULT_DEADLINE` existe pour eviter.
+        """
+        manoeuvre = plan.assault
+        if manoeuvre is None or unit.is_engaged:
+            return False
+        affectation = manoeuvre.assignment(unit.id)
+        if affectation is None:
+            return False
+        if not manoeuvre.holding and affectation.role is not ManoeuvreRole.FIRE_SUPPORT:
+            return False
+        # Le libelle suit la phase : annoncer un rassemblement apres le contact
+        # decrirait une manoeuvre ou plus personne ne se rassemble.
+        motif = (
+            f"manoeuvre du secteur {manoeuvre.sector} : rassemblement ({affectation.role.value})"
+            if manoeuvre.holding
+            else f"manoeuvre du secteur {manoeuvre.sector} : rejoint sa portee"
+        )
+        decisions.append(
+            decide(
+                _move_units(
+                    (unit.id,),
+                    affectation.staging,
+                    Formation.LINE,
+                    heading=None,
+                    spacing=0.0,
+                ),
+                motif,
+                "arriver ensemble plutot que d'arriver le premier",
+                confidence=0.75,
+            )
+        )
+        return True
+
     def _command_front_line(
         self,
         state: BattleState,
@@ -1223,6 +1380,8 @@ class Planner:
         )
 
         for unit in units:
+            if self._stage(unit, plan, decisions):
+                continue
             nearest = state.nearest(unit.position, enemies)
             if nearest is None:
                 continue
@@ -1365,6 +1524,8 @@ class Planner:
         )
 
         for index, rider in enumerate(cavalry):
+            if self._stage(rider, plan, decisions):
+                continue
             # **La cavalerie porte l'assaut comme le reste de la ligne.** Elle en
             # etait exclue tant qu'elle ne recevait pas l'ordre : la compter dans
             # le rapport annonce sans jamais l'envoyer aurait promis une force
@@ -1709,3 +1870,14 @@ def _role_label(role: UnitRole) -> str:
         UnitRole.UNKNOWN: "unite",
     }
     return labels.get(role, "unite")
+
+
+def _definitivement_perdu(state: BattleState, unit_id: str) -> bool:
+    """Cette unite ne rejoindra plus jamais sa manoeuvre.
+
+    Disparue de l'etat, ou morte. **Pas** en deroute : une unite qui rompt peut se
+    rallier, et la compter perdue ferait abandonner des manoeuvres encore
+    tenables.
+    """
+    unite = state.unit(unit_id)
+    return unite is None or not unite.is_alive

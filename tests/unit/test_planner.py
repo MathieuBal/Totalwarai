@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -15,6 +16,13 @@ from totalwar_ai.agent.planner import (
     finishing_value,
     lateral_of,
     slope_advantage,
+)
+from totalwar_ai.agent.sectors import (
+    ASSAULT_DEADLINE,
+    Assignment,
+    Manoeuvre,
+    ManoeuvrePhase,
+    ManoeuvreRole,
 )
 from totalwar_ai.domain.actions import ActionType
 from totalwar_ai.domain.battle_state import BattlePhase
@@ -637,3 +645,359 @@ def test_a_distance_egale_on_prefere_la_cible_en_contrebas(make_battle) -> None:
     etat = make_battle([attaquant, en_bas, en_haut])
 
     assert Planner().select_target(attaquant, etat) is en_bas
+
+
+# --- la manoeuvre : une phase qui attend, et qui peut echouer ------------------
+
+
+def test_le_rassemblement_se_termine_quand_les_requis_sont_en_situation(
+    make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """`ASSEMBLE` ne dure que le temps d'avoir ses participants.
+
+    La condition porte sur les requis **de cette manoeuvre**, jamais sur une part
+    de l'armee : `numerical_superiority` gagne ses trois batailles avec une seule
+    unite au contact, et un seuil de masse l'aurait interdite.
+    """
+    poste = Vector3(0.0, 0.0, 100.0)
+    manoeuvre = Manoeuvre(
+        sector=0,
+        centre=poste,
+        attackers=("a1",),
+        targets=("e1",),
+        ratio=2.0,
+        started_at=0.0,
+        assignments=(Assignment("a1", ManoeuvreRole.FIX, staging=poste),),
+    )
+    planificateur = Planner()
+
+    loin = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0)
+    attente = planificateur._advance(manoeuvre, make_battle([loin], game_time=10.0))
+    assert attente.phase is ManoeuvrePhase.ASSEMBLE
+
+    arrive = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=95.0)
+    liberee = planificateur._advance(manoeuvre, make_battle([arrive], game_time=10.0))
+    assert liberee.phase is ManoeuvrePhase.CONTACT
+
+
+def test_un_rassemblement_qui_n_aboutit_pas_relache_ses_participants(
+    make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """Sinon on remplacerait un defaut par un pire.
+
+    Sans borne, une manoeuvre dont un participant ne peut plus rejoindre sa
+    position retiendrait les autres jusqu'a la fin : « trois unites partent
+    seules » deviendrait « douze unites n'agissent jamais ».
+
+    La borne n'est pas inventee : `ASSAULT_DEADLINE` dit deja qu'au-dela d'une
+    minute et demie, l'assaut decide appartient a une autre bataille.
+    """
+    poste = Vector3(0.0, 0.0, 100.0)
+    manoeuvre = Manoeuvre(
+        sector=0,
+        centre=poste,
+        attackers=("a1",),
+        targets=("e1",),
+        ratio=2.0,
+        started_at=0.0,
+        assignments=(Assignment("a1", ManoeuvreRole.FIX, staging=poste),),
+    )
+    planificateur = Planner()
+    absent = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0)
+
+    avant = planificateur._advance(manoeuvre, make_battle([absent], game_time=ASSAULT_DEADLINE))
+    assert avant.phase is ManoeuvrePhase.ASSEMBLE
+
+    apres = planificateur._advance(
+        manoeuvre, make_battle([absent], game_time=ASSAULT_DEADLINE + 1.0)
+    )
+    assert apres.phase is ManoeuvrePhase.ABORTED
+    assert apres.abort_reason is not None and "a1" in apres.abort_reason
+
+
+def test_un_participant_requis_mort_abandonne_sans_attendre(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Attendre quatre-vingt-dix secondes un mort retient les vivants pour rien.
+
+    La deroute ne compte pas : une unite qui rompt peut se rallier, et l'exclure
+    ferait abandonner des manoeuvres encore tenables. La distinction est
+    `is_alive`, pas `is_available`.
+    """
+    poste = Vector3(0.0, 0.0, 100.0)
+    manoeuvre = Manoeuvre(
+        sector=0,
+        centre=poste,
+        attackers=("a1",),
+        targets=("e1",),
+        ratio=2.0,
+        started_at=0.0,
+        assignments=(Assignment("a1", ManoeuvreRole.ASSAULT, staging=poste),),
+    )
+    planificateur = Planner()
+
+    fuyard = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0, is_routing=True)
+    tenable = planificateur._advance(manoeuvre, make_battle([fuyard], game_time=10.0))
+    assert tenable.phase is ManoeuvrePhase.ASSEMBLE, "une unite en deroute peut se rallier"
+
+    mort = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0, entity_ratio=0.0)
+    perdue = planificateur._advance(manoeuvre, make_battle([mort], game_time=10.0))
+    assert perdue.phase is ManoeuvrePhase.ABORTED
+    assert perdue.abort_reason is not None and "a1" in perdue.abort_reason
+
+
+def test_pendant_le_rassemblement_un_participant_rejoint_sa_position_sans_attaquer(  # type: ignore[no-untyped-def]
+    make_unit, make_battle
+) -> None:
+    """**Le defaut du 18/08, rendu impossible par construction.**
+
+    Trois unites rapides ne peuvent plus partir pendant que la ligne attend, parce
+    que leur depart et l'attente de la ligne appartiennent desormais a la meme
+    decision d'armee. Tant que la manoeuvre rassemble, aucun participant n'ouvre
+    le combat : ni `ATTACK_TARGET`, ni `FLANK`.
+    """
+    planificateur = Planner()
+    cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=0.0, z=0.0)
+    fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
+    ennemi = make_unit("e1", Side.ENEMY, UnitRole.RANGED_INFANTRY, x=0.0, z=200.0)
+    etat = make_battle([cavalier, fantassin, ennemi])
+
+    poste = Vector3(0.0, 0.0, 160.0)
+    rassemblement = Manoeuvre(
+        sector=0,
+        centre=Vector3(0.0, 0.0, 200.0),
+        attackers=("a_cav", "a_inf"),
+        targets=("e1",),
+        ratio=2.0,
+        phase=ManoeuvrePhase.ASSEMBLE,
+        assignments=(
+            Assignment("a_cav", ManoeuvreRole.FLANK, staging=poste),
+            Assignment("a_inf", ManoeuvreRole.ASSAULT, staging=poste),
+        ),
+    )
+    plan = replace(planificateur.build_plan(etat), assault=rassemblement)
+    decisions = planificateur.tactical_decisions(etat, plan)
+
+    par_unite = {
+        acteur: decision.action.type
+        for decision in decisions
+        for acteur in decision.action.actor_ids
+    }
+    assert par_unite["a_cav"] is ActionType.MOVE_GROUP, "le flanqueur rejoint, il ne charge pas"
+    assert par_unite["a_inf"] is ActionType.MOVE_GROUP
+    assert ActionType.FLANK not in par_unite.values()
+    assert ActionType.ATTACK_TARGET not in par_unite.values()
+
+    # Le contact rend leurs ordres a tout le monde, au meme plan.
+    engage = replace(rassemblement, phase=ManoeuvrePhase.CONTACT)
+    liberees = planificateur.tactical_decisions(etat, replace(plan, assault=engage))
+    types = {
+        acteur: decision.action.type
+        for decision in liberees
+        for acteur in decision.action.actor_ids
+    }
+    assert types["a_cav"] is ActionType.FLANK
+    assert types["a_inf"] is ActionType.ATTACK_TARGET
+
+
+def test_un_appui_feu_sans_cible_rejoint_sa_portee_au_lieu_d_attendre(
+    make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """« Trois unites d'archers qui n'ont pas suivi le pack », pendant la manoeuvre.
+
+    Mesure sur le banc : **zero `FIRE_SUPPORT` sur cent vingt-six** recevait un
+    ordre de rassemblement, parce que le rassemblement n'etait branche que sur la
+    ligne et la cavalerie. L'appui restait en arriere pendant que le choc se
+    rassemblait.
+
+    Un tireur qui a deja une cible n'est pas concerne : tirer sur le secteur
+    **est** l'appui.
+    """
+    planificateur = Planner()
+    tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
+    fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
+    lointain = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=600.0)
+    etat = make_battle([tireur, fantassin, lointain])
+
+    poste = Vector3(0.0, 0.0, 480.0)
+    rassemblement = Manoeuvre(
+        sector=0,
+        centre=Vector3(0.0, 0.0, 600.0),
+        attackers=("a_inf",),
+        targets=("e1",),
+        ratio=2.0,
+        phase=ManoeuvrePhase.ASSEMBLE,
+        assignments=(
+            Assignment("a_inf", ManoeuvreRole.ASSAULT, staging=poste),
+            Assignment("a_arc", ManoeuvreRole.FIRE_SUPPORT, staging=poste, required=False),
+        ),
+    )
+    plan = replace(planificateur.build_plan(etat), assault=rassemblement)
+    decisions = planificateur.tactical_decisions(etat, plan)
+
+    pour_le_tireur = [d for d in decisions if "a_arc" in d.action.actor_ids]
+    assert pour_le_tireur, "l'appui-feu ne doit pas rester muet"
+    assert pour_le_tireur[0].action.type is ActionType.MOVE_GROUP
+    assert "rassemblement" in pour_le_tireur[0].cause
+
+
+def test_un_tireur_menace_se_replie_avant_de_penser_au_rassemblement(
+    make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """La securite passe avant la manoeuvre, et doit le rester.
+
+    Rassembler un tireur qu'une cavalerie charge reviendrait a l'y envoyer mourir
+    pour tenir un horaire.
+    """
+    planificateur = Planner()
+    tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
+    fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
+    fondeur = make_unit("e_cav", Side.ENEMY, UnitRole.SHOCK_CAVALRY, x=0.0, z=20.0)
+    cible = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=600.0)
+    etat = make_battle([tireur, fantassin, fondeur, cible])
+
+    poste = Vector3(0.0, 0.0, 480.0)
+    rassemblement = Manoeuvre(
+        sector=0,
+        centre=Vector3(0.0, 0.0, 600.0),
+        attackers=("a_inf",),
+        targets=("e1",),
+        ratio=2.0,
+        phase=ManoeuvrePhase.ASSEMBLE,
+        assignments=(
+            Assignment("a_inf", ManoeuvreRole.ASSAULT, staging=poste),
+            Assignment("a_arc", ManoeuvreRole.FIRE_SUPPORT, staging=poste, required=False),
+        ),
+    )
+    plan = replace(planificateur.build_plan(etat), assault=rassemblement)
+    decisions = planificateur.tactical_decisions(etat, plan)
+
+    causes = [d.cause for d in decisions if "a_arc" in d.action.actor_ids]
+    assert causes, "le tireur doit recevoir un ordre"
+    assert all("rassemblement" not in cause for cause in causes), "la menace passe avant"
+
+
+def _manoeuvre_avec_appui(phase: ManoeuvrePhase, poste: Vector3, centre: Vector3) -> Manoeuvre:
+    return Manoeuvre(
+        sector=0,
+        centre=centre,
+        attackers=("a_inf", "a_cav"),
+        targets=("e1",),
+        ratio=2.0,
+        phase=phase,
+        assignments=(
+            Assignment("a_inf", ManoeuvreRole.ASSAULT, staging=poste),
+            Assignment("a_cav", ManoeuvreRole.FLANK, staging=poste),
+            Assignment("a_arc", ManoeuvreRole.FIRE_SUPPORT, staging=poste, required=False),
+        ),
+    )
+
+
+@pytest.mark.parametrize("phase", [ManoeuvrePhase.ASSEMBLE, ManoeuvrePhase.CONTACT])
+def test_un_appui_feu_hors_de_portee_continue_sa_route_apres_le_contact(  # type: ignore[no-untyped-def]
+    make_unit, make_battle, phase: ManoeuvrePhase
+) -> None:
+    """`FIRE_SUPPORT` n'est pas requis : le contact peut partir sans lui.
+
+    C'est deliberé — sans quoi un tireur qui n'arrive jamais a portee bloquerait
+    la manoeuvre. Mais la contrepartie est qu'il peut etre encore en chemin quand
+    la transition a lieu, et s'arreter la reviendrait a **l'abandonner a
+    mi-parcours**. Il retomberait sur la station d'ancre, qui ne suit la ligne
+    qu'en posture offensive et vise l'ancre plutot que le secteur : le defaut deja
+    ferme pendant le rassemblement, simplement deplace apres la transition.
+    """
+    planificateur = Planner()
+    tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
+    fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
+    cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=40.0, z=0.0)
+    lointain = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=600.0)
+    etat = make_battle([tireur, fantassin, cavalier, lointain])
+
+    centre = Vector3(0.0, 0.0, 600.0)
+    plan = replace(
+        planificateur.build_plan(etat),
+        assault=_manoeuvre_avec_appui(phase, Vector3(0.0, 0.0, 480.0), centre),
+    )
+    decisions = planificateur.tactical_decisions(etat, plan)
+
+    pour_le_tireur = [d for d in decisions if "a_arc" in d.action.actor_ids]
+    assert pour_le_tireur, "l'appui-feu ne doit jamais rester muet"
+    assert pour_le_tireur[0].action.type is ActionType.MOVE_GROUP
+    assert pour_le_tireur[0].action.parameters["destination"].z == pytest.approx(480.0)
+
+
+def test_un_appui_feu_a_portee_tire_au_lieu_de_se_deplacer(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Tirer sur le secteur **est** l'appui : rien ne justifie de bouger."""
+    planificateur = Planner()
+    tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
+    fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
+    cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=40.0, z=0.0)
+    proche = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=90.0)
+    etat = make_battle([tireur, fantassin, cavalier, proche])
+
+    centre = Vector3(0.0, 0.0, 90.0)
+    plan = replace(
+        planificateur.build_plan(etat),
+        assault=_manoeuvre_avec_appui(ManoeuvrePhase.CONTACT, Vector3(0.0, 0.0, -30.0), centre),
+    )
+    decisions = planificateur.tactical_decisions(etat, plan)
+
+    types = {d.action.type for d in decisions if "a_arc" in d.action.actor_ids}
+    assert types == {ActionType.FOCUS_FIRE}, "un tireur a portee ne se deplace pas"
+
+
+def test_un_appui_feu_menace_se_replie_avant_tout(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """La securite reste souveraine, en rassemblement comme au contact.
+
+    L'envoyer rejoindre sa portee pendant qu'une cavalerie fond sur lui
+    reviendrait a l'y faire mourir pour tenir un horaire.
+    """
+    planificateur = Planner()
+    tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
+    fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
+    cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=40.0, z=0.0)
+    fondeur = make_unit("e_cav", Side.ENEMY, UnitRole.SHOCK_CAVALRY, x=0.0, z=20.0)
+    lointain = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=600.0)
+    etat = make_battle([tireur, fantassin, cavalier, fondeur, lointain])
+
+    centre = Vector3(0.0, 0.0, 600.0)
+    plan = replace(
+        planificateur.build_plan(etat),
+        assault=_manoeuvre_avec_appui(ManoeuvrePhase.CONTACT, Vector3(0.0, 0.0, 480.0), centre),
+    )
+    decisions = planificateur.tactical_decisions(etat, plan)
+
+    types = {d.action.type for d in decisions if "a_arc" in d.action.actor_ids}
+    assert ActionType.RETREAT in types
+    assert ActionType.MOVE_GROUP not in types, "la menace passe avant la portee"
+
+
+def test_seul_l_appui_feu_reste_persistant_apres_le_contact(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Le garde-fou du contrat.
+
+    Rendre **tous** les roles persistants apres `CONTACT` reconduirait la
+    paralysie que l'abandon sur `ASSAULT_DEADLINE` existe pour eviter : le flanc
+    et l'assaut resteraient a se replacer au lieu de frapper, alors que la
+    transition vient precisement de les liberer.
+    """
+    planificateur = Planner()
+    tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
+    fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
+    cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=40.0, z=0.0)
+    ennemi = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=600.0)
+    etat = make_battle([tireur, fantassin, cavalier, ennemi])
+
+    centre = Vector3(0.0, 0.0, 600.0)
+    plan = replace(
+        planificateur.build_plan(etat),
+        assault=_manoeuvre_avec_appui(ManoeuvrePhase.CONTACT, Vector3(0.0, 0.0, 480.0), centre),
+    )
+    decisions = planificateur.tactical_decisions(etat, plan)
+
+    par_unite = {
+        acteur: (decision.action.type, decision.cause)
+        for decision in decisions
+        for acteur in decision.action.actor_ids
+    }
+    assert par_unite["a_cav"][0] is ActionType.FLANK
+    assert "rejoint sa portee" not in par_unite["a_cav"][1]
+    assert par_unite["a_inf"][0] is ActionType.ATTACK_TARGET
+    assert par_unite["a_arc"][0] is ActionType.MOVE_GROUP
