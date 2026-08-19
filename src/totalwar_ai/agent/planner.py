@@ -772,6 +772,11 @@ class Planner:
             )
         return manoeuvre
 
+    @property
+    def mobility(self) -> MobilityTracker:
+        """Vitesses apprises. Lecture seule : la telemetrie s'en sert pour les ETA."""
+        return self._mobility
+
     def _abstain(self, code: str) -> None:
         """Note un renoncement, la ou il a lieu."""
         self._abstentions[code] = self._abstentions.get(code, 0) + 1

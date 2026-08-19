@@ -423,3 +423,37 @@ def test_une_manoeuvre_affecte_l_armee_et_pas_le_seul_paquet_de_choc(
     assert ManoeuvreRole.FIRE_SUPPORT not in requis, "un tireur hors de portee ne bloque pas"
     assert ManoeuvreRole.FIX not in requis
     assert ManoeuvreRole.RESERVE not in requis
+
+
+def test_la_telemetrie_dit_qui_attendait_qui(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Trois questions doivent trouver leur reponse dans le corpus.
+
+    Qui attendait qui, quand le contact a ete autorise, quel participant
+    manquait. Les deduire apres coup en relisant les positions reviendrait a
+    redemander a l'instrument ce qu'il vient de taire — et le corpus live
+    n'enregistre pas le plan.
+    """
+    poste = Vector3(0.0, 0.0, 100.0)
+    arrive = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=95.0)
+    retard = make_unit("a2", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=0.0, z=-300.0)
+    manoeuvre = Manoeuvre(
+        sector=2,
+        centre=poste,
+        attackers=("a1", "a2"),
+        targets=(),
+        ratio=2.0,
+        started_at=12.0,
+        assignments=(
+            Assignment("a1", ManoeuvreRole.ASSAULT, staging=poste),
+            Assignment("a2", ManoeuvreRole.FLANK, staging=poste),
+        ),
+    )
+
+    releve = manoeuvre.telemetry(make_battle([arrive, retard]))
+
+    assert releve["sector"] == 2
+    assert releve["phase"] == ManoeuvrePhase.ASSEMBLE.value
+    assert releve["started_at"] == 12.0
+    assert releve["roles"] == {"a1": "assault", "a2": "flank"}
+    assert releve["ready"] == ["a1"]
+    assert releve["missing"] == ["a2"], "le corpus doit nommer celui qu'on attend"

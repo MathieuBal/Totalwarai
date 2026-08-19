@@ -232,6 +232,7 @@ class BattleRecorder:
                     "sent": step.sent,
                     "acknowledgement": step.acknowledgement.to_dict(),
                     "planner_reasons": dict(step.planner_reasons),
+                    "manoeuvre": step.manoeuvre,
                 }
             )
             # Ce que nous aurions fait, l'IA du moteur menant la bataille. C'est

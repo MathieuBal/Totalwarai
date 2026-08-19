@@ -430,6 +430,27 @@ class Manoeuvre:
             )
         )
 
+    def telemetry(
+        self, state: BattleState, *, mobility: MobilityTracker | None = None
+    ) -> dict[str, object]:
+        """De quoi reconstruire la manoeuvre apres la bataille, sans la rejouer.
+
+        Trois questions doivent trouver leur reponse dans le corpus : **qui
+        attendait qui, quand le contact a ete autorise, quel participant
+        manquait.** Les deduire apres coup en relisant les positions reviendrait a
+        redemander a l'instrument ce qu'il vient de taire.
+        """
+        return {
+            "sector": self.sector,
+            "phase": self.phase.value,
+            "started_at": self.started_at,
+            "abort_reason": self.abort_reason,
+            "roles": {item.unit_id: item.role.value for item in self.assignments},
+            "required": [item.unit_id for item in self.assignments if item.required],
+            "ready": [item.unit_id for item in self.ready_assignments(state, mobility=mobility)],
+            "missing": list(self.missing(state, mobility=mobility)),
+        }
+
     def explain(self) -> str:
         return (
             f"assaut du secteur {self.sector} : {len(self.attackers)} unite(s) "
