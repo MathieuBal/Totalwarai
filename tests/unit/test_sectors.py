@@ -457,3 +457,29 @@ def test_la_telemetrie_dit_qui_attendait_qui(make_unit, make_battle) -> None:  #
     assert releve["roles"] == {"a1": "assault", "a2": "flank"}
     assert releve["ready"] == ["a1"]
     assert releve["missing"] == ["a2"], "le corpus doit nommer celui qu'on attend"
+
+
+def test_le_commandement_ne_recoit_pas_de_role_de_manoeuvre(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """Un role que l'unite ne tiendra jamais est un mensonge de nommage.
+
+    `_command_leaders` maintient le commandement « hors de la melee frontale » et
+    ne produit qu'un ordre : reculer vers un point de soutien. Il n'attaque
+    jamais. Le seigneur figurait pourtant comme assaillant — **quatre-vingt-quatre
+    fois sur le banc** — sans qu'aucun chemin ne l'envoie a une position de
+    depart, et la telemetrie annoncait un participant que rien ne rassemblait.
+
+    Il reste dans `attackers`, donc dans le rapport local : c'est un autre defaut,
+    anterieur, consigne a l'ADR 0024.
+    """
+    ennemis = _ligne(make_unit, Side.ENEMY, "e", (0.0,), 200.0)
+    fantassins = _ligne(make_unit, Side.ALLY, "a", (0.0, 15.0, 30.0), 120.0)
+    seigneur = make_unit("a_lord", Side.ALLY, UnitRole.LORD, x=45.0, z=120.0)
+    allies = [*fantassins, seigneur]
+    etat = make_battle([*allies, *ennemis])
+
+    manoeuvre = commit(split_sectors(etat, FRONT, allies).best(), etat, allies, game_time=0.0)
+
+    assert manoeuvre is not None
+    assert "a_lord" in manoeuvre.attackers, "le paquet de choc n'est pas modifie"
+    assert manoeuvre.role_of("a_lord") is None, "il ne porte aucun role de manoeuvre"
+    assert "a_lord" not in manoeuvre.missing(etat), "il ne peut donc plus retenir le contact"

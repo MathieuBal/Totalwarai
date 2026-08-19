@@ -777,6 +777,17 @@ def _compose(
         unite = par_id.get(unit_id)
         if unite is None:
             continue
+        if unite.role in PRECIOUS_ROLES:
+            # **Le commandement a sa propre doctrine.** `_command_leaders` le
+            # maintient « hors de la melee frontale » et ne produit qu'un ordre :
+            # reculer vers un point de soutien. Il n'attaque jamais.
+            #
+            # Lui donner un role de manoeuvre etait donc un mensonge de nommage :
+            # il figurait comme assaillant — 84 fois sur le banc — sans qu'aucun
+            # chemin ne l'y envoie, et la telemetrie annoncait un participant que
+            # rien ne rassemblait. Il reste dans `attackers`, donc dans le rapport
+            # local ; c'est un autre defaut, consigne a l'ADR 0024.
+            continue
         role = _mission(unite)
         affectations.append(
             Assignment(
@@ -791,16 +802,7 @@ def _compose(
                 # **N'est requis que ce que la doctrine envoie vraiment au
                 # contact.** Un appui-feu embarque dans le paquet de choc
                 # appuie ; il ne retient pas le contact pour autant.
-                #
-                # Le commandement non plus, et le cas etait pire : le seigneur
-                # entre dans `attackers`, mais `_command_leaders` le maintient
-                # « hors de la melee frontale » et aucun chemin ne l'amene a une
-                # position de depart. Mesure sur le banc : il bloquait **les
-                # trente plans de rassemblement**, seul, sans qu'aucune arrivee
-                # soit possible. Exiger ce que personne ne peut satisfaire n'est
-                # pas une exigence, c'est un verrou.
-                required=role is not ManoeuvreRole.FIRE_SUPPORT
-                and unite.role not in PRECIOUS_ROLES,
+                required=role is not ManoeuvreRole.FIRE_SUPPORT,
             )
         )
 

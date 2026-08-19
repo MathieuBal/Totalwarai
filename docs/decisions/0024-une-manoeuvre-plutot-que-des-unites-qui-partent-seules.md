@@ -1,7 +1,7 @@
 # 0024 — Une manœuvre, plutôt que des unités qui partent seules
 
-**Statut :** retenu pour les étapes 1 à 4 — le retrait de la branche opportuniste
-est **mesuré et reporté** — 19/08/2026
+**Statut :** retenu pour les étapes 1 à 4, dispositif complet — le retrait de la
+branche opportuniste est **mesuré et reporté** — 19/08/2026
 
 ## Le défaut, et sa branche de code
 
@@ -79,6 +79,58 @@ requis désormais que ce que la doctrine envoie vraiment au contact.
 Après ces trois corrections : **40 % des plans à manœuvre atteignent `CONTACT`**,
 contre 9 %.
 
+## Le paquet ne bougeait qu'au tiers
+
+Une fois `ASSEMBLE` branché, la question restait entière : **tout le dispositif
+rejoint-il sa position, ou seulement le paquet de choc ?** La mesure a répondu.
+
+| rôle | envoyé à sa position | après correctif |
+| --- | ---: | ---: |
+| `flank` | 100 % | 100 % |
+| `fix` | 86 % | 86 % |
+| `assault` | 32 % | **66 %** |
+| `fire_support` | **0 %** | **27 %, plus 66 % qui tirent** |
+
+`_stage` n'était appelé que depuis la ligne et la cavalerie. Les deux groupes
+qu'il ne traversait jamais sont exactement ceux qui manquaient.
+
+**Les tireurs restaient en arrière.** Les `FIRE_SUPPORT` appartiennent aux groupes
+`MISSILE` et `ARTILLERY`, traités par `_fire_missiles` — lequel savait déjà
+rattacher les tireurs sans cible, mais sur **l'ancre**, pas sur le secteur de la
+manœuvre, et seulement en posture offensive. Cent vingt-six participants sur cent
+vingt-six n'ont jamais reçu d'ordre de rassemblement. C'était « trois unités
+d'archers qui n'ont pas suivi le pack » — le même défaut, cette fois pendant la
+manœuvre.
+
+Corrigé, plus aucun appui-feu n'est muet pendant le rassemblement : 66 % tirent,
+ce qui **est** l'appui, 27 % rejoignent leur portée, 7 % se replient ou se
+protègent. `_protect_ranged` garde la priorité — rassembler un tireur qu'une
+cavalerie charge reviendrait à l'y envoyer mourir pour tenir un horaire.
+
+**Le seigneur portait un rôle qu'il ne tiendrait jamais.** Quatre-vingt-quatre des
+participants `ASSAULT` non rassemblés étaient dans le groupe `COMMAND`, dont
+`_command_leaders` ne produit qu'un seul ordre : reculer vers un point de soutien.
+Il n'attaque jamais. Le commandement ne reçoit donc plus de rôle de manœuvre — il
+a sa propre doctrine, et la télémétrie cesse d'annoncer un assaillant qui
+n'assaillira pas. Les 33 `ASSAULT` restants sont déjà au contact : les décrocher
+les ferait tuer de dos.
+
+La séquence visée est désormais lisible dans la télémétrie :
+
+```
+ASSEMBLE   fixation et flanc rejoignent leur position
+           l'appui tire, ou se met en portée
+              ↓
+CONTACT    le flanc charge, la fixation tient, l'appui rejoint son poste
+```
+
+Le `HOLD` de la fixation n'est plus une absence : c'est un rôle.
+
+**Effet mesuré** : `outnumbered` remonte de trois défaites à **une défaite et deux
+nuls**, au-dessus de ce que le code donnait avant ce chantier ;
+`numerical_superiority` passe de 87 % à **94 %** de forces restantes, en 37 s au
+lieu de 55 s.
+
 ## Le retrait de la branche opportuniste est reporté
 
 C'est la conclusion principale de cet ADR, et elle est négative.
@@ -111,9 +163,13 @@ comprendre pourquoi aucun secteur ne compose en posture défensive.
 
 La comparaison ne regardait que le taux de victoire, les forces restantes et la
 survie du seigneur. Sur `outnumbered`, la référence porte trois nuls ; le code
-d'**avant** ce chantier en donnait déjà deux défaites et un nul ; l'étape 3 fait
-tomber le dernier. Deux tiers de la chute précèdent donc ce travail — et rien ne
-l'avait jamais signalé, parce que 0 % de victoires reste 0 % de victoires.
+d'**avant** ce chantier en donnait déjà deux défaites et un nul. La chute
+précédait donc ce travail, et rien ne l'avait jamais signalé, parce que 0 % de
+victoires reste 0 % de victoires.
+
+Le dispositif complet a depuis ramené le scénario à une défaite et deux nuls,
+c'est-à-dire **au-dessus** de l'état où ce chantier l'a trouvé. L'écart qui reste
+avec la référence lui est entièrement antérieur.
 
 La part de batailles non perdues est désormais comparée comme les autres
 métriques. Ce sont précisément les scénarios bloqués à zéro victoire qui portent

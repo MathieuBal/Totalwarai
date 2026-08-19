@@ -796,3 +796,80 @@ def test_pendant_le_rassemblement_un_participant_rejoint_sa_position_sans_attaqu
     }
     assert types["a_cav"] is ActionType.FLANK
     assert types["a_inf"] is ActionType.ATTACK_TARGET
+
+
+def test_un_appui_feu_sans_cible_rejoint_sa_portee_au_lieu_d_attendre(
+    make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """« Trois unites d'archers qui n'ont pas suivi le pack », pendant la manoeuvre.
+
+    Mesure sur le banc : **zero `FIRE_SUPPORT` sur cent vingt-six** recevait un
+    ordre de rassemblement, parce que le rassemblement n'etait branche que sur la
+    ligne et la cavalerie. L'appui restait en arriere pendant que le choc se
+    rassemblait.
+
+    Un tireur qui a deja une cible n'est pas concerne : tirer sur le secteur
+    **est** l'appui.
+    """
+    planificateur = Planner()
+    tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
+    fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
+    lointain = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=600.0)
+    etat = make_battle([tireur, fantassin, lointain])
+
+    poste = Vector3(0.0, 0.0, 480.0)
+    rassemblement = Manoeuvre(
+        sector=0,
+        centre=Vector3(0.0, 0.0, 600.0),
+        attackers=("a_inf",),
+        targets=("e1",),
+        ratio=2.0,
+        phase=ManoeuvrePhase.ASSEMBLE,
+        assignments=(
+            Assignment("a_inf", ManoeuvreRole.ASSAULT, staging=poste),
+            Assignment("a_arc", ManoeuvreRole.FIRE_SUPPORT, staging=poste, required=False),
+        ),
+    )
+    plan = replace(planificateur.build_plan(etat), assault=rassemblement)
+    decisions = planificateur.tactical_decisions(etat, plan)
+
+    pour_le_tireur = [d for d in decisions if "a_arc" in d.action.actor_ids]
+    assert pour_le_tireur, "l'appui-feu ne doit pas rester muet"
+    assert pour_le_tireur[0].action.type is ActionType.MOVE_GROUP
+    assert "rassemblement" in pour_le_tireur[0].cause
+
+
+def test_un_tireur_menace_se_replie_avant_de_penser_au_rassemblement(
+    make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """La securite passe avant la manoeuvre, et doit le rester.
+
+    Rassembler un tireur qu'une cavalerie charge reviendrait a l'y envoyer mourir
+    pour tenir un horaire.
+    """
+    planificateur = Planner()
+    tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
+    fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
+    fondeur = make_unit("e_cav", Side.ENEMY, UnitRole.SHOCK_CAVALRY, x=0.0, z=20.0)
+    cible = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=600.0)
+    etat = make_battle([tireur, fantassin, fondeur, cible])
+
+    poste = Vector3(0.0, 0.0, 480.0)
+    rassemblement = Manoeuvre(
+        sector=0,
+        centre=Vector3(0.0, 0.0, 600.0),
+        attackers=("a_inf",),
+        targets=("e1",),
+        ratio=2.0,
+        phase=ManoeuvrePhase.ASSEMBLE,
+        assignments=(
+            Assignment("a_inf", ManoeuvreRole.ASSAULT, staging=poste),
+            Assignment("a_arc", ManoeuvreRole.FIRE_SUPPORT, staging=poste, required=False),
+        ),
+    )
+    plan = replace(planificateur.build_plan(etat), assault=rassemblement)
+    decisions = planificateur.tactical_decisions(etat, plan)
+
+    causes = [d.cause for d in decisions if "a_arc" in d.action.actor_ids]
+    assert causes, "le tireur doit recevoir un ordre"
+    assert all("rassemblement" not in cause for cause in causes), "la menace passe avant"

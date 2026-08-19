@@ -1214,6 +1214,21 @@ class Planner:
                     shooter, state, assignments=assignments, for_missile=True
                 )
                 if target is None:
+                    # **Un tireur sans cible pendant le rassemblement rejoint sa
+                    # portee, il n'attend pas.** Mesure sur le banc : zero
+                    # `FIRE_SUPPORT` sur cent vingt-six recevait un ordre de
+                    # rassemblement, parce que `_stage` n'etait appele que depuis
+                    # la ligne et la cavalerie. L'appui-feu restait donc en
+                    # arriere pendant que le choc se rassemblait — « trois unites
+                    # d'archers qui n'ont pas suivi le pack », a nouveau, mais
+                    # cette fois pendant la manoeuvre.
+                    #
+                    # Un tireur qui a deja une cible n'est pas concerne : tirer
+                    # sur le secteur **est** l'appui. Et un tireur menace n'arrive
+                    # jamais ici, `_protect_ranged` l'ayant deja replie : la
+                    # securite passe avant le rassemblement.
+                    if self._stage(shooter, plan, decisions):
+                        continue
                     ecart = shooter.position.distance_2d(station)
                     # **Seulement quand la ligne avance.** En posture defensive,
                     # la position de tir se choisit par rapport a la menace et non
