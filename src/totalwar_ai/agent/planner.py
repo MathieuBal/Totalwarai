@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -24,7 +24,13 @@ from totalwar_ai.agent.explainability import Decision, decide
 from totalwar_ai.agent.grouping import GroupKind, GroupSet, TacticalGroup, build_groups
 from totalwar_ai.agent.mobility import MobilityTracker
 from totalwar_ai.agent.passivity import PassivityWatch
-from totalwar_ai.agent.sectors import Manoeuvre, commit, split_sectors
+from totalwar_ai.agent.sectors import (
+    ASSAULT_DEADLINE,
+    Manoeuvre,
+    ManoeuvrePhase,
+    commit,
+    split_sectors,
+)
 from totalwar_ai.domain.actions import ActionType, AgentAction, Formation
 from totalwar_ai.domain.battle_state import BattlePhase, BattleState
 from totalwar_ai.domain.geometry import Vector3, centroid
@@ -630,8 +636,14 @@ class Planner:
         # avait pris pour une incompatibilite etait un assaut **lance pendant**
         # un repli, jamais un assaut poursuivi malgre lui.
         if self._assault is not None and not self._assault.broken(state):
-            self._abstain(ABSTAIN_ASSAULT_RUNNING)
-            return self._assault
+            avancee = self._advance(self._assault, state)
+            if avancee.phase is not ManoeuvrePhase.ABORTED:
+                self._abstain(ABSTAIN_ASSAULT_RUNNING)
+                self._assault = avancee
+                return self._assault
+            # Abandonnee : elle relache ses participants et le choix recommence
+            # sur l'etat du moment, exactement comme apres une rupture.
+            self._assault = None
         self._assault = None
         if withdrawing:
             self._abstain(ABSTAIN_WITHDRAWING)
@@ -701,7 +713,44 @@ class Planner:
         )
         if self._assault is None:
             self._abstain(ABSTAIN_COMMIT_FAILED)
+        else:
+            # Une manoeuvre dont les participants sont deja en place n'a rien a
+            # attendre : elle ne doit pas perdre un plan entier en `ASSEMBLE`.
+            self._assault = self._advance(self._assault, state)
         return self._assault
+
+    def _advance(self, manoeuvre: Manoeuvre, state: BattleState) -> Manoeuvre:
+        """Fait franchir a la manoeuvre la seule transition qu'elle peut franchir.
+
+        **Le rassemblement est la seule phase qui attend quelqu'un.** Elle se
+        termine quand les participants *requis* sont en situation de tenir leurs
+        roles — pas quand un pourcentage de l'armee est arrive. La difference est
+        celle que `numerical_superiority` illustre : cette bataille se gagne avec
+        une seule unite au contact, et un seuil de masse l'aurait interdite.
+
+        La rupture, elle, reste geree la ou elle l'etait : `broken()` relache la
+        manoeuvre et le choix recommence sur l'etat du moment.
+        """
+        if manoeuvre.phase is not ManoeuvrePhase.ASSEMBLE:
+            return manoeuvre
+        if manoeuvre.can_engage(state, mobility=self._mobility):
+            return replace(manoeuvre, phase=ManoeuvrePhase.CONTACT)
+        # **Le rassemblement doit pouvoir echouer.** Sans borne, une manoeuvre
+        # dont un participant ne peut plus rejoindre sa position retiendrait les
+        # autres jusqu'a la fin de la bataille : on aurait remplace « trois
+        # unites partent seules » par « douze unites n'agissent jamais ».
+        #
+        # La borne existe deja et dit exactement cela : au-dela d'une minute et
+        # demie, l'assaut decide appartient a une autre bataille. En reutiliser
+        # une plutot qu'en inventer une evite d'avoir a la regler.
+        if state.game_time - manoeuvre.started_at > ASSAULT_DEADLINE:
+            manquants = ", ".join(manoeuvre.missing(state, mobility=self._mobility))
+            return replace(
+                manoeuvre,
+                phase=ManoeuvrePhase.ABORTED,
+                abort_reason=f"rassemblement inacheve : {manquants or 'aucun participant'}",
+            )
+        return manoeuvre
 
     def _abstain(self, code: str) -> None:
         """Note un renoncement, la ou il a lieu."""

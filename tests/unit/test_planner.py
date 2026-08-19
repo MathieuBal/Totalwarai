@@ -16,6 +16,13 @@ from totalwar_ai.agent.planner import (
     lateral_of,
     slope_advantage,
 )
+from totalwar_ai.agent.sectors import (
+    ASSAULT_DEADLINE,
+    Assignment,
+    Manoeuvre,
+    ManoeuvrePhase,
+    ManoeuvreRole,
+)
 from totalwar_ai.domain.actions import ActionType
 from totalwar_ai.domain.battle_state import BattlePhase
 from totalwar_ai.domain.geometry import Vector3
@@ -637,3 +644,71 @@ def test_a_distance_egale_on_prefere_la_cible_en_contrebas(make_battle) -> None:
     etat = make_battle([attaquant, en_bas, en_haut])
 
     assert Planner().select_target(attaquant, etat) is en_bas
+
+
+# --- la manoeuvre : une phase qui attend, et qui peut echouer ------------------
+
+
+def test_le_rassemblement_se_termine_quand_les_requis_sont_en_situation(
+    make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """`ASSEMBLE` ne dure que le temps d'avoir ses participants.
+
+    La condition porte sur les requis **de cette manoeuvre**, jamais sur une part
+    de l'armee : `numerical_superiority` gagne ses trois batailles avec une seule
+    unite au contact, et un seuil de masse l'aurait interdite.
+    """
+    poste = Vector3(0.0, 0.0, 100.0)
+    manoeuvre = Manoeuvre(
+        sector=0,
+        centre=poste,
+        attackers=("a1",),
+        targets=("e1",),
+        ratio=2.0,
+        started_at=0.0,
+        assignments=(Assignment("a1", ManoeuvreRole.FIX, staging=poste),),
+    )
+    planificateur = Planner()
+
+    loin = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0)
+    attente = planificateur._advance(manoeuvre, make_battle([loin], game_time=10.0))
+    assert attente.phase is ManoeuvrePhase.ASSEMBLE
+
+    arrive = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=95.0)
+    liberee = planificateur._advance(manoeuvre, make_battle([arrive], game_time=10.0))
+    assert liberee.phase is ManoeuvrePhase.CONTACT
+
+
+def test_un_rassemblement_qui_n_aboutit_pas_relache_ses_participants(
+    make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """Sinon on remplacerait un defaut par un pire.
+
+    Sans borne, une manoeuvre dont un participant ne peut plus rejoindre sa
+    position retiendrait les autres jusqu'a la fin : « trois unites partent
+    seules » deviendrait « douze unites n'agissent jamais ».
+
+    La borne n'est pas inventee : `ASSAULT_DEADLINE` dit deja qu'au-dela d'une
+    minute et demie, l'assaut decide appartient a une autre bataille.
+    """
+    poste = Vector3(0.0, 0.0, 100.0)
+    manoeuvre = Manoeuvre(
+        sector=0,
+        centre=poste,
+        attackers=("a1",),
+        targets=("e1",),
+        ratio=2.0,
+        started_at=0.0,
+        assignments=(Assignment("a1", ManoeuvreRole.FIX, staging=poste),),
+    )
+    planificateur = Planner()
+    absent = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0)
+
+    avant = planificateur._advance(manoeuvre, make_battle([absent], game_time=ASSAULT_DEADLINE))
+    assert avant.phase is ManoeuvrePhase.ASSEMBLE
+
+    apres = planificateur._advance(
+        manoeuvre, make_battle([absent], game_time=ASSAULT_DEADLINE + 1.0)
+    )
+    assert apres.phase is ManoeuvrePhase.ABORTED
+    assert apres.abort_reason is not None and "a1" in apres.abort_reason

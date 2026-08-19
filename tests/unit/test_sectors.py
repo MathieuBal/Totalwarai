@@ -238,13 +238,12 @@ def test_les_unites_rapides_flanquent_et_les_autres_portent_le_choc(make_unit, m
     assert autres <= {ManoeuvreRole.ASSAULT}, "un fantassin ne flanque pas"
 
 
-def test_une_manoeuvre_nait_au_contact_tant_que_personne_ne_la_retient(
-    make_unit, make_battle
-) -> None:  # type: ignore[no-untyped-def]
-    """Le modele arrive avant le comportement : cette etape ne change rien.
+def test_une_manoeuvre_nait_en_rassemblement(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """La manoeuvre commence par attendre les siens, jamais par frapper.
 
-    Naitre en `ASSEMBLE` retiendrait les participants alors qu'aucun code ne sait
-    encore les liberer — l'armee serait paralysee entre deux commits.
+    C'est la phase qui rend impossible le defaut du 18/08 : tant qu'elle dure,
+    aucun participant n'ouvre le combat, et elle ne se termine que lorsque les
+    participants requis sont en situation.
     """
     ennemis = _ligne(make_unit, Side.ENEMY, "e", (0.0,), 200.0)
     allies = _ligne(make_unit, Side.ALLY, "a", (0.0, 15.0, 30.0), 120.0)
@@ -253,8 +252,8 @@ def test_une_manoeuvre_nait_au_contact_tant_que_personne_ne_la_retient(
     manoeuvre = commit(split_sectors(etat, FRONT, allies).best(), etat, allies, game_time=0.0)
 
     assert manoeuvre is not None
-    assert manoeuvre.phase is ManoeuvrePhase.CONTACT
-    assert not manoeuvre.holding
+    assert manoeuvre.phase is ManoeuvrePhase.ASSEMBLE
+    assert manoeuvre.holding
 
 
 def test_un_tireur_a_portee_est_pret_sans_jamais_toucher_l_ennemi(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]

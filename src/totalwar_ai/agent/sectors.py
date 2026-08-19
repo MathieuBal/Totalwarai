@@ -300,7 +300,7 @@ class Manoeuvre:
     initial_enemy_strength: float = 0.0
     started_at: float = 0.0
     #: Ou en est la manoeuvre. **Une seule transition par plan.**
-    phase: ManoeuvrePhase = ManoeuvrePhase.CONTACT
+    phase: ManoeuvrePhase = ManoeuvrePhase.ASSEMBLE
     #: Qui fait quoi, et depuis ou. Vide tant que personne n'a de role.
     assignments: tuple[Assignment, ...] = ()
     abort_reason: str | None = None
