@@ -140,6 +140,48 @@ def test_rien_n_est_emis_avant_le_debut_de_la_bataille(tmp_path: Path) -> None:
     assert not [order for order in probe.orders() if order["kind"] == "goto"]
 
 
+@pytest.mark.parametrize("phase", ["unknown", "Deployment", "Complete"])
+def test_seule_la_phase_deployed_autorise_le_pilotage(tmp_path: Path, phase: str) -> None:
+    """Le meme refus, sur le chemin que le pilotage emprunte reellement.
+
+    Un test de phase existait deja, mais il interrogeait
+    `ProbeUnitState.orders_take_effect` — une classe que `LiveSession` n'utilise
+    jamais. Pendant ce temps `ProbeBattleState`, la seule que la boucle consulte,
+    acceptait encore `unknown`. Le test etait vert et le defaut intact.
+
+    Celui-ci part de la sonde et va jusqu'aux ordres arrives dans le jeu : aucune
+    classe intermediaire ne peut le satisfaire a la place de la bonne.
+
+    Deux phases manquent a cette liste, faute d'etre atteignables ici. La chaine
+    vide est couverte par `test_la_chaine_vide_n_est_pas_une_phase_jouable` : la
+    revision 16 publie toujours le champ, donc seule une regression de protocole
+    la produirait. `VictoryCountdown` n'est pas dans les `PHASES` de la sonde
+    (`totalwar_ai_probe.lua:95`) : le jeu l'annonce dans son propre journal, mais
+    la sonde reste sur `Deployed` — et pendant le decompte, un ordre prend
+    effectivement encore effet.
+    """
+    (tmp_path / "totalwar_ai").mkdir()
+    probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
+    probe.advance(2000)
+    if phase != "unknown":
+        probe.enter_phase(phase)
+    probe.advance(2000)
+
+    session = LiveSession(
+        bridge=FileBridge.open(tmp_path),
+        agent=DeterministicTacticalAgent.from_config(load_config()),
+    )
+    etape = session.step()
+
+    assert etape.state is not None, "la sonde n'a rien publie"
+    assert etape.state.phase == phase
+    assert not etape.acted
+    assert etape.skipped is not None and phase in etape.skipped
+    assert etape.sent == 0
+    probe.advance(1000)
+    assert not [order for order in probe.orders() if order["kind"] == "goto"]
+
+
 def test_l_arret_d_urgence_coupe_tout(session: LiveSession, bataille: Probe) -> None:
     session.stop()
     bataille.advance(1000)

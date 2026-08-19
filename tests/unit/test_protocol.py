@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+from totalwar_ai.bridge.command_models import (
+    ProbeBattleState,
+    ProbeUnitState,
+    orders_take_effect,
+)
 from totalwar_ai.bridge.protocol import (
     PROTOCOL_VERSION,
     ActionResultMessage,
@@ -18,6 +23,7 @@ from totalwar_ai.bridge.protocol import (
     parse_version,
 )
 from totalwar_ai.domain.actions import ActionResult, ActionStatus, ActionType, AgentAction
+from totalwar_ai.domain.geometry import Vector3
 from totalwar_ai.domain.serialization import SchemaError
 from totalwar_ai.domain.unit_state import Side, UnitRole
 
@@ -79,3 +85,37 @@ def test_version_malformee() -> None:
 def test_message_tronque_est_signale() -> None:
     with pytest.raises(SchemaError, match="obligatoire"):
         decode_message({"protocol_version": PROTOCOL_VERSION, "message_type": "battle_state"})
+
+
+# --- la phase jouable, definie une seule fois --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("phase", "jouable"),
+    [
+        ("", False),
+        ("unknown", False),
+        ("Startup", False),
+        ("Deployment", False),
+        ("Deployed", True),
+        ("VictoryCountdown", False),
+        ("Complete", False),
+    ],
+)
+def test_les_deux_etats_repondent_la_meme_chose_sur_la_phase(phase: str, jouable: bool) -> None:
+    """Une regle dupliquee finit par diverger — et celle-ci avait divergé.
+
+    `ProbeUnitState` refusait `unknown` pendant que `ProbeBattleState` l'acceptait
+    encore. C'est `ProbeBattleState` que `LiveSession` consulte : le durcissement
+    n'avait jamais atteint le pilotage, et le test qui le validait interrogeait
+    l'autre classe.
+
+    La chaine vide etait toleree comme « champ absent d'un vieil enregistrement ».
+    Mais le pont live ne relit pas d'enregistrements : la compatibilite des vieux
+    corpus appartient a leur lecteur, pas au contrat du pont.
+    """
+    unite = ProbeUnitState(unit_id="1001", position=Vector3(0.0, 0.0, 0.0), phase=phase)
+
+    assert orders_take_effect(phase) is jouable
+    assert unite.orders_take_effect is jouable
+    assert ProbeBattleState(phase=phase).orders_take_effect is jouable
