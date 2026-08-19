@@ -397,6 +397,23 @@ class Planner:
     #: Composer l'assaut en faisant glisser la fenetre d'arrivee. Voir
     #: :func:`totalwar_ai.agent.sectors.commit`. Mesure seulement.
     sliding_window: bool = False
+    #: Le rassemblement envoie-t-il reellement les participants a leur position ?
+    #:
+    #: **Eteint, et il le restera jusqu'a preuve du contraire en bataille.**
+    #: Allume, il a rendu une partie WH3 injouable : l'armee ne bougeait plus,
+    #: personne n'attaquait, les unites deplacees a la main etaient rappelees a
+    #: leur position de rassemblement, et la ligne partait se faire ouvrir en
+    #: deux. Le banc n'avait rien vu — six manoeuvres sur trente-trois batailles,
+    #: d'une quarantaine de secondes chacune, quand une bataille reelle dure une
+    #: heure. **L'absence de signal sur le banc n'est pas une preuve
+    #: d'innocuite.**
+    #:
+    #: Eteint, l'agent retrouve exactement son comportement d'avant la manoeuvre :
+    #: aucune commande de rassemblement, aucune attente, aucun delai, aucun
+    #: abandon, aucune recomposition qui en decoule. Les roles, les affectations
+    #: et la telemetrie restent — ils ne coutent rien et servent au diagnostic —
+    #: mais ils n'influencent aucun ordre envoye au moteur.
+    manoeuvre_staging: bool = False
 
     #: Cible en cours pour chaque unite, tant qu'elle reste valable.
     #:
@@ -718,6 +735,11 @@ class Planner:
         )
         if self._assault is None:
             self._abstain(ABSTAIN_COMMIT_FAILED)
+        elif not self.manoeuvre_staging:
+            # Rassemblement eteint : la manoeuvre nait au contact, comme au
+            # premier commit de MANOEUVRE-001 — quand aucun comportement de
+            # rassemblement n'existait encore et que le banc etait inchange.
+            self._assault = replace(self._assault, phase=ManoeuvrePhase.CONTACT)
         else:
             # Une manoeuvre dont les participants sont deja en place n'a rien a
             # attendre : elle ne doit pas perdre un plan entier en `ASSEMBLE`.
@@ -736,6 +758,13 @@ class Planner:
         La rupture, elle, reste geree la ou elle l'etait : `broken()` relache la
         manoeuvre et le choix recommence sur l'etat du moment.
         """
+        # **Le drapeau eteint doit neutraliser la machinerie, pas seulement les
+        # ordres.** Rendre `_stage` inerte ne suffisait pas : cette methode
+        # continuait de faire vivre `ASSEMBLE`, puis `ABORTED` au bout de
+        # `ASSAULT_DEADLINE`, puis une recomposition dans le meme calcul de plan.
+        # Le comportement n'aurait pas ete celui d'avant la manoeuvre.
+        if not self.manoeuvre_staging:
+            return manoeuvre
         if manoeuvre.phase is not ManoeuvrePhase.ASSEMBLE:
             return manoeuvre
         # **Un mort ne rejoindra pas.** Attendre les quatre-vingt-dix secondes
@@ -1324,7 +1353,7 @@ class Planner:
         l'abandon sur `ASSAULT_DEADLINE` existe pour eviter.
         """
         manoeuvre = plan.assault
-        if manoeuvre is None or unit.is_engaged:
+        if not self.manoeuvre_staging or manoeuvre is None or unit.is_engaged:
             return False
         affectation = manoeuvre.assignment(unit.id)
         if affectation is None:
