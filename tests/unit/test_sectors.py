@@ -282,15 +282,27 @@ def test_un_tireur_a_portee_est_pret_sans_jamais_toucher_l_ennemi(make_unit, mak
     )
 
 
-def test_un_flanqueur_deja_au_contact_n_est_pas_pret_mais_en_retard(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
-    """C'est exactement le defaut du 18/08 : parti avant tout le monde."""
+def test_un_flanqueur_attaque_sur_sa_position_reste_pret(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
+    """La readiness ne doit pas pouvoir tourner a l'envers.
+
+    Cette regle exigeait d'abord « en place et pas au contact ». Mesure sur
+    `numerical_superiority` : le cavalier atteint sa position exacte a 30 s et
+    devient pret, l'ennemi vient a lui a 40 s, et sa readiness repasse a faux —
+    definitivement. `can_engage` ne pouvait plus jamais devenir vrai, et la
+    manoeuvre restait en rassemblement jusqu'a sa mort.
+
+    Pendant `ASSEMBLE`, un participant ne peut plus ouvrir le combat : s'il est au
+    contact, c'est qu'on est venu le chercher.
+    """
     poste = Vector3(0.0, 0.0, 120.0)
-    libre = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=0.0, z=120.0)
-    engage = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=0.0, z=120.0, is_engaged=True)
+    en_place = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=0.0, z=120.0)
+    attaque = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=0.0, z=120.0, is_engaged=True)
+    loin = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=0.0, z=-300.0)
     flanc = Assignment("a_cav", ManoeuvreRole.FLANK, staging=poste)
 
-    assert flanc.ready(make_battle([libre]), centre=poste)
-    assert not flanc.ready(make_battle([engage]), centre=poste)
+    assert flanc.ready(make_battle([en_place]), centre=poste)
+    assert flanc.ready(make_battle([attaque]), centre=poste), "la readiness ne recule pas"
+    assert not flanc.ready(make_battle([loin]), centre=poste)
 
 
 def test_un_fixateur_a_trois_cents_metres_ne_fixe_rien(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]

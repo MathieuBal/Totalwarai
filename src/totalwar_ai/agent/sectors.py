@@ -51,6 +51,7 @@ from totalwar_ai.domain.geometry import Vector3, centroid
 from totalwar_ai.domain.unit_state import (
     LINE_ROLES,
     MOBILE_ROLES,
+    PRECIOUS_ROLES,
     RANGED_ROLES,
     UnitRole,
     UnitState,
@@ -211,9 +212,20 @@ class Assignment:
                 for autre in state.enemies()
             )
         if self.role is ManoeuvreRole.FLANK:
-            # **Pas au contact** : un flanqueur deja engage n'est pas pret, il est
-            # en retard — c'est exactement le defaut du 18/08.
-            return en_place and not unite.is_engaged
+            # **Etre attaque sur sa position de depart n'est pas etre en retard.**
+            #
+            # Cette branche exigeait d'abord « en place et pas au contact », pour
+            # attraper le flanqueur parti en avance. Mesure sur
+            # `numerical_superiority` : le cavalier atteint sa position exacte a
+            # 30 s et devient pret, l'ennemi vient a lui a 40 s, et sa readiness
+            # repasse a faux — definitivement. Un verrou qui tourne a l'envers, et
+            # `can_engage` ne pouvait plus jamais devenir vrai.
+            #
+            # La clause etait de toute facon devenue inutile : `ASSEMBLE` empeche
+            # desormais structurellement un participant d'ouvrir le combat, donc
+            # un flanqueur au contact pendant le rassemblement s'est fait attaquer,
+            # il n'est pas parti tout seul.
+            return en_place or unite.is_engaged
         if self.role is ManoeuvreRole.ASSAULT:
             if en_place or unite.is_engaged:
                 return True
@@ -755,9 +767,19 @@ def _compose(
                     STAGING_TOLERANCE,
                     lateral=role is ManoeuvreRole.FLANK,
                 ),
-                # Un appui-feu embarque dans le paquet de choc appuie ; il ne
-                # retient pas le contact pour autant.
-                required=role is not ManoeuvreRole.FIRE_SUPPORT,
+                # **N'est requis que ce que la doctrine envoie vraiment au
+                # contact.** Un appui-feu embarque dans le paquet de choc
+                # appuie ; il ne retient pas le contact pour autant.
+                #
+                # Le commandement non plus, et le cas etait pire : le seigneur
+                # entre dans `attackers`, mais `_command_leaders` le maintient
+                # « hors de la melee frontale » et aucun chemin ne l'amene a une
+                # position de depart. Mesure sur le banc : il bloquait **les
+                # trente plans de rassemblement**, seul, sans qu'aucune arrivee
+                # soit possible. Exiger ce que personne ne peut satisfaire n'est
+                # pas une exigence, c'est un verrou.
+                required=role is not ManoeuvreRole.FIRE_SUPPORT
+                and unite.role not in PRECIOUS_ROLES,
             )
         )
 

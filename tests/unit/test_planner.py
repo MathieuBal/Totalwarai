@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -741,3 +742,57 @@ def test_un_participant_requis_mort_abandonne_sans_attendre(make_unit, make_batt
     perdue = planificateur._advance(manoeuvre, make_battle([mort], game_time=10.0))
     assert perdue.phase is ManoeuvrePhase.ABORTED
     assert perdue.abort_reason is not None and "a1" in perdue.abort_reason
+
+
+def test_pendant_le_rassemblement_un_participant_rejoint_sa_position_sans_attaquer(  # type: ignore[no-untyped-def]
+    make_unit, make_battle
+) -> None:
+    """**Le defaut du 18/08, rendu impossible par construction.**
+
+    Trois unites rapides ne peuvent plus partir pendant que la ligne attend, parce
+    que leur depart et l'attente de la ligne appartiennent desormais a la meme
+    decision d'armee. Tant que la manoeuvre rassemble, aucun participant n'ouvre
+    le combat : ni `ATTACK_TARGET`, ni `FLANK`.
+    """
+    planificateur = Planner()
+    cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=0.0, z=0.0)
+    fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
+    ennemi = make_unit("e1", Side.ENEMY, UnitRole.RANGED_INFANTRY, x=0.0, z=200.0)
+    etat = make_battle([cavalier, fantassin, ennemi])
+
+    poste = Vector3(0.0, 0.0, 160.0)
+    rassemblement = Manoeuvre(
+        sector=0,
+        centre=Vector3(0.0, 0.0, 200.0),
+        attackers=("a_cav", "a_inf"),
+        targets=("e1",),
+        ratio=2.0,
+        phase=ManoeuvrePhase.ASSEMBLE,
+        assignments=(
+            Assignment("a_cav", ManoeuvreRole.FLANK, staging=poste),
+            Assignment("a_inf", ManoeuvreRole.ASSAULT, staging=poste),
+        ),
+    )
+    plan = replace(planificateur.build_plan(etat), assault=rassemblement)
+    decisions = planificateur.tactical_decisions(etat, plan)
+
+    par_unite = {
+        acteur: decision.action.type
+        for decision in decisions
+        for acteur in decision.action.actor_ids
+    }
+    assert par_unite["a_cav"] is ActionType.MOVE_GROUP, "le flanqueur rejoint, il ne charge pas"
+    assert par_unite["a_inf"] is ActionType.MOVE_GROUP
+    assert ActionType.FLANK not in par_unite.values()
+    assert ActionType.ATTACK_TARGET not in par_unite.values()
+
+    # Le contact rend leurs ordres a tout le monde, au meme plan.
+    engage = replace(rassemblement, phase=ManoeuvrePhase.CONTACT)
+    liberees = planificateur.tactical_decisions(etat, replace(plan, assault=engage))
+    types = {
+        acteur: decision.action.type
+        for decision in liberees
+        for acteur in decision.action.actor_ids
+    }
+    assert types["a_cav"] is ActionType.FLANK
+    assert types["a_inf"] is ActionType.ATTACK_TARGET

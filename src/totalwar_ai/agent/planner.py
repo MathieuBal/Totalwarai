@@ -1266,6 +1266,49 @@ class Planner:
             shooter, state, assignments=assignments, for_missile=True, candidates=bassin
         )
 
+    def _stage(
+        self,
+        unit: UnitState,
+        plan: BattlePlan,
+        decisions: list[Decision],
+    ) -> bool:
+        """Envoie un participant a sa position de depart, et rien d'autre.
+
+        **C'est ici que le defaut du 18/08 devient impossible.** Tant que la
+        manoeuvre rassemble, aucun de ses participants n'ouvre le combat : ni
+        `ATTACK_TARGET`, ni `FLANK`. Trois unites rapides ne peuvent plus partir
+        pendant que la ligne attend, parce que leur depart et l'attente de la
+        ligne appartiennent desormais a la meme decision d'armee.
+
+        Rend `True` quand l'unite a ete prise en charge — l'appelant doit alors
+        passer a la suivante sans lui donner d'ordre de combat.
+
+        Une unite deja au contact n'est pas retenue : la decrocher pour la
+        renvoyer a un point de rassemblement la ferait tuer de dos.
+        """
+        manoeuvre = plan.assault
+        if manoeuvre is None or not manoeuvre.holding or unit.is_engaged:
+            return False
+        affectation = manoeuvre.assignment(unit.id)
+        if affectation is None:
+            return False
+        decisions.append(
+            decide(
+                _move_units(
+                    (unit.id,),
+                    affectation.staging,
+                    Formation.LINE,
+                    heading=None,
+                    spacing=0.0,
+                ),
+                f"manoeuvre du secteur {manoeuvre.sector} : rassemblement "
+                f"({affectation.role.value})",
+                "arriver ensemble plutot que d'arriver le premier",
+                confidence=0.75,
+            )
+        )
+        return True
+
     def _command_front_line(
         self,
         state: BattleState,
@@ -1292,6 +1335,8 @@ class Planner:
         )
 
         for unit in units:
+            if self._stage(unit, plan, decisions):
+                continue
             nearest = state.nearest(unit.position, enemies)
             if nearest is None:
                 continue
@@ -1434,6 +1479,8 @@ class Planner:
         )
 
         for index, rider in enumerate(cavalry):
+            if self._stage(rider, plan, decisions):
+                continue
             # **La cavalerie porte l'assaut comme le reste de la ligne.** Elle en
             # etait exclue tant qu'elle ne recevait pas l'ordre : la compter dans
             # le rapport annonce sans jamais l'envoyer aurait promis une force

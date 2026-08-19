@@ -110,6 +110,24 @@ class ScenarioResult:
     stability: float = 0.0
     outcomes: dict[str, int] = field(default_factory=dict)
 
+    @property
+    def non_defeat_rate(self) -> float:
+        """Part de batailles qui ne sont pas des defaites.
+
+        **Sur un scenario a 0 % de victoires, c'est la seule chose qui bouge.**
+        La comparaison ne regardait que le taux de victoire, les forces restantes
+        et la survie du seigneur. Sur `outnumbered`, la reference porte trois nuls
+        quand le banc en donnait deja deux defaites et un nul : la degradation
+        etait passee sans que rien ne la signale, parce que 0 % de victoires reste
+        0 % de victoires et que les forces restantes bougeaient a peine.
+
+        Ce sont precisement les scenarios bloques a zero victoire qui portent tout
+        le travail restant : y perdre un nul doit se voir.
+        """
+        if self.battles <= 0:
+            return 0.0
+        return 1.0 - self.outcomes.get("defeat", 0) / self.battles
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "scenario": self.scenario,
@@ -489,6 +507,12 @@ def compare(
                 reference.lord_survival,
                 current.lord_survival,
                 0.0,
+            ),
+            (
+                "batailles non perdues",
+                reference.non_defeat_rate,
+                current.non_defeat_rate,
+                win_rate_tolerance,
             ),
         ):
             change = MetricChange(reference.scenario, metric, before, after)
