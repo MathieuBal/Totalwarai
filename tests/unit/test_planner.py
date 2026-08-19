@@ -670,6 +670,9 @@ def test_le_rassemblement_se_termine_quand_les_requis_sont_en_situation(
         assignments=(Assignment("a1", ManoeuvreRole.FIX, staging=poste),),
     )
     planificateur = Planner()
+    # Le rassemblement est eteint en production depuis le hotfix : ce test
+    # porte sur son comportement **quand il est allume**.
+    planificateur.manoeuvre_staging = True
 
     loin = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0)
     attente = planificateur._advance(manoeuvre, make_battle([loin], game_time=10.0))
@@ -703,6 +706,9 @@ def test_un_rassemblement_qui_n_aboutit_pas_relache_ses_participants(
         assignments=(Assignment("a1", ManoeuvreRole.FIX, staging=poste),),
     )
     planificateur = Planner()
+    # Le rassemblement est eteint en production depuis le hotfix : ce test
+    # porte sur son comportement **quand il est allume**.
+    planificateur.manoeuvre_staging = True
     absent = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0)
 
     avant = planificateur._advance(manoeuvre, make_battle([absent], game_time=ASSAULT_DEADLINE))
@@ -733,6 +739,9 @@ def test_un_participant_requis_mort_abandonne_sans_attendre(make_unit, make_batt
         assignments=(Assignment("a1", ManoeuvreRole.ASSAULT, staging=poste),),
     )
     planificateur = Planner()
+    # Le rassemblement est eteint en production depuis le hotfix : ce test
+    # porte sur son comportement **quand il est allume**.
+    planificateur.manoeuvre_staging = True
 
     fuyard = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0, is_routing=True)
     tenable = planificateur._advance(manoeuvre, make_battle([fuyard], game_time=10.0))
@@ -755,6 +764,9 @@ def test_pendant_le_rassemblement_un_participant_rejoint_sa_position_sans_attaqu
     le combat : ni `ATTACK_TARGET`, ni `FLANK`.
     """
     planificateur = Planner()
+    # Le rassemblement est eteint en production depuis le hotfix : ce test
+    # porte sur son comportement **quand il est allume**.
+    planificateur.manoeuvre_staging = True
     cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=0.0, z=0.0)
     fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
     ennemi = make_unit("e1", Side.ENEMY, UnitRole.RANGED_INFANTRY, x=0.0, z=200.0)
@@ -812,6 +824,9 @@ def test_un_appui_feu_sans_cible_rejoint_sa_portee_au_lieu_d_attendre(
     **est** l'appui.
     """
     planificateur = Planner()
+    # Le rassemblement est eteint en production depuis le hotfix : ce test
+    # porte sur son comportement **quand il est allume**.
+    planificateur.manoeuvre_staging = True
     tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
     fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
     lointain = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=600.0)
@@ -848,6 +863,9 @@ def test_un_tireur_menace_se_replie_avant_de_penser_au_rassemblement(
     pour tenir un horaire.
     """
     planificateur = Planner()
+    # Le rassemblement est eteint en production depuis le hotfix : ce test
+    # porte sur son comportement **quand il est allume**.
+    planificateur.manoeuvre_staging = True
     tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
     fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
     fondeur = make_unit("e_cav", Side.ENEMY, UnitRole.SHOCK_CAVALRY, x=0.0, z=20.0)
@@ -905,6 +923,9 @@ def test_un_appui_feu_hors_de_portee_continue_sa_route_apres_le_contact(  # type
     ferme pendant le rassemblement, simplement deplace apres la transition.
     """
     planificateur = Planner()
+    # Le rassemblement est eteint en production depuis le hotfix : ce test
+    # porte sur son comportement **quand il est allume**.
+    planificateur.manoeuvre_staging = True
     tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
     fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
     cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=40.0, z=0.0)
@@ -927,6 +948,9 @@ def test_un_appui_feu_hors_de_portee_continue_sa_route_apres_le_contact(  # type
 def test_un_appui_feu_a_portee_tire_au_lieu_de_se_deplacer(make_unit, make_battle) -> None:  # type: ignore[no-untyped-def]
     """Tirer sur le secteur **est** l'appui : rien ne justifie de bouger."""
     planificateur = Planner()
+    # Le rassemblement est eteint en production depuis le hotfix : ce test
+    # porte sur son comportement **quand il est allume**.
+    planificateur.manoeuvre_staging = True
     tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
     fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
     cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=40.0, z=0.0)
@@ -951,6 +975,9 @@ def test_un_appui_feu_menace_se_replie_avant_tout(make_unit, make_battle) -> Non
     reviendrait a l'y faire mourir pour tenir un horaire.
     """
     planificateur = Planner()
+    # Le rassemblement est eteint en production depuis le hotfix : ce test
+    # porte sur son comportement **quand il est allume**.
+    planificateur.manoeuvre_staging = True
     tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
     fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
     cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=40.0, z=0.0)
@@ -979,6 +1006,9 @@ def test_seul_l_appui_feu_reste_persistant_apres_le_contact(make_unit, make_batt
     transition vient precisement de les liberer.
     """
     planificateur = Planner()
+    # Le rassemblement est eteint en production depuis le hotfix : ce test
+    # porte sur son comportement **quand il est allume**.
+    planificateur.manoeuvre_staging = True
     tireur = make_unit("a_arc", Side.ALLY, UnitRole.RANGED_INFANTRY, x=0.0, z=0.0)
     fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
     cavalier = make_unit("a_cav", Side.ALLY, UnitRole.SHOCK_CAVALRY, x=40.0, z=0.0)
@@ -1001,3 +1031,82 @@ def test_seul_l_appui_feu_reste_persistant_apres_le_contact(make_unit, make_batt
     assert "rejoint sa portee" not in par_unite["a_cav"][1]
     assert par_unite["a_inf"][0] is ActionType.ATTACK_TARGET
     assert par_unite["a_arc"][0] is ActionType.MOVE_GROUP
+
+
+# --- le rassemblement eteint : rien ne doit en rester ------------------------
+
+
+def test_le_rassemblement_eteint_ne_laisse_aucune_machinerie_vivante(
+    make_unit, make_battle
+) -> None:  # type: ignore[no-untyped-def]
+    """**Rendre `_stage` inerte n'aurait pas suffi**, et c'est le coeur du hotfix.
+
+    `_advance` aurait continue de faire vivre `ASSEMBLE`, puis `ABORTED` au bout
+    de `ASSAULT_DEADLINE`, puis une recomposition dans le meme calcul de plan —
+    laquelle remet `started_at` a l'instant, si bien que le delai ne mord jamais.
+    L'agent serait reste fige exactement comme en bataille reelle, drapeau eteint
+    ou non.
+
+    Eteint, la manoeuvre nait donc au contact, comme au premier commit de
+    MANOEUVRE-001, quand aucun comportement de rassemblement n'existait encore.
+    """
+    planificateur = Planner()
+    assert not planificateur.manoeuvre_staging, "eteint par defaut, et il le reste"
+
+    poste = Vector3(0.0, 0.0, 100.0)
+    manoeuvre = Manoeuvre(
+        sector=0,
+        centre=poste,
+        attackers=("a1",),
+        targets=("e1",),
+        ratio=2.0,
+        started_at=0.0,
+        phase=ManoeuvrePhase.ASSEMBLE,
+        assignments=(Assignment("a1", ManoeuvreRole.ASSAULT, staging=poste),),
+    )
+    absent = make_unit("a1", Side.ALLY, UnitRole.MELEE_INFANTRY, x=0.0, z=-300.0)
+
+    # Bien au-dela du delai : aucun abandon ne doit naitre du rassemblement.
+    tres_tard = make_battle([absent], game_time=ASSAULT_DEADLINE * 3)
+    assert planificateur._advance(manoeuvre, tres_tard).phase is ManoeuvrePhase.ASSEMBLE
+
+    # Et aucun ordre de rassemblement n'est emis, quelle que soit la phase.
+    fantassin = make_unit("a_inf", Side.ALLY, UnitRole.MELEE_INFANTRY, x=20.0, z=0.0)
+    ennemi = make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=600.0)
+    etat = make_battle([fantassin, ennemi])
+    plan = replace(
+        planificateur.build_plan(etat),
+        assault=Manoeuvre(
+            sector=0,
+            centre=Vector3(0.0, 0.0, 600.0),
+            attackers=("a_inf",),
+            targets=("e1",),
+            ratio=2.0,
+            phase=ManoeuvrePhase.ASSEMBLE,
+            assignments=(Assignment("a_inf", ManoeuvreRole.ASSAULT, staging=poste),),
+        ),
+    )
+    causes = [d.cause for d in planificateur.tactical_decisions(etat, plan)]
+    assert all("rassemblement" not in cause for cause in causes)
+    assert all("rejoint sa portee" not in cause for cause in causes)
+
+
+def test_une_manoeuvre_composee_nait_au_contact_quand_le_rassemblement_est_eteint(  # type: ignore[no-untyped-def]
+    make_unit, make_battle
+) -> None:
+    """La preuve que la neutralisation porte sur la production, pas sur un test.
+
+    Une manoeuvre nee en `ASSEMBLE` alors que rien ne la fait avancer serait un
+    piege dormant : elle attendrait des participants que personne n'envoie.
+    """
+    planificateur = Planner()
+    allies = [
+        make_unit(f"a{i}", Side.ALLY, UnitRole.MELEE_INFANTRY, x=float(i * 15), z=0.0)
+        for i in range(4)
+    ]
+    ennemis = [make_unit("e1", Side.ENEMY, UnitRole.MELEE_INFANTRY, x=0.0, z=120.0)]
+    etat = make_battle([*allies, *ennemis])
+
+    plan = planificateur.build_plan(etat)
+    if plan.assault is not None:
+        assert plan.assault.phase is ManoeuvrePhase.CONTACT
