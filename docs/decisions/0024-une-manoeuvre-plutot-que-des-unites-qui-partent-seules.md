@@ -131,6 +131,41 @@ nuls**, au-dessus de ce que le code donnait avant ce chantier ;
 `numerical_superiority` passe de 87 % à **94 %** de forces restantes, en 37 s au
 lieu de 55 s.
 
+## Le prix de `required=False`, et pourquoi seul l'appui-feu persiste
+
+`FIRE_SUPPORT` n'est pas requis, délibérément : sans cela, un tireur qui n'arrive
+jamais à portée bloquerait la manœuvre entière. La contrepartie est que `CONTACT`
+peut se déclencher pendant qu'il est encore en chemin.
+
+Or le rassemblement ne valait que pendant `ASSEMBLE`. Un tireur à mi-parcours au
+moment de la transition était donc **abandonné en route** : il retombait sur la
+station d'ancre, qui ne suit la ligne qu'en posture offensive et vise l'ancre
+plutôt que le secteur. Le défaut déjà fermé pendant le rassemblement, simplement
+déplacé après la transition.
+
+Le rassemblement persiste donc après `CONTACT` — **pour l'appui-feu seul** :
+
+| phase | situation | ordre |
+| --- | --- | --- |
+| `ASSEMBLE` | hors de portée, aucune cible | rejoint sa position |
+| `CONTACT` | hors de portée, aucune cible | **poursuit** |
+| `CONTACT` | cible à portée | tire, ne bouge pas |
+| l'une ou l'autre | menacé | se replie, priorité absolue |
+
+`ASSAULT`, `FLANK` et `FIX` suivent leur doctrine de contact : c'est exactement ce
+que la transition vient de déverrouiller, et les y soustraire reconduirait la
+paralysie que l'abandon sur `ASSAULT_DEADLINE` existe pour éviter. Un test garde
+cette frontière.
+
+Mesure sur le banc, aucun appui-feu muet dans l'une ou l'autre phase :
+
+```
+ASSEMBLE   66 % tirent   27 % rejoignent leur portée   7 % se replient
+CONTACT    31 % tirent   69 % rejoignent leur portée
+```
+
+Les 69 % de `CONTACT` sont précisément ceux qu'on abandonnait à mi-parcours.
+
 ## Le retrait de la branche opportuniste est reporté
 
 C'est la conclusion principale de cet ADR, et elle est négative.

@@ -28,6 +28,7 @@ from totalwar_ai.agent.sectors import (
     ASSAULT_DEADLINE,
     Manoeuvre,
     ManoeuvrePhase,
+    ManoeuvreRole,
     commit,
     split_sectors,
 )
@@ -1305,13 +1306,38 @@ class Planner:
 
         Une unite deja au contact n'est pas retenue : la decrocher pour la
         renvoyer a un point de rassemblement la ferait tuer de dos.
+
+        .. rubric:: L'appui-feu seul poursuit sa route apres le contact
+
+        `FIRE_SUPPORT` n'est pas requis — deliberement, pour que la manoeuvre ne
+        se bloque pas si un tireur n'arrive jamais a portee. Mais la contrepartie
+        est que `CONTACT` peut se declencher pendant qu'il est encore en chemin, et
+        s'arreter la reviendrait a **l'abandonner a mi-parcours** : il retomberait
+        sur la station d'ancre, qui ne suit la ligne qu'en posture offensive et
+        vise l'ancre plutot que le secteur. C'est le defaut deja ferme pendant le
+        rassemblement — « les archers n'ont pas suivi le pack » — simplement
+        deplace apres la transition.
+
+        **Aucun autre role ne devient persistant.** `ASSAULT`, `FLANK` et `FIX`
+        suivent leur doctrine de contact : c'est precisement ce que la transition
+        vient de deverrouiller, et les y soustraire reconduirait la paralysie que
+        l'abandon sur `ASSAULT_DEADLINE` existe pour eviter.
         """
         manoeuvre = plan.assault
-        if manoeuvre is None or not manoeuvre.holding or unit.is_engaged:
+        if manoeuvre is None or unit.is_engaged:
             return False
         affectation = manoeuvre.assignment(unit.id)
         if affectation is None:
             return False
+        if not manoeuvre.holding and affectation.role is not ManoeuvreRole.FIRE_SUPPORT:
+            return False
+        # Le libelle suit la phase : annoncer un rassemblement apres le contact
+        # decrirait une manoeuvre ou plus personne ne se rassemble.
+        motif = (
+            f"manoeuvre du secteur {manoeuvre.sector} : rassemblement ({affectation.role.value})"
+            if manoeuvre.holding
+            else f"manoeuvre du secteur {manoeuvre.sector} : rejoint sa portee"
+        )
         decisions.append(
             decide(
                 _move_units(
@@ -1321,8 +1347,7 @@ class Planner:
                     heading=None,
                     spacing=0.0,
                 ),
-                f"manoeuvre du secteur {manoeuvre.sector} : rassemblement "
-                f"({affectation.role.value})",
+                motif,
                 "arriver ensemble plutot que d'arriver le premier",
                 confidence=0.75,
             )
