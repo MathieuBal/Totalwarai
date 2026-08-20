@@ -328,6 +328,15 @@ def test_tenir_la_ligne_arrete_reellement_les_unites(tmp_path: Path) -> None:
     Constate en bataille : cent quatorze tours, deux ordres. Cinq « tenir la
     position » par tour ne traversaient pas le pont, et l'armee continuait sur
     sa lancee pendant que l'agent croyait tenir.
+
+    **La premisse doit etre dite.** Ce test mettait l'armee en mouvement par le
+    pont « comme le ferait le joueur », puis exigeait que l'agent l'arrete. Une
+    bataille reelle a montre ce que cette premisse produit : trente arrets
+    envoyes a six unites que le joueur pilotait, dont une que l'agent n'avait
+    jamais commandee de toute la partie.
+
+    Le defaut d'origine est reel, mais il porte sur les ordres de **l'agent** qui
+    courent encore. On reproduit donc cette situation-la : les unites sont a lui.
     """
     (tmp_path / "totalwar_ai").mkdir()
     probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
@@ -336,16 +345,20 @@ def test_tenir_la_ligne_arrete_reellement_les_unites(tmp_path: Path) -> None:
     probe.advance(2000)
 
     bridge = FileBridge.open(tmp_path)
-    # On met l'armee en mouvement, comme le ferait le joueur.
     etat = bridge.latest_battle_state()
     assert etat is not None
     bridge.send_orders(moves=[(unite.unit_id, Vector3(0.0, 0.0, -200.0)) for unite in etat.allies])
     probe.advance(2000)
 
-    session = LiveSession(
-        bridge=FileBridge.open(tmp_path),
-        agent=DeterministicTacticalAgent.from_config(load_config()),
-    )
+    agent = DeterministicTacticalAgent.from_config(load_config())
+    session = LiveSession(bridge=FileBridge.open(tmp_path), agent=agent)
+    # Le premier tour identifie la bataille et remet l'agent a zero ; on declare
+    # ensuite que ces deplacements sont les siens. En production, cette memoire
+    # est remplie par ses propres ordres de mouvement.
+    session.step()
+    probe.advance(2000)
+    agent._commanded.update(unite.unit_id for unite in etat.allies)
+
     for _ in range(4):
         etape = session.step()
         probe.advance(2000)
@@ -356,6 +369,43 @@ def test_tenir_la_ligne_arrete_reellement_les_unites(tmp_path: Path) -> None:
 
     arrets = [order for order in probe.orders() if order["kind"] == "halt"]
     assert arrets, "aucun ordre d'arret n'est arrive jusqu'au jeu"
+
+
+def test_l_agent_n_arrete_pas_les_unites_que_le_joueur_pilote(tmp_path: Path) -> None:
+    """**Trente arrets, six unites, aucune commandee par l'agent.**
+
+    Constate en bataille le 20/08 : a l'instant precis ou les douze unites
+    cessent d'etre immobiles — donc ou le joueur intervient apres six minutes
+    d'inaction — l'agent envoie six arrets, zero deplacement, zero attaque. Puis
+    les six memes, encore, et encore. L'unite 1010 stoppee neuf fois ; l'unite
+    1012 arretee alors qu'elle n'avait jamais recu le moindre ordre de mouvement
+    de l'agent.
+
+    Un `HOLD` ne devient un arret que si l'unite bouge. La regle est bonne, mais
+    elle ne distinguait pas « elle avance parce que je l'ai envoyee » de « elle
+    avance parce que le joueur l'a envoyee ».
+    """
+    (tmp_path / "totalwar_ai").mkdir()
+    probe = Probe(tmp_path, units=ARMEE, enemies=ENNEMIS)
+    probe.advance(2000)
+    probe.enter_phase("Deployed")
+    probe.advance(2000)
+
+    bridge = FileBridge.open(tmp_path)
+    etat = bridge.latest_battle_state()
+    assert etat is not None
+    # Le joueur, lui, prend ses unites en main sans passer par l'agent.
+    bridge.send_orders(moves=[(unite.unit_id, Vector3(0.0, 0.0, -200.0)) for unite in etat.allies])
+    probe.advance(2000)
+
+    session = LiveSession(
+        bridge=FileBridge.open(tmp_path),
+        agent=DeterministicTacticalAgent.from_config(load_config()),
+    )
+    for _ in range(4):
+        etape = session.step()
+        probe.advance(2000)
+        assert not etape.translation.halts, "l'agent a repris une unite au joueur"
 
 
 def test_les_refus_de_securite_ne_passent_pas_pour_des_ordres(session: LiveSession) -> None:

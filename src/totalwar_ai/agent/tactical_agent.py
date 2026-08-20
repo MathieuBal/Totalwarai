@@ -12,7 +12,7 @@ plus tard, cet agent doit rester utilisable seul.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from totalwar_ai.agent.doctrine import apply_to_planner, apply_to_safety
@@ -27,7 +27,7 @@ from totalwar_ai.agent.planner import (
 from totalwar_ai.agent.safety_rules import SafetyEngine, SafetySettings
 from totalwar_ai.agent.unit_classifier import UnitClassifier
 from totalwar_ai.config import AppConfig, ConfigError, load_config
-from totalwar_ai.domain.actions import AgentAction
+from totalwar_ai.domain.actions import ActionType, AgentAction
 from totalwar_ai.domain.battle_state import BattlePhase, BattleState
 from totalwar_ai.domain.unit_state import PRECIOUS_ROLES, RANGED_ROLES
 from totalwar_ai.learning.adaptation import DoctrineProfile
@@ -244,6 +244,21 @@ class DeterministicTacticalAgent:
     #: Instant du dernier envoi de chaque signature, pour la faire expirer.
     _signature_time: dict[str, float] = field(default_factory=dict, repr=False)
     _blocked_signatures: set[tuple[Any, ...]] = field(default_factory=set, repr=False)
+    #: Unites que **l'agent** a mises en mouvement, et qui ne se sont pas encore
+    #: arretees.
+    #:
+    #: **Sans cette memoire, l'agent reprend ses unites au joueur.** Un
+    #: `HOLD_POSITION` ne devient un arret reel que si l'unite bouge — la regle
+    #: est bonne, elle empeche l'agent de croire qu'il tient sa ligne pendant que
+    #: l'armee avance. Mais elle ne distingue pas « elle avance parce que je l'ai
+    #: envoyee » de « elle avance parce que le joueur l'a envoyee ».
+    #:
+    #: Constate en bataille : trente arrets envoyes a six unites, toutes en
+    #: mouvement, **aucune n'ayant jamais recu d'ordre de deplacement de l'agent**
+    #: a cet instant — l'une n'en a jamais recu de toute la bataille. Elles
+    #: bougeaient parce que le joueur les bougeait, et l'agent les a stoppees ;
+    #: l'une d'elles neuf fois.
+    _commanded: set[str] = field(default_factory=set, repr=False)
 
     @classmethod
     def from_config(cls, config: AppConfig | None = None) -> DeterministicTacticalAgent:
@@ -277,6 +292,7 @@ class DeterministicTacticalAgent:
         self._active_signatures.clear()
         self._signature_time.clear()
         self._blocked_signatures.clear()
+        self._commanded.clear()
         # Le planificateur porte lui aussi de la memoire — engagements de cible,
         # composition de la reserve, detection d'enlisement. La laisser passer
         # d'une bataille a la suivante ferait dependre la seconde de la premiere,
@@ -362,13 +378,14 @@ class DeterministicTacticalAgent:
         kept, suppressed = self._drop_duplicates(outcome.allowed, state.game_time)
         throttled = self.safety.throttle(kept, state.game_time)
         blocked, repeated = self._drop_repeated_blocks(outcome.blocked)
+        emises = self._respect_manual_control(throttled.allowed, state)
 
         self._last_decision_time = state.game_time
         return AgentTurn(
             sequence=state.sequence,
             game_time=state.game_time,
             plan=plan,
-            decisions=throttled.allowed,
+            decisions=emises,
             blocked=(*blocked, *throttled.blocked),
             suppressed=suppressed + repeated,
             decision_due=True,
@@ -439,6 +456,58 @@ class DeterministicTacticalAgent:
                 return True
         return False
 
+    # --- pilotage manuel -----------------------------------------------------
+
+    def _respect_manual_control(
+        self, decisions: Sequence[Decision], state: BattleState
+    ) -> tuple[Decision, ...]:
+        """Retire les arrets qui reprendraient au joueur une unite qu'il pilote.
+
+        **L'agent ne peut arreter que ce qu'il a lui-meme mis en mouvement.** Sa
+        prise expire des que l'unite est revue immobile : ce qui repart ensuite
+        ne vient plus de lui.
+
+        Rien n'est invente pour cela — `idle` est publie dans l'etat et deja lu
+        par le traducteur pour decider si un `HOLD` devient un arret. Aucune
+        fenetre a regler, aucun seuil.
+
+        .. rubric:: « On ne sait pas » n'est pas « elle est immobile »
+
+        Une premiere version lisait `metadata.get("idle", True)`, comme le
+        traducteur. Mais le simulateur ne publie pas ce champ : toute unite y
+        passait pour immobile, chaque prise expirait a chaque tour, et **tous**
+        les arrets disparaissaient. Le banc est tombe de 82 % a 73 %,
+        `balanced_clash` de 100 % a 0 %.
+
+        Un acteur n'est donc retire que si l'etat dit **positivement** qu'il
+        bouge. Champ absent, aucune conclusion : on ne prend rien a personne. Le
+        filtre est ainsi neutre partout ou l'information n'existe pas — le
+        simulateur compris, ou il n'y a de toute facon pas de joueur.
+        """
+        for unite in state.allies():
+            if unite.metadata.get("idle") is True:
+                self._commanded.discard(unite.id)
+
+        gardees: list[Decision] = []
+        for decision in decisions:
+            if decision.action.type is not ActionType.HOLD_POSITION:
+                # Tout le reste met l'unite en mouvement, ou la fait agir la ou
+                # elle est : dans les deux cas l'agent en reprend la charge.
+                self._commanded.update(decision.action.actor_ids)
+                gardees.append(decision)
+                continue
+            tenus = tuple(
+                unit_id
+                for unit_id in decision.action.actor_ids
+                if unit_id in self._commanded or not _en_mouvement(state, unit_id)
+            )
+            if not tenus:
+                continue
+            if tenus != decision.action.actor_ids:
+                decision = replace(decision, action=replace(decision.action, actor_ids=tenus))
+            gardees.append(decision)
+        return tuple(gardees)
+
     # --- anti-repetition -----------------------------------------------------
 
     def _drop_duplicates(
@@ -505,3 +574,14 @@ def _learned_targeting(config: AppConfig) -> TargetingModel | None:
         return None
     modele = TargetingModel.load(chemin)
     return modele if modele.affinities else None
+
+
+def _en_mouvement(state: BattleState, unit_id: str) -> bool:
+    """L'etat dit-il **positivement** que cette unite bouge ?
+
+    `False` aussi quand l'information manque : ne pas savoir n'est pas savoir que
+    non, et une conclusion tiree d'un champ absent reprendrait des unites au
+    joueur — ou, dans l'autre sens, ferait disparaitre tous les arrets du banc.
+    """
+    unite = state.unit(unit_id)
+    return unite is not None and unite.metadata.get("idle") is False
